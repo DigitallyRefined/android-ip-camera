@@ -1,50 +1,49 @@
 package com.github.digitallyrefined.androidipcamera
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.graphics.YuvImage
+import android.media.Image
+import android.net.Uri
 import android.os.Bundle
+import android.util.Base64
 import android.util.Log
 import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.io.IOException
-import java.io.OutputStream
-import java.net.ServerSocket
-import java.net.Socket
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import android.graphics.ImageFormat
-import android.graphics.YuvImage
-import android.graphics.Rect
+import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
+import java.io.InputStreamReader
+import java.io.OutputStream
 import java.io.PrintWriter
-import android.view.WindowManager
-import android.content.Intent
 import java.net.Inet4Address
 import java.net.NetworkInterface
-import android.widget.Toast
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import android.util.Base64
-import android.util.Size
-import android.net.Uri
-import androidx.preference.PreferenceManager
+import java.net.ServerSocket
+import java.net.Socket
+import java.nio.ByteBuffer
 import java.security.KeyStore
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
-import androidx.camera.core.resolutionselector.ResolutionSelector
-import androidx.camera.core.resolutionselector.ResolutionStrategy
-import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private lateinit var viewBinding: ActivityMainBinding
@@ -62,6 +61,72 @@ class MainActivity : AppCompatActivity() {
 
     private var lastFrameTime = 0L
 
+    private fun YUV420toNV21(image: ImageProxy): ByteArray {
+        val crop: Rect = image.cropRect
+        val format: Int = image.format
+        val width: Int = crop.width()
+        val height: Int = crop.height()
+        val planes: Array<ImageProxy.PlaneProxy> = image.planes
+        val data = ByteArray(width * height * ImageFormat.getBitsPerPixel(format) / 8)
+        val rowData = ByteArray(planes[0].rowStride)
+
+        var channelOffset = 0
+        var outputStride = 1
+        for (i in planes.indices) {
+            when (i) {
+                0 -> {
+                    channelOffset = 0
+                    outputStride = 1
+                }
+
+                1 -> {
+                    channelOffset = width * height + 1
+                    outputStride = 2
+                }
+
+                2 -> {
+                    channelOffset = width * height
+                    outputStride = 2
+                }
+            }
+
+            val buffer: ByteBuffer = planes[i].buffer
+            val rowStride: Int = planes[i].rowStride
+            val pixelStride: Int = planes[i].pixelStride
+
+            val shift: Int = if (i == 0) 0 else 1
+            val w: Int = width shr shift
+            val h: Int = height shr shift
+            buffer.position(rowStride * (crop.top shr shift) + pixelStride * (crop.left shr shift))
+            for (row in 0 until h) {
+                val length: Int
+                if (pixelStride == 1 && outputStride == 1) {
+                    length = w
+                    buffer.get(data, channelOffset, length)
+                    channelOffset += length
+                } else {
+                    length = (w - 1) * pixelStride + 1
+                    buffer.get(rowData, 0, length)
+                    for (col in 0 until w) {
+                        data[channelOffset] = rowData[col * pixelStride]
+                        channelOffset += outputStride
+                    }
+                }
+                if (row < h - 1) {
+                    buffer.position(buffer.position() + rowStride - length)
+                }
+            }
+        }
+        return data
+    }
+
+    private fun NV21toJPEG(nv21: ByteArray, width: Int, height: Int, quality: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        val yuv = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+        yuv.compressToJpeg(Rect(0, 0, width, height), quality, out)
+        return out.toByteArray()
+    }
+
     private fun processImage(image: ImageProxy) {
         // Get delay from preferences
         val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
@@ -76,25 +141,10 @@ class MainActivity : AppCompatActivity() {
         lastFrameTime = currentTime
 
         // Convert YUV_420_888 to NV21
-        val yBuffer = image.planes[0].buffer
-        val uBuffer = image.planes[1].buffer
-        val vBuffer = image.planes[2].buffer
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
-        val nv21 = ByteArray(ySize + uSize + vSize)
-
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
+        val nv21 = YUV420toNV21(image);
 
         // Convert NV21 to JPEG
-        val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
-        val jpegStream = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 80, jpegStream)
-        val jpegBytes = jpegStream.toByteArray()
+        val jpegBytes = NV21toJPEG(nv21, image.width, image.height, 80);
 
         synchronized(clients) {
             clients.removeAll { client ->
@@ -453,24 +503,11 @@ class MainActivity : AppCompatActivity() {
                 .apply {
                     // Get resolution from preferences
                     val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
-                    val resolutionSelector = ResolutionSelector.Builder().apply {
-                        when (prefs.getString("camera_resolution", "low")) {
-                            "high" -> setResolutionStrategy(
-                                ResolutionStrategy(
-                                    Size(1280, 960),
-                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
-                                )
-                            )
-                            "medium" -> setResolutionStrategy(
-                                ResolutionStrategy(
-                                    Size(960, 720),
-                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
-                                )
-                            )
-                            // "low" -> don't set resolution, use CameraX default
-                        }
-                    }.build()
-                    setResolutionSelector(resolutionSelector)
+                    when (prefs.getString("camera_resolution", "low")) {
+                        "high" -> setTargetResolution(android.util.Size(1280, 720))
+                        "medium" -> setTargetResolution(android.util.Size(640, 480))
+                        // "low" -> don't set resolution, use CameraX default
+                    }
                 }
                 .build()
                 .also { analysis ->
