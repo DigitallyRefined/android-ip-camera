@@ -10,7 +10,6 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -29,8 +28,6 @@ import android.graphics.Rect
 import java.io.ByteArrayOutputStream
 import java.io.PrintWriter
 import android.view.WindowManager
-import android.net.wifi.WifiManager
-import android.content.Context
 import android.content.Intent
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -45,8 +42,8 @@ import java.security.KeyStore
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
-import javax.net.ssl.SSLServerSocketFactory
-import android.content.SharedPreferences
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -456,11 +453,24 @@ class MainActivity : AppCompatActivity() {
                 .apply {
                     // Get resolution from preferences
                     val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
-                    when (prefs.getString("camera_resolution", "low")) {
-                        "high" -> setTargetResolution(android.util.Size(1280, 720))
-                        "medium" -> setTargetResolution(android.util.Size(640, 480))
-                        // "low" -> don't set resolution, use CameraX default
-                    }
+                    val resolutionSelector = ResolutionSelector.Builder().apply {
+                        when (prefs.getString("camera_resolution", "low")) {
+                            "high" -> setResolutionStrategy(
+                                ResolutionStrategy(
+                                    Size(1280, 960),
+                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                                )
+                            )
+                            "medium" -> setResolutionStrategy(
+                                ResolutionStrategy(
+                                    Size(960, 720),
+                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                                )
+                            )
+                            // "low" -> don't set resolution, use CameraX default
+                        }
+                    }.build()
+                    setResolutionSelector(resolutionSelector)
                 }
                 .build()
                 .also { analysis ->
