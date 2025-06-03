@@ -1,5 +1,9 @@
 # Android IP Camera
 
+[![downloads](https://img.shields.io/github/downloads/DigitallyRefined/android-ip-camera/total.svg)](https://github.com/DigitallyRefined/android-ip-camera/releases)
+[![downloads](https://img.shields.io/github/downloads/DigitallyRefined/android-ip-camera/v0.0.4/total.svg)](https://github.com/DigitallyRefined/android-ip-camera/releases)
+[![downloads](https://img.shields.io/github/downloads/DigitallyRefined/android-ip-camera/latest/total.svg)](https://github.com/DigitallyRefined/android-ip-camera/releases)
+
 An Android MJPEG IP Camera app
 
 ![Desktop Browser](screenshot.webp)
