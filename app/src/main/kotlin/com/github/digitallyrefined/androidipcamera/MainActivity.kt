@@ -1,50 +1,58 @@
 package com.github.digitallyrefined.androidipcamera
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.graphics.YuvImage
+import android.os.Build
 import android.os.Bundle
+import android.util.Base64
 import android.util.Log
 import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.*
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
+import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
+import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.io.IOException
-import java.io.OutputStream
-import java.net.ServerSocket
-import java.net.Socket
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import android.graphics.ImageFormat
-import android.graphics.YuvImage
-import android.graphics.Rect
+import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
+import java.io.InputStreamReader
+import java.io.OutputStream
 import java.io.PrintWriter
-import android.view.WindowManager
-import android.content.Intent
 import java.net.Inet4Address
 import java.net.NetworkInterface
-import android.widget.Toast
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import android.util.Base64
-import android.util.Size
-import android.net.Uri
-import androidx.preference.PreferenceManager
+import java.net.ServerSocket
+import java.net.Socket
+import java.nio.ByteBuffer
 import java.security.KeyStore
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
-import androidx.camera.core.resolutionselector.ResolutionSelector
-import androidx.camera.core.resolutionselector.ResolutionStrategy
-import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private lateinit var viewBinding: ActivityMainBinding
@@ -62,9 +70,75 @@ class MainActivity : AppCompatActivity() {
 
     private var lastFrameTime = 0L
 
+    private fun convertYUV420toNV21(image: ImageProxy): ByteArray {
+        val crop: Rect = image.cropRect
+        val format: Int = image.format
+        val width: Int = crop.width()
+        val height: Int = crop.height()
+        val planes: Array<ImageProxy.PlaneProxy> = image.planes
+        val data = ByteArray(width * height * ImageFormat.getBitsPerPixel(format) / 8)
+        val rowData = ByteArray(planes[0].rowStride)
+
+        var channelOffset = 0
+        var outputStride = 1
+        for (i in planes.indices) {
+            when (i) {
+                0 -> {
+                    channelOffset = 0
+                    outputStride = 1
+                }
+
+                1 -> {
+                    channelOffset = width * height + 1
+                    outputStride = 2
+                }
+
+                2 -> {
+                    channelOffset = width * height
+                    outputStride = 2
+                }
+            }
+
+            val buffer: ByteBuffer = planes[i].buffer
+            val rowStride: Int = planes[i].rowStride
+            val pixelStride: Int = planes[i].pixelStride
+
+            val shift: Int = if (i == 0) 0 else 1
+            val w: Int = width shr shift
+            val h: Int = height shr shift
+            buffer.position(rowStride * (crop.top shr shift) + pixelStride * (crop.left shr shift))
+            for (row in 0 until h) {
+                val length: Int
+                if (pixelStride == 1 && outputStride == 1) {
+                    length = w
+                    buffer.get(data, channelOffset, length)
+                    channelOffset += length
+                } else {
+                    length = (w - 1) * pixelStride + 1
+                    buffer.get(rowData, 0, length)
+                    for (col in 0 until w) {
+                        data[channelOffset] = rowData[col * pixelStride]
+                        channelOffset += outputStride
+                    }
+                }
+                if (row < h - 1) {
+                    buffer.position(buffer.position() + rowStride - length)
+                }
+            }
+        }
+        return data
+    }
+
+    private fun convertNV21toJPEG(nv21: ByteArray, width: Int, height: Int, quality: Int = 80): ByteArray {
+        val out = ByteArrayOutputStream()
+        val yuv = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+        yuv.compressToJpeg(Rect(0, 0, width, height), quality, out)
+        return out.toByteArray()
+    }
+
     private fun processImage(image: ImageProxy) {
         // Get delay from preferences
-        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val delay = prefs.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
 
         // Check if enough time has passed since last frame
@@ -76,25 +150,10 @@ class MainActivity : AppCompatActivity() {
         lastFrameTime = currentTime
 
         // Convert YUV_420_888 to NV21
-        val yBuffer = image.planes[0].buffer
-        val uBuffer = image.planes[1].buffer
-        val vBuffer = image.planes[2].buffer
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
-        val nv21 = ByteArray(ySize + uSize + vSize)
-
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
+        val nv21 = convertYUV420toNV21(image)
 
         // Convert NV21 to JPEG
-        val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
-        val jpegStream = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 80, jpegStream)
-        val jpegBytes = jpegStream.toByteArray()
+        val jpegBytes = convertNV21toJPEG(nv21, image.width, image.height)
 
         synchronized(clients) {
             clients.removeAll { client ->
@@ -150,7 +209,7 @@ class MainActivity : AppCompatActivity() {
             serverSocket = if (certificatePath != null) {
                 // SSL server socket creation code...
                 try {
-                    val uri = Uri.parse(certificatePath)
+                    val uri = certificatePath.toUri()
                     // Copy the certificate to app's private storage
                     val privateFile = File(filesDir, "certificate.p12")
                     try {
@@ -222,9 +281,9 @@ class MainActivity : AppCompatActivity() {
                     val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
 
                     // Get auth credentials from preferences using androidx.preference
-                    val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
-                    val username = prefs.getString("username", "") ?: ""
-                    val password = prefs.getString("password", "") ?: ""
+                    val pref = PreferenceManager.getDefaultSharedPreferences(this)
+                    val username = pref.getString("username", "") ?: ""
+                    val password = pref.getString("password", "") ?: ""
 
                     // Check authentication if credentials are set
                     if (username.isNotEmpty() && password.isNotEmpty()) {
@@ -273,7 +332,7 @@ class MainActivity : AppCompatActivity() {
                     Log.i(TAG, "Client connected")
 
                     // Get delay from preferences
-                    val delay = prefs.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
+                    val delay = pref.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
                     Thread.sleep(delay)
                 } catch (e: IOException) {
                   // Ignore
@@ -306,6 +365,7 @@ class MainActivity : AppCompatActivity() {
 
     private var lensFacing = CameraSelector.DEFAULT_BACK_CAMERA
 
+    @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -317,9 +377,23 @@ class MainActivity : AppCompatActivity() {
         supportActionBar?.hide()
 
         // Set full screen flags
-        window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            val controller = window.insetsController
+            controller?.let {
+                it.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                    View.SYSTEM_UI_FLAG_FULLSCREEN
+                            or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    )
+        }
+
 
         // Keep screen on
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -385,7 +459,7 @@ class MainActivity : AppCompatActivity() {
                 startCamera()
             } else {
                 // Show which permissions are missing
-                val missingPermissions = REQUIRED_PERMISSIONS.filter {
+                REQUIRED_PERMISSIONS.filter {
                     ContextCompat.checkSelfPermission(baseContext, it) != PackageManager.PERMISSION_GRANTED
                 }
                 Toast.makeText(this,
@@ -418,7 +492,7 @@ class MainActivity : AppCompatActivity() {
         val switchCameraButton = findViewById<TextView>(R.id.switchCameraButton)
         val hidePreviewButton = findViewById<Button>(R.id.hidePreviewButton)
 
-        if (viewFinder.visibility == View.VISIBLE) {
+        if (viewFinder.isVisible) {
             viewFinder.visibility = View.GONE
             ipAddressText.visibility = View.GONE
             settingsButton.visibility = View.GONE
@@ -452,25 +526,28 @@ class MainActivity : AppCompatActivity() {
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .apply {
                     // Get resolution from preferences
-                    val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
-                    val resolutionSelector = ResolutionSelector.Builder().apply {
-                        when (prefs.getString("camera_resolution", "low")) {
-                            "high" -> setResolutionStrategy(
-                                ResolutionStrategy(
-                                    Size(1280, 960),
+                    val prefs = PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
+                    when (prefs.getString("camera_resolution", "low")) {
+                        "high" -> {
+                            val resolutionSelector = ResolutionSelector.Builder()
+                                .setResolutionStrategy(ResolutionStrategy(
+                                    android.util.Size(1280, 720),
                                     ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
-                                )
-                            )
-                            "medium" -> setResolutionStrategy(
-                                ResolutionStrategy(
-                                    Size(960, 720),
-                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
-                                )
-                            )
-                            // "low" -> don't set resolution, use CameraX default
+                                ))
+                                .build()
+                            setResolutionSelector(resolutionSelector)
                         }
-                    }.build()
-                    setResolutionSelector(resolutionSelector)
+                        "medium" -> {
+                            val resolutionSelector = ResolutionSelector.Builder()
+                                .setResolutionStrategy(ResolutionStrategy(
+                                    android.util.Size(640, 480),
+                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                                ))
+                                .build()
+                            setResolutionSelector(resolutionSelector)
+                        }
+                        // "low" -> don't set resolution, use CameraX default
+                    }
                 }
                 .build()
                 .also { analysis ->
@@ -508,7 +585,7 @@ class MainActivity : AppCompatActivity() {
         private const val STREAM_PORT = 4444
         private const val REQUEST_CODE_PERMISSIONS = 10
         private const val MAX_CLIENTS = 3  // Limit concurrent connections
-        private val REQUIRED_PERMISSIONS = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             arrayOf(Manifest.permission.CAMERA)
         } else {
             arrayOf(
