@@ -62,27 +62,6 @@ class SettingsActivity : AppCompatActivity() {
                     true
                 }
             }
-
-            findPreference<Preference>("camera_resolution")?.apply {
-                setOnPreferenceChangeListener { preference, newValue ->
-                    // Save the new value first
-                    preferenceManager.sharedPreferences?.edit()?.apply {
-                        putString("camera_resolution", newValue.toString())
-                        apply()
-                    }
-
-                    // Delay the restart to ensure preference is saved
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        val intent = Intent(requireActivity(), MainActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-                        }
-                        startActivity(intent)
-                        Runtime.getRuntime().exit(0)
-                    }, 500) // 500ms delay
-
-                    true
-                }
-            }
         }
 
         override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
