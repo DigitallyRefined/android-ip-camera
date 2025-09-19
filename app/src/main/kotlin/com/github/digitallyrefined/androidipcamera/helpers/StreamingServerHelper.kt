@@ -16,6 +16,7 @@ import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.io.PrintWriter
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.KeyStore
@@ -55,6 +56,8 @@ class StreamingServerHelper(
                     }
                 } else null
 
+                val bindAddress = InetAddress.getByName("0.0.0.0")
+
                 serverSocket = if (certificatePath != null) {
                     try {
                         val uri = certificatePath.toUri()
@@ -73,22 +76,22 @@ class StreamingServerHelper(
                             val sslContext = SSLContext.getInstance("TLSv1.2")
                             sslContext.init(keyManagerFactory.keyManagers, null, null)
                             val sslServerSocketFactory = sslContext.serverSocketFactory
-                            (sslServerSocketFactory.createServerSocket(streamPort, 50, null) as SSLServerSocket).apply {
+                            (sslServerSocketFactory.createServerSocket(streamPort, 50, bindAddress) as SSLServerSocket).apply {
                                 enabledProtocols = arrayOf("TLSv1.2")
                                 enabledCipherSuites = supportedCipherSuites
                                 reuseAddress = true
                                 soTimeout = 30000
                             }
-                        } ?: ServerSocket(streamPort)
+                        } ?: ServerSocket(streamPort, 50, bindAddress)
                     } catch (e: Exception) {
                         Handler(Looper.getMainLooper()).post {
                             onLog("Failed to create SSL server socket: ${e.message}")
                             Toast.makeText(context, "Failed to create SSL server socket: ${e.message}", Toast.LENGTH_LONG).show()
                         }
-                        ServerSocket(streamPort)
+                        ServerSocket(streamPort, 50, bindAddress)
                     }
                 } else {
-                    ServerSocket(streamPort, 50, null).apply {
+                    ServerSocket(streamPort, 50, bindAddress).apply {
                         reuseAddress = true
                         soTimeout = 30000
                     }
