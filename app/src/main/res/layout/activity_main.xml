@@ -9,32 +9,37 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <Button
-        android:id="@+id/hidePreviewButton"
+    <LinearLayout
+        android:id="@+id/topRightButtonBar"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Hide Preview"
+        android:orientation="horizontal"
         android:layout_margin="16dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
-
-    <Button
-        android:id="@+id/settingsButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Settings"
-        android:layout_margin="16dp"
-        app:layout_constraintBottom_toTopOf="@id/switchCameraButton"
-        app:layout_constraintEnd_toEndOf="parent" />
-
-    <Button
-        android:id="@+id/switchCameraButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Switch Camera"
-        android:layout_margin="16dp"
-        app:layout_constraintBottom_toTopOf="@id/hidePreviewButton"
-        app:layout_constraintEnd_toEndOf="parent" />
+        android:gravity="end"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+        <ImageButton
+            android:id="@+id/settingsButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_preferences"
+            android:contentDescription="Settings" />
+        <ImageButton
+            android:id="@+id/switchCameraButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_camera"
+            android:contentDescription="Switch Camera" />
+        <ImageButton
+            android:id="@+id/hidePreviewButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_view"
+            android:contentDescription="Toggle Preview" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/ipAddressText"
