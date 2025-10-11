@@ -16,6 +16,7 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
+import android.widget.ImageButton
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -185,12 +186,12 @@ class MainActivity : AppCompatActivity() {
         ipAddressText.text = "$protocol://$ipAddress:$STREAM_PORT"
 
         // Add toggle preview button
-        findViewById<Button>(R.id.hidePreviewButton).setOnClickListener {
+    findViewById<ImageButton>(R.id.hidePreviewButton).setOnClickListener {
             hidePreview()
         }
 
         // Add switch camera button handler
-        findViewById<Button>(R.id.switchCameraButton).setOnClickListener {
+    findViewById<ImageButton>(R.id.switchCameraButton).setOnClickListener {
             lensFacing = if (lensFacing == CameraSelector.DEFAULT_FRONT_CAMERA) {
                 CameraSelector.DEFAULT_BACK_CAMERA
             } else {
@@ -202,7 +203,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Add settings button
-        findViewById<Button>(R.id.settingsButton).setOnClickListener {
+    findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
     }
@@ -248,24 +249,20 @@ class MainActivity : AppCompatActivity() {
         val viewFinder = viewBinding.viewFinder
         val rootView = viewBinding.root
         val ipAddressText = findViewById<TextView>(R.id.ipAddressText)
-        val settingsButton = findViewById<Button>(R.id.settingsButton)
-        val switchCameraButton = findViewById<TextView>(R.id.switchCameraButton)
-        val hidePreviewButton = findViewById<Button>(R.id.hidePreviewButton)
+    val settingsButton = findViewById<ImageButton>(R.id.settingsButton)
+    val switchCameraButton = findViewById<ImageButton>(R.id.switchCameraButton)
+    val hidePreviewButton = findViewById<ImageButton>(R.id.hidePreviewButton)
 
         if (viewFinder.isVisible) {
             viewFinder.visibility = View.GONE
             ipAddressText.visibility = View.GONE
-            settingsButton.visibility = View.GONE
-            switchCameraButton.visibility = View.GONE
-            hidePreviewButton.visibility = View.GONE
             rootView.setBackgroundColor(android.graphics.Color.BLACK)
+            hidePreviewButton.setImageResource(android.R.drawable.ic_menu_view) // use open eye as placeholder for closed eye
         } else {
             viewFinder.visibility = View.VISIBLE
             ipAddressText.visibility = View.VISIBLE
-            settingsButton.visibility = View.VISIBLE
-            switchCameraButton.visibility = View.VISIBLE
-            hidePreviewButton.visibility = View.VISIBLE
             rootView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            hidePreviewButton.setImageResource(android.R.drawable.ic_menu_view) // open eye
         }
     }
 
