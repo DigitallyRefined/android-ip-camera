@@ -11,4 +11,18 @@
         <item>medium</item>
         <item>low</item>
     </string-array>
+
+    <string-array name="camera_zoom_entries">
+        <item>0.5x Zoom</item>
+        <item>1.0x Zoom (Default)</item>
+        <item>1.5x Zoom</item>
+        <item>2.0x Zoom</item>
+    </string-array>
+
+    <string-array name="camera_zoom_values">
+        <item>0.5</item>
+        <item>1.0</item>
+        <item>1.5</item>
+        <item>2.0</item>
+    </string-array>
 </resources>
