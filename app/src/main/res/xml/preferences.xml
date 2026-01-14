@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
     <PreferenceCategory
         android:title="Stream Camera Quality"
         android:summary="Change to prevent phone getting too hot">
@@ -10,19 +11,31 @@
             android:defaultValue="low"
             android:entries="@array/camera_resolution_entries"
             android:entryValues="@array/camera_resolution_values" />
+        <ListPreference
+            android:key="camera_zoom"
+            android:title="Camera Zoom"
+            android:summary="%s"
+            android:defaultValue="1.0"
+            android:entries="@array/camera_zoom_entries"
+            android:entryValues="@array/camera_zoom_values" />
+        <ListPreference
+            android:key="stream_scale"
+            android:title="Stream Scale"
+            android:summary="%s"
+            android:defaultValue="1.0"
+            android:entries="@array/stream_scale_entries"
+            android:entryValues="@array/stream_scale_values" />
         <EditTextPreference
-                android:key="stream_delay"
-                android:title="Stream Delay (33ms = 30fps)"
-                android:defaultValue="33"
-                android:inputType="number" />
+            android:key="stream_delay"
+            android:title="Stream Delay (33ms = 30fps)"
+            android:defaultValue="33"
+            android:inputType="number" />
     </PreferenceCategory>
     <PreferenceCategory
-        android:title="HTTP Basic Authentication"
-        android:summary="Leave blank for no username/password">
+        android:title="Authentication">
         <EditTextPreference
             android:key="username"
             android:title="Username"
-            android:summary=""
             android:defaultValue=""
             android:singleLine="true"
             android:dialogTitle="Enter Username" />
@@ -35,24 +48,20 @@
             android:dialogTitle="Enter Password" />
     </PreferenceCategory>
 
-    <PreferenceCategory android:title="Certificate Settings (requires restart)">
-        <SwitchPreference
-            android:key="use_certificate"
-            android:title="Enable TLS/HTTPS"
-            android:summary="Use HTTPS for secure video streaming"
-            android:defaultValue="false" />
+    <PreferenceCategory android:title="Certificate Settings">
         <Preference
             android:key="certificate_path"
-            android:title="TLS Certificate"
-            android:summary="Select a TLS certificate file"
-            android:persistent="true"
-            android:dependency="use_certificate" />
+            android:title="Custom TLS Certificate" android:summary="Select your own certificate" android:persistent="true" />
         <EditTextPreference
             android:key="certificate_password"
             android:title="Certificate Password"
             android:summary="Optional password for the TLS certificate"
             android:persistent="true"
-            android:inputType="textPassword"
-            android:dependency="use_certificate" />
+            android:inputType="textPassword" />
+        <Preference
+            android:key="test_certificate"
+            android:title="Test Certificate Setup"
+            android:summary="Validate your certificate configuration"
+            android:persistent="false" />
     </PreferenceCategory>
 </PreferenceScreen>

@@ -2,10 +2,17 @@ package com.github.digitallyrefined.androidipcamera
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -34,13 +41,19 @@ import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
 import com.github.digitallyrefined.androidipcamera.helpers.CameraResolutionHelper
 import com.github.digitallyrefined.androidipcamera.helpers.StreamingServerHelper
+import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
+import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
+import com.github.digitallyrefined.androidipcamera.helpers.CertificateHelper
 import com.github.digitallyrefined.androidipcamera.helpers.convertNV21toJPEG
 import com.github.digitallyrefined.androidipcamera.helpers.convertYUV420toNV21
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.security.SecureRandom
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -52,6 +65,17 @@ class MainActivity : AppCompatActivity() {
     private var hasRequestedPermissions = false
     private var cameraResolutionHelper: CameraResolutionHelper? = null
     private var lastFrameTime = 0L
+
+    private val cameraRestartReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == "com.github.digitallyrefined.androidipcamera.RESTART_CAMERA") {
+                // Restart camera with new settings
+                if (allPermissionsGranted()) {
+                    startCamera()
+                }
+            }
+        }
+    }
 
     private fun processImage(image: ImageProxy) {
         // Get delay from preferences
@@ -70,7 +94,32 @@ class MainActivity : AppCompatActivity() {
         val nv21 = convertYUV420toNV21(image)
 
         // Convert NV21 to JPEG
-        val jpegBytes = convertNV21toJPEG(nv21, image.width, image.height)
+        var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height)
+
+        // Apply scaling if needed
+        val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
+        if (scaleFactor != 1.0f) {
+            try {
+                val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                if (bitmap != null) {
+                    val newWidth = (bitmap.width * scaleFactor).toInt()
+                    val newHeight = (bitmap.height * scaleFactor).toInt()
+
+                    val scaledBitmap = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+                    bitmap.recycle()
+
+                    // Convert back to JPEG bytes
+                    val outputStream = java.io.ByteArrayOutputStream()
+                    scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
+                    jpegBytes = outputStream.toByteArray()
+                    scaledBitmap.recycle()
+                    outputStream.close()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error scaling image: ${e.message}")
+                // Continue with original image if scaling fails
+            }
+        }
 
         streamingServerHelper?.getClients()?.let { clients ->
             val toRemove = mutableListOf<StreamingServerHelper.Client>()
@@ -99,29 +148,159 @@ class MainActivity : AppCompatActivity() {
 
     private fun startStreamingServer() {
         try {
-            // Get certificate path from preferences
+            // Personal mode: App comes with default certificate and credentials
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-            val useCertificate = prefs.getBoolean("use_certificate", false)
-            val certificatePath = if (useCertificate) prefs.getString("certificate_path", null) else null
-            val certificatePassword = if (useCertificate) {
-                prefs.getString("certificate_password", "")?.let {
-                    if (it.isEmpty()) null else it.toCharArray()
-                }
-            } else null
+            val certificatePath = prefs.getString("certificate_path", null)
 
-            // Create server socket with specific bind address
-            streamingServerHelper = StreamingServerHelper(this)
+            // Check for valid authentication credentials
+            val secureStorage = SecureStorage(this)
+            val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
+            val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: ""
+
+            // Validate stored credentials
+            val username = InputValidator.validateAndSanitizeUsername(rawUsername)
+            val password = InputValidator.validateAndSanitizePassword(rawPassword)
+
+            // SECURITY: Warn user if no valid credentials are configured
+            if ((username == null || password == null || username.isEmpty() || password.isEmpty()) && certificatePath == null) {
+                runOnUiThread {
+                    Toast.makeText(this, "SECURITY WARNING: No authentication credentials configured. All connections will be rejected until you set username/password in Settings.", Toast.LENGTH_LONG).show()
+                }
+            }
+
+            // Create secure HTTPS server (certificate will be loaded from assets if needed)
+            if (streamingServerHelper == null) {
+                streamingServerHelper = StreamingServerHelper(
+                    this,
+                    onLog = { message -> Log.i(TAG, "StreamingServer: $message") }
+                )
+            }
             streamingServerHelper?.startStreamingServer()
 
-            Log.i(TAG, "Server started on port $STREAM_PORT (${if (certificatePath != null) "HTTPS" else "HTTP"})")
+            Log.i(TAG, "Requested HTTPS server start on port $STREAM_PORT")
 
         } catch (e: IOException) {
-            Log.e(TAG, "Could not start server: ${e.message}")
+            Log.e(TAG, "Could not start secure server: ${e.message}")
+            runOnUiThread {
+                Toast.makeText(this, "Failed to start secure server: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
         ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun generateRandomPassword(): String {
+        // Generate a secure random password that meets validation requirements:
+        // - 8-128 characters
+        // - At least one uppercase letter
+        // - At least one lowercase letter
+        // - At least one digit
+        val random = SecureRandom()
+        val uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        val lowercase = "abcdefghijklmnopqrstuvwxyz"
+        val digits = "0123456789"
+        val allChars = uppercase + lowercase + digits
+
+        // Ensure we have at least one of each required character type
+        val password = StringBuilder().apply {
+            append(uppercase[random.nextInt(uppercase.length)]) // At least one uppercase
+            append(lowercase[random.nextInt(lowercase.length)]) // At least one lowercase
+            append(digits[random.nextInt(digits.length)])       // At least one digit
+            // Add 9 more random characters for a total of 12 characters
+            repeat(9) {
+                append(allChars[random.nextInt(allChars.length)])
+            }
+        }
+
+        // Shuffle the password to randomize the position of required characters
+        val passwordArray = password.toString().toCharArray()
+        for (i in passwordArray.indices.reversed()) {
+            val j = random.nextInt(i + 1)
+            val temp = passwordArray[i]
+            passwordArray[i] = passwordArray[j]
+            passwordArray[j] = temp
+        }
+
+        return String(passwordArray)
+    }
+
+    private fun initializeDefaultCertificateAndStartServer() {
+        val secureStorage = SecureStorage(this)
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+
+        // Check if certificate already exists
+        if (CertificateHelper.certificateExists(this)) {
+            // Certificate exists, check if password is set
+            val existingCertPassword = secureStorage.getSecureString(SecureStorage.KEY_CERT_PASSWORD, null)
+
+            if (existingCertPassword.isNullOrEmpty()) {
+                // Certificate exists but password not set - we need to regenerate the certificate
+                // because we can't recover the original password
+                // Delete the old certificate file
+                val certFile = File(filesDir, "personal_certificate.p12")
+                if (certFile.exists()) {
+                    certFile.delete()
+                }
+                // Fall through to certificate generation
+            } else {
+                // Certificate exists, start server immediately
+                streamingServerHelper = StreamingServerHelper(
+                    this,
+                    onLog = { message -> Log.i(TAG, "StreamingServer: $message") }
+                )
+                startStreamingServer()
+                return
+            }
+        }
+
+
+        // No certificate exists - generate one, then start server
+        val randomPassword = generateRandomPassword()
+
+        // Generate certificate in background, then start server
+        lifecycleScope.launch(Dispatchers.IO) {
+            val certFile = CertificateHelper.generateCertificate(this@MainActivity, randomPassword)
+
+            if (certFile != null) {
+                // Store the password
+                secureStorage.putSecureString(SecureStorage.KEY_CERT_PASSWORD, randomPassword)
+
+                // Ensure certificate_path is null (use default personal certificate)
+                prefs.edit().remove("certificate_path").apply()
+
+                // Small delay to ensure storage is committed
+                kotlinx.coroutines.delay(100)
+
+                // Start server now that certificate is ready
+                if (streamingServerHelper == null) {
+                    streamingServerHelper = StreamingServerHelper(
+                        this@MainActivity,
+                        onLog = { message -> Log.i(TAG, "StreamingServer: $message") }
+                    )
+                }
+                startStreamingServer()
+
+                // Show toast on main thread
+                launch(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Certificate generated. Configure settings if needed.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } else {
+                Log.e(TAG, "Failed to generate certificate")
+                launch(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Failed to generate certificate. Check logs.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
     }
 
     private var lensFacing = CameraSelector.DEFAULT_BACK_CAMERA
@@ -171,19 +350,18 @@ class MainActivity : AppCompatActivity() {
 
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        // Start streaming server
-        streamingServerHelper = StreamingServerHelper(this)
-        lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.startStreamingServer() }
+        // Register broadcast receiver for camera restarts
+        ContextCompat.registerReceiver(this, cameraRestartReceiver, IntentFilter("com.github.digitallyrefined.androidipcamera.RESTART_CAMERA"), ContextCompat.RECEIVER_NOT_EXPORTED)
+
+        // Initialize default certificate if not already created, then start server
+        initializeDefaultCertificateAndStartServer()
 
         // Find the TextView
         val ipAddressText = findViewById<TextView>(R.id.ipAddressText)
 
-        // Get and display the IP address with correct protocol
+        // Get and display the IP address
         val ipAddress = getLocalIpAddress()
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val useCertificate = prefs.getBoolean("use_certificate", false)
-        val protocol = if (useCertificate) "https" else "http"
-        ipAddressText.text = "$protocol://$ipAddress:$STREAM_PORT"
+        ipAddressText.text = "https://$ipAddress:$STREAM_PORT"
 
         // Add toggle preview button
         findViewById<ImageButton>(R.id.hidePreviewButton).setOnClickListener {
@@ -267,6 +445,29 @@ class MainActivity : AppCompatActivity() {
             switchCameraButton.visibility = View.VISIBLE
             rootView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
             hidePreviewButton.setImageResource(android.R.drawable.ic_menu_view) // open eye
+        }
+    }
+
+    private fun calculateZoomCropRegion(cameraId: String, zoomFactor: Float): android.graphics.Rect? {
+        try {
+            val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
+            val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+            val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+
+            val centerX = sensorSize.width() / 2
+            val centerY = sensorSize.height() / 2
+            val deltaX = (sensorSize.width() / (2 * zoomFactor)).toInt()
+            val deltaY = (sensorSize.height() / (2 * zoomFactor)).toInt()
+
+            return android.graphics.Rect(
+                centerX - deltaX,
+                centerY - deltaY,
+                centerX + deltaX,
+                centerY + deltaY
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error calculating zoom crop region: ${e.message}")
+            return null
         }
     }
 
@@ -356,22 +557,71 @@ class MainActivity : AppCompatActivity() {
 
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                val camera = cameraProvider.bindToLifecycle(
                     this,
                     lensFacing,
                     preview,
                     imageAnalyzer
                 )
+
+                // Apply zoom settings to camera
+                val prefs = PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
+                val zoomFactor = prefs.getString("camera_zoom", "1.0")?.toFloatOrNull() ?: 1.0f
+
+                if (zoomFactor != 1.0f) {
+                    val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
+                    val cameraId = when (lensFacing) {
+                        CameraSelector.DEFAULT_BACK_CAMERA -> {
+                            cameraManager.cameraIdList.find { id ->
+                                val characteristics = cameraManager.getCameraCharacteristics(id)
+                                characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+                            } ?: "0"
+                        }
+                        CameraSelector.DEFAULT_FRONT_CAMERA -> {
+                            cameraManager.cameraIdList.find { id ->
+                                val characteristics = cameraManager.getCameraCharacteristics(id)
+                                characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+                            } ?: "1"
+                        }
+                        else -> "0"
+                    }
+
+                    val cropRegion = calculateZoomCropRegion(cameraId, zoomFactor)
+                    if (cropRegion != null) {
+                        camera.cameraControl.setZoomRatio(zoomFactor)
+                        Log.i(TAG, "Applied zoom factor: ${zoomFactor}x")
+                    }
+                }
             } catch (exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
+    override fun onPause() {
+        super.onPause()
+        // Stop streaming server when activity is paused (run on background thread to avoid NetworkOnMainThreadException)
+        lifecycleScope.launch(Dispatchers.IO) {
+            streamingServerHelper?.stopStreamingServer()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Restart streaming server when activity resumes (e.g., returning from Settings)
+        if (allPermissionsGranted()) {
+            startStreamingServer()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
-        streamingServerHelper?.closeClientConnection()
+        // Stop streaming server (run on background thread to avoid NetworkOnMainThreadException)
+        lifecycleScope.launch(Dispatchers.IO) {
+            streamingServerHelper?.stopStreamingServer()
+        }
+        unregisterReceiver(cameraRestartReceiver)
     }
 
     companion object {
