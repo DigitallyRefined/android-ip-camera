@@ -25,8 +25,8 @@ alt="Get it on Obtainium" align="center" height="54" /></a>
 - 📴 Option to turn the display off while streaming
 - 🤳 Switch between the main or selfie camera
 - 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
-- 🛂 Optional username and password
-- 🔐 Optional TLS certificate support to protect stream and login details via HTTPS
+- 🛂 Username and password protection
+- 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS
 
 ## ⚠️ Warning
 
@@ -40,4 +40,6 @@ Note: running at a higher image quality may cause some phones to over heat, whic
 
 To protect the stream and the password from being sent in plain-text over HTTP, a certificate can be used to start the stream over HTTPS.
 
-To generate a new self-signed certificate, clone this repo and run `./scripts/generate-certificate.sh` then use the `server.p12`. Or if you have your own domain you can use [Let's Encrypt](https://letsencrypt.org) to skip the self-signed security warning message.
+The app will automatically generate a self-signed certificate on first launch, but if you have your own domain you can use [Let's Encrypt](https://letsencrypt.org) to generate a trusted certificate and skip the self-signed security warning message, by changing the TLS certificate in the settings.
+
+To generate a new self-signed certificate, clear the app settings and restart or clone this repo and run `./scripts/generate-certificate.sh` then use the certificate `personal_certificate.p12` file it generates.
