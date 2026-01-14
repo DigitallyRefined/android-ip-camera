@@ -34,8 +34,9 @@ class SecureStorage(context: Context) {
     }
 
     // Store sensitive data securely
-    fun putSecureString(key: String, value: String?) {
-        encryptedPrefs.edit().putString(key, value).apply()
+    fun putSecureString(key: String, value: String?): Boolean {
+        // Use commit() to ensure synchronous write for critical data like certificate passwords
+        return encryptedPrefs.edit().putString(key, value).commit()
     }
 
     // Retrieve sensitive data securely

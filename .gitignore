@@ -8,6 +8,7 @@ build
 
 local.properties
 gradle/wrapper/gradle-wrapper.jar
+app/debug
 app/release
 signing.properties
 app/signing-key.jks

@@ -12,7 +12,6 @@ import androidx.preference.EditTextPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
-import androidx.preference.SeekBarPreference
 import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 
@@ -116,7 +115,7 @@ class SettingsActivity : AppCompatActivity() {
                     // Basic validation - check if password is not empty for certificate usage
                     if (password.isEmpty()) {
                         Toast.makeText(requireContext(),
-                            "Certificate password is required for HTTPS server to work",
+                            "Certificate password is required",
                             Toast.LENGTH_LONG).show()
                         return@setOnPreferenceChangeListener false
                     }
@@ -215,17 +214,13 @@ class SettingsActivity : AppCompatActivity() {
                     }
                     requireContext().sendBroadcast(intent)
 
-                    Toast.makeText(requireContext(),
-                        "Camera zoom updated to ${zoom}x",
-                        Toast.LENGTH_SHORT).show()
-
                     true
                 }
             }
 
-            findPreference<SeekBarPreference>("stream_scale")?.apply {
+            findPreference<Preference>("stream_scale")?.apply {
                 setOnPreferenceChangeListener { _, newValue ->
-                    val scale = (newValue as? Int)?.toFloat()?.div(100f) ?: 1.0f
+                    val scale = (newValue as? String)?.toFloatOrNull() ?: 1.0f
                     if (scale < 0.5f || scale > 2.0f) {
                         Toast.makeText(requireContext(),
                             "Scale must be between 0.5x and 2.0x",
@@ -233,15 +228,11 @@ class SettingsActivity : AppCompatActivity() {
                         return@setOnPreferenceChangeListener false
                     }
 
-                    // Save the scale value
-                    preferenceManager.sharedPreferences?.edit()?.apply {
-                        putFloat("stream_scale", scale)
-                        apply()
+                    // Send broadcast to restart camera with new scale
+                    val intent = Intent("com.github.digitallyrefined.androidipcamera.RESTART_CAMERA").apply {
+                        setPackage(requireContext().packageName)
                     }
-
-                    Toast.makeText(requireContext(),
-                        "Stream scale updated to ${String.format("%.1f", scale)}x",
-                        Toast.LENGTH_SHORT).show()
+                    requireContext().sendBroadcast(intent)
 
                     true
                 }

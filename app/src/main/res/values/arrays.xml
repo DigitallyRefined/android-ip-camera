@@ -25,4 +25,16 @@
         <item>1.5</item>
         <item>2.0</item>
     </string-array>
+
+    <string-array name="stream_scale_entries">
+      <item>Half Size (0.5x)</item>
+      <item>Normal Size (1.0x)</item>
+      <item>Double Size (2.0x)</item>
+    </string-array>
+
+    <string-array name="stream_scale_values">
+      <item>0.5</item>
+      <item>1.0</item>
+      <item>2.0</item>
+    </string-array>
 </resources>

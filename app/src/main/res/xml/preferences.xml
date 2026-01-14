@@ -18,50 +18,44 @@
             android:defaultValue="1.0"
             android:entries="@array/camera_zoom_entries"
             android:entryValues="@array/camera_zoom_values" />
-        <SeekBarPreference
+        <ListPreference
             android:key="stream_scale"
             android:title="Stream Scale"
-            android:summary="Scale stream output (0.5 = half size, 2.0 = double size)"
+            android:summary="%s"
             android:defaultValue="1.0"
-            android:max="200"
-            android:min="50"
-            app:showSeekBarValue="true" />
+            android:entries="@array/stream_scale_entries"
+            android:entryValues="@array/stream_scale_values" />
         <EditTextPreference
-                android:key="stream_delay"
-                android:title="Stream Delay (33ms = 30fps)"
-                android:defaultValue="33"
-                android:inputType="number" />
+            android:key="stream_delay"
+            android:title="Stream Delay (33ms = 30fps)"
+            android:defaultValue="33"
+            android:inputType="number" />
     </PreferenceCategory>
     <PreferenceCategory
-        android:title="Authentication (REQUIRED)"
-        android:summary="Configure secure credentials - no defaults provided">
+        android:title="Authentication">
         <EditTextPreference
             android:key="username"
             android:title="Username"
-            android:summary="Required for security - no default provided"
             android:defaultValue=""
             android:singleLine="true"
             android:dialogTitle="Enter Username" />
         <EditTextPreference
             android:key="password"
             android:title="Password"
-            android:summary="Required for security - no default provided"
             android:defaultValue=""
             android:inputType="textPassword"
             android:singleLine="true"
             android:dialogTitle="Enter Password" />
     </PreferenceCategory>
 
-    <PreferenceCategory android:title="Advanced Security (Required)">
+    <PreferenceCategory android:title="Certificate Settings">
         <Preference
             android:key="certificate_path"
-            android:title="Custom TLS Certificate"
-            android:summary="Select your own certificate (app includes built-in certificate)"
-            android:persistent="true" />
+            android:title="Custom TLS Certificate" android:summary="Select your own certificate" android:persistent="true" />
         <EditTextPreference
             android:key="certificate_password"
             android:title="Certificate Password"
-            android:summary="Password for TLS certificate (required for HTTPS)"
+            android:summary="Optional password for the TLS certificate"
             android:persistent="true"
             android:inputType="textPassword" />
         <Preference

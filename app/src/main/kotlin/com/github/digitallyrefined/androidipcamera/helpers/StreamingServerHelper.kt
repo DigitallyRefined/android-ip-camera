@@ -10,7 +10,11 @@ import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
@@ -51,6 +55,9 @@ class StreamingServerHelper(
     )
 
     private var serverSocket: ServerSocket? = null
+    private var serverJob: Job? = null
+    @Volatile
+    private var isStarting = false
     private val clients = CopyOnWriteArrayList<Client>()
     private val failedAttempts = ConcurrentHashMap<String, FailedAttempt>()
 
@@ -101,244 +108,359 @@ class StreamingServerHelper(
     }
 
     fun startStreamingServer() {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-                val secureStorage = SecureStorage(context)
-                val certificatePath = prefs.getString("certificate_path", null)
-                val certificatePassword = secureStorage.getSecureString(SecureStorage.KEY_CERT_PASSWORD, "")?.let {
-                    if (it.isEmpty()) null else it.toCharArray()
+        // Show toast when starting server
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context, "Server starting...", Toast.LENGTH_SHORT).show()
+        }
+
+        // Prevent concurrent starts
+        synchronized(this) {
+            if (isStarting) {
+                return
+            }
+
+            // Check if server is already running
+            if (serverJob != null && serverSocket != null && !serverSocket!!.isClosed) {
+                return
+            }
+
+            isStarting = true
+        }
+
+        // Stop existing server BEFORE creating new one (outside the coroutine)
+        // This must be done to avoid cancelling the new job
+        val oldJob: Job?
+        val oldSocket: ServerSocket?
+        synchronized(this) {
+            oldJob = serverJob
+            oldSocket = serverSocket
+            serverJob = null
+            serverSocket = null
+        }
+
+        // Stop old server and wait for it to fully stop (if it exists)
+        if (oldJob != null || oldSocket != null) {
+            runBlocking(Dispatchers.IO) {
+                try {
+                    oldSocket?.close()
+                } catch (e: IOException) {
+                    onLog("Error closing old server socket: ${e.message}")
                 }
-
-                // Certificate setup required - no defaults
-                var finalCertificatePath = certificatePath
-                var finalCertificatePassword = certificatePassword
-
-                if (certificatePath == null) {
-                    // Use personal certificate from assets - requires password configuration
-                    try {
-                        val personalCertFile = File(context.filesDir, "personal_certificate.p12")
-                        if (!personalCertFile.exists()) {
-                            // Try to copy from assets first
-                            try {
-                                context.assets.open("personal_certificate.p12").use { input ->
-                                    personalCertFile.outputStream().use { output ->
-                                        input.copyTo(output)
-                                    }
-                                }
-                            } catch (assetException: Exception) {
-                                // Certificate not in assets - provide helpful error
-                                Handler(Looper.getMainLooper()).post {
-                                    onLog("Certificate not found. Run setup.bat to generate it, then configure password in settings.")
-                                    Toast.makeText(context,
-                                        "Certificate missing. Run 'setup.bat' to generate certificate, then set password in Settings.",
-                                        Toast.LENGTH_LONG).show()
-                                }
-                                return@launch
-                            }
-                        }
-                        finalCertificatePath = personalCertFile.absolutePath
-
-                        // Require certificate password to be configured
-                        if (finalCertificatePassword == null) {
-                            Handler(Looper.getMainLooper()).post {
-                                onLog("Certificate password not configured. Set it in app Settings.")
-                                Toast.makeText(context,
-                                    "Certificate password required. Configure it in Settings > Advanced Security.",
-                                    Toast.LENGTH_LONG).show()
-                            }
-                            return@launch
-                        }
-
-                        Handler(Looper.getMainLooper()).post {
-                            onLog("Using configured certificate for secure setup")
-                        }
-                    } catch (e: Exception) {
-                        Handler(Looper.getMainLooper()).post {
-                            onLog("ERROR: Could not load certificate: ${e.message}")
-                            Toast.makeText(context, "Certificate error. Check password in Settings.", Toast.LENGTH_LONG).show()
-                        }
-                        return@launch
-                    }
-                }
-
-                val bindAddress = InetAddress.getByName("0.0.0.0")
-
-                serverSocket = try {
-                    // Determine which certificate file to use
-                    val certFile = if (certificatePath != null) {
-                        // Custom certificate - copy from URI to local file
-                        val uri = certificatePath.toUri()
-                        val privateFile = File(context.filesDir, "certificate.p12")
-                        if (privateFile.exists()) privateFile.delete()
-                        context.contentResolver.openInputStream(uri)?.use { input ->
-                            privateFile.outputStream().use { output ->
-                                input.copyTo(output)
-                            }
-                        } ?: throw IOException("Failed to open certificate file")
-                        privateFile
-                    } else {
-                        // Personal certificate
-                        File(finalCertificatePath!!)
-                    }
-
-                    certFile.inputStream().use { inputStream ->
-                        try {
-                            val keyStore = KeyStore.getInstance("PKCS12")
-                            keyStore.load(inputStream, finalCertificatePassword)
-                            val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-                            keyManagerFactory.init(keyStore, finalCertificatePassword)
-                            val sslContext = SSLContext.getInstance("TLSv1.3")
-                            sslContext.init(keyManagerFactory.keyManagers, null, null)
-                            val sslServerSocketFactory = sslContext.serverSocketFactory
-                            (sslServerSocketFactory.createServerSocket(streamPort, 50, bindAddress) as SSLServerSocket).apply {
-                                enabledProtocols = arrayOf("TLSv1.3", "TLSv1.2")
-                                enabledCipherSuites = arrayOf(
-                                    "TLS_AES_256_GCM_SHA384",
-                                    "TLS_AES_128_GCM_SHA256",
-                                    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-                                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-                                )
-                                reuseAddress = true
-                                soTimeout = 30000
-                            }
-                        } catch (keystoreException: Exception) {
-                            Handler(Looper.getMainLooper()).post {
-                                onLog("Certificate loading failed: ${keystoreException.message}")
-                                val errorMsg = when {
-                                    keystoreException.message?.contains("password") == true ->
-                                        "Certificate password is incorrect. Check Settings > Advanced Security."
-                                    keystoreException.message?.contains("keystore") == true ->
-                                        "Certificate file is corrupted or invalid. Regenerate with setup.bat."
-                                    else ->
-                                        "Certificate error: ${keystoreException.message}"
-                                }
-                                Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
-                            }
-                            return@launch
-                        }
-                    }
+                oldJob?.cancel()
+                try {
+                    oldJob?.join()
                 } catch (e: Exception) {
-                    Handler(Looper.getMainLooper()).post {
-                        onLog("CRITICAL: Failed to create HTTPS server: ${e.message}")
-                        Toast.makeText(context, "Failed to start secure HTTPS server: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
-                    return@launch
+                    // Ignore cancellation exceptions
                 }
-                onLog("Server started on port $streamPort (${if (certificatePath != null) "HTTPS" else "HTTP"})")
-                while (!Thread.currentThread().isInterrupted) {
-                    try {
-                        val socket = serverSocket?.accept() ?: continue
-                        val outputStream = socket.getOutputStream()
-                        val writer = PrintWriter(outputStream, true)
-                        val clientIp = socket.inetAddress.hostAddress
-
-                        // Configure socket timeouts for security
-                        socket.soTimeout = SOCKET_TIMEOUT_MS
-
-                        val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-                        val secureStorage = SecureStorage(context)
-                        val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
-                        val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: ""
-
-                        // SECURITY: Authentication is now MANDATORY for all connections
-                        // Validate stored credentials - require both username and password
-                        val username = InputValidator.validateAndSanitizeUsername(rawUsername)
-                        val password = InputValidator.validateAndSanitizePassword(rawPassword)
-
-                        if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
-                            // CRITICAL: No valid credentials configured - reject all connections
-                            recordFailedAttempt(clientIp)
-                            writer.print("HTTP/1.1 403 Forbidden\r\n")
-                            writer.print("Content-Type: text/plain\r\n")
-                            writer.print("Connection: close\r\n\r\n")
-                            writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
-                            writer.print("Please configure username and password in app settings.\r\n")
-                            writer.flush()
-                            socket.close()
-                            onLog("SECURITY: Connection rejected - authentication credentials not configured")
-                            continue
-                        }
-
-                        // Read HTTP headers
-                        val headers = mutableListOf<String>()
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
-                            if (line.isNullOrEmpty()) break
-                            headers.add(line!!)
-                        }
-
-                        // SECURITY: Require Basic Authentication header for all requests
-                        val authHeader = headers.find { it.startsWith("Authorization: Basic ") }
-                        if (authHeader == null) {
-                            // Rate limiting ONLY applies to unauthenticated requests
-                            if (isRateLimited(clientIp)) {
-                                writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                                writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
-                                writer.print("Connection: close\r\n\r\n")
-                                writer.flush()
-                                socket.close()
-                                onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
-                                Thread.sleep(100)
-                                continue
-                            }
-                            recordFailedAttempt(clientIp)
-                            writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                            writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
-                            writer.print("Connection: close\r\n\r\n")
-                            writer.flush()
-                            socket.close()
-                            continue
-                        }
-
-                        val providedAuth = String(Base64.decode(authHeader.substring(21), Base64.DEFAULT))
-                        if (providedAuth != "$username:$password") {
-                            // Rate limiting ONLY applies to failed authentication attempts
-                            if (isRateLimited(clientIp)) {
-                                writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                                writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for failed auth
-                                writer.print("Connection: close\r\n\r\n")
-                                writer.flush()
-                                socket.close()
-                                onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
-                                Thread.sleep(100)
-                                continue
-                            }
-                            recordFailedAttempt(clientIp)
-                            writer.print("HTTP/1.1 401 Unauthorized\r\n\r\n")
-                            writer.flush()
-                            socket.close()
-                            onLog("SECURITY: Failed authentication attempt from $clientIp")
-                            continue
-                        }
-
-                        // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
-                        if (handleMaxClients(socket, isAuthenticated = true)) continue
-
-                        writer.print("HTTP/1.0 200 OK\r\n")
-                        writer.print("Connection: close\r\n")
-                        writer.print("Cache-Control: no-cache\r\n")
-                        writer.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n")
-                        writer.flush()
-                        clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = true))
-                        onLog("Authenticated client connected from $clientIp")
-                        onClientConnected()
-                        val delay = prefs.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
-                        Thread.sleep(delay)
-
-                        // Periodic cleanup of expired connections (every 10 iterations)
-                        if (clients.size > 0 && System.currentTimeMillis() % 10 == 0L) {
-                            cleanupExpiredConnections()
-                        }
-                    } catch (e: IOException) {
-                        // Ignore connection errors
-                    } catch (e: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        break
-                    }
+                // Small delay to ensure port is released
+                try {
+                    Thread.sleep(500)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
                 }
-            } catch (e: IOException) {
-                onLog("Could not start server: ${e.message}")
+            }
+        }
+
+        synchronized(this) {
+              serverJob = CoroutineScope(Dispatchers.IO).launch {
+              try {
+                  val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+                  val secureStorage = SecureStorage(context)
+                  val certificatePath = prefs.getString("certificate_path", null)
+
+                  val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_CERT_PASSWORD, null)
+                  val certificatePassword = rawPassword?.let {
+                      if (it.isEmpty()) null else it.toCharArray()
+                  }
+
+                  // Certificate setup required - no defaults
+                  var finalCertificatePath = certificatePath
+                  var finalCertificatePassword = certificatePassword
+
+                  if (certificatePath == null) {
+                      // Use personal certificate from assets - requires password configuration
+                      try {
+                          val personalCertFile = File(context.filesDir, "personal_certificate.p12")
+                          if (!personalCertFile.exists()) {
+                              // Try to copy from assets first
+                              try {
+                                  context.assets.open("personal_certificate.p12").use { input ->
+                                      personalCertFile.outputStream().use { output ->
+                                          input.copyTo(output)
+                                      }
+                                  }
+                              } catch (assetException: Exception) {
+                                  // Certificate not in assets - provide helpful error
+                                  Handler(Looper.getMainLooper()).post {
+                                      onLog("Certificate not found.")
+                                      Toast.makeText(context,
+                                          "Certificate missing. Reset app to generate a new certificate",
+                                          Toast.LENGTH_LONG).show()
+                                  }
+                                  return@launch
+                              }
+                          }
+                          finalCertificatePath = personalCertFile.absolutePath
+
+                          // Require certificate password to be configured
+                          if (finalCertificatePassword == null) {
+                              return@launch
+                          }
+
+                      } catch (e: Exception) {
+                          Handler(Looper.getMainLooper()).post {
+                              onLog("ERROR: Could not load certificate: ${e.message}")
+                              Toast.makeText(context, "Certificate error. Check certificate file and password in Settings.", Toast.LENGTH_LONG).show()
+                          }
+                          return@launch
+                      }
+                  }
+
+                  val bindAddress = InetAddress.getByName("0.0.0.0")
+
+                  serverSocket = try {
+                      // Determine which certificate file to use
+                      val certFile = if (certificatePath != null) {
+                          // Custom certificate - copy from URI to local file
+                          val uri = certificatePath.toUri()
+                          val privateFile = File(context.filesDir, "certificate.p12")
+                          if (privateFile.exists()) privateFile.delete()
+                          context.contentResolver.openInputStream(uri)?.use { input ->
+                              privateFile.outputStream().use { output ->
+                                  input.copyTo(output)
+                              }
+                          } ?: throw IOException("Failed to open certificate file")
+                          privateFile
+                      } else {
+                          // Personal certificate
+                          File(finalCertificatePath!!)
+                      }
+
+                      certFile.inputStream().use { inputStream ->
+                          try {
+                              val keyStore = KeyStore.getInstance("PKCS12")
+                              keyStore.load(inputStream, finalCertificatePassword)
+                              val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+                              keyManagerFactory.init(keyStore, finalCertificatePassword)
+                              val sslContext = SSLContext.getInstance("TLSv1.3")
+                              sslContext.init(keyManagerFactory.keyManagers, null, null)
+                              val sslServerSocketFactory = sslContext.serverSocketFactory
+                              (sslServerSocketFactory.createServerSocket(streamPort, 50, bindAddress) as SSLServerSocket).apply {
+                                  reuseAddress = true
+                                  enabledProtocols = arrayOf("TLSv1.3", "TLSv1.2")
+                                  enabledCipherSuites = arrayOf(
+                                      "TLS_AES_256_GCM_SHA384",
+                                      "TLS_AES_128_GCM_SHA256",
+                                      "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                                      "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+                                  )
+                                  soTimeout = 30000
+                              }
+                          } catch (keystoreException: Exception) {
+                              Handler(Looper.getMainLooper()).post {
+                                  onLog("Certificate loading failed: ${keystoreException.message}")
+                                  val errorMsg = when {
+                                      keystoreException.message?.contains("password") == true ->
+                                          "Certificate password is incorrect. Check Settings > Advanced Security."
+                                      keystoreException.message?.contains("keystore") == true ->
+                                          "Certificate file is corrupted or invalid. Regenerate with setup.bat."
+                                      else ->
+                                          "Certificate error: ${keystoreException.message}"
+                                  }
+                                  Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
+                              }
+                              return@launch
+                          }
+                      }
+                  } catch (e: Exception) {
+                      Handler(Looper.getMainLooper()).post {
+                          onLog("CRITICAL: Failed to create HTTPS server: ${e.message}")
+                          Toast.makeText(context, "Failed to start secure HTTPS server: ${e.message}", Toast.LENGTH_LONG).show()
+                      }
+                      return@launch
+                  }
+                  onLog("Server started on port $streamPort (${if (certificatePath != null) "HTTPS" else "HTTP"})")
+                  // Clear the starting flag now that server is running
+                  synchronized(this@StreamingServerHelper) {
+                      isStarting = false
+                  }
+                  Handler(Looper.getMainLooper()).post {
+                      Toast.makeText(context, "Server started", Toast.LENGTH_SHORT).show()
+                  }
+                  while (isActive && !Thread.currentThread().isInterrupted) {
+                      try {
+                          val socket = serverSocket?.accept() ?: continue
+                          val clientIp = socket.inetAddress.hostAddress
+
+                          // Handle each connection in a separate coroutine to avoid blocking the accept loop
+                          CoroutineScope(Dispatchers.IO).launch {
+                              handleClientConnection(socket, clientIp)
+                          }
+                      } catch (e: IOException) {
+                          // Check if server socket was closed
+                          if (serverSocket == null || serverSocket!!.isClosed) {
+                              onLog("Server socket closed, stopping server")
+                              break
+                          }
+                          // Ignore other connection errors
+                      } catch (e: InterruptedException) {
+                          Thread.currentThread().interrupt()
+                          break
+                      } catch (e: Exception) {
+                          // Check if server socket was closed
+                          if (serverSocket == null || serverSocket!!.isClosed) {
+                              onLog("Server socket closed, stopping server")
+                              break
+                          }
+                          onLog("Unexpected error in server loop: ${e.message}")
+                      }
+                  }
+              } catch (e: IOException) {
+                  onLog("Could not start server: ${e.message}")
+              } finally {
+                  // Clear the starting flag if server failed to start
+                  synchronized(this@StreamingServerHelper) {
+                      isStarting = false
+                  }
+              }
+            }
+        }
+    }
+
+    private suspend fun handleClientConnection(socket: Socket, clientIp: String) {
+        try {
+            val outputStream = socket.getOutputStream()
+            val writer = PrintWriter(outputStream, true)
+
+            // Configure socket timeouts for security
+            socket.soTimeout = SOCKET_TIMEOUT_MS
+
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+                          val secureStorage = SecureStorage(context)
+                          val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
+                          val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: ""
+
+                          // SECURITY: Authentication is now MANDATORY for all connections
+                          // Validate stored credentials - require both username and password
+                          val username = InputValidator.validateAndSanitizeUsername(rawUsername)
+                          val password = InputValidator.validateAndSanitizePassword(rawPassword)
+
+                          if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
+                              // CRITICAL: No valid credentials configured - reject all connections
+                              recordFailedAttempt(clientIp)
+                              writer.print("HTTP/1.1 403 Forbidden\r\n")
+                              writer.print("Content-Type: text/plain\r\n")
+                              writer.print("Connection: close\r\n\r\n")
+                              writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
+                              writer.print("Configure username and password in app settings.\r\n")
+                              writer.flush()
+                              socket.close()
+                              onLog("SECURITY: Connection rejected - authentication credentials not configured")
+                              return
+                          }
+
+                          // Read HTTP headers
+                          val headers = mutableListOf<String>()
+                          var line: String?
+                          while (reader.readLine().also { line = it } != null) {
+                              if (line.isNullOrEmpty()) break
+                              headers.add(line!!)
+                          }
+
+                          // SECURITY: Require Basic Authentication header for all requests
+                          val authHeader = headers.find { it.startsWith("Authorization: Basic ") }
+                          if (authHeader == null) {
+                              // Rate limiting ONLY applies to unauthenticated requests
+                              if (isRateLimited(clientIp)) {
+                                  writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                                  writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
+                                  writer.print("Connection: close\r\n\r\n")
+                                  writer.flush()
+                                  socket.close()
+                              onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
+                              Thread.sleep(100)
+                              return
+                          }
+                          recordFailedAttempt(clientIp)
+                          writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                          writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
+                          writer.print("Connection: close\r\n\r\n")
+                          writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                          writer.flush()
+                          socket.close()
+                          return
+                          }
+
+                          val providedAuth = String(Base64.decode(authHeader.substring(21), Base64.DEFAULT))
+                          if (providedAuth != "$username:$password") {
+                              // Rate limiting ONLY applies to failed authentication attempts
+                              if (isRateLimited(clientIp)) {
+                                  writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                                  writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for failed auth
+                                  writer.print("Connection: close\r\n\r\n")
+                                  writer.flush()
+                                  socket.close()
+                              onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
+                              Thread.sleep(100)
+                              return
+                          }
+                          recordFailedAttempt(clientIp)
+                          writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                          writer.print("Connection: close\r\n\r\n")
+                          writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                          writer.flush()
+                          socket.close()
+                          onLog("SECURITY: Failed authentication attempt from $clientIp")
+                          return
+                          }
+
+                          // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
+                          if (handleMaxClients(socket, isAuthenticated = true)) return
+
+                          // Send HTTP response headers for MJPEG stream
+                          // Use HTTP/1.1 with keep-alive for better streaming performance
+                          writer.print("HTTP/1.1 200 OK\r\n")
+                          writer.print("Connection: keep-alive\r\n")
+                          writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
+                          writer.print("Pragma: no-cache\r\n")
+                          writer.print("Expires: 0\r\n")
+                          writer.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n")
+                          writer.flush()
+
+                          // Add client to list - frames will be sent from MainActivity.processImage()
+                          clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = true))
+                          onClientConnected()
+
+                          // Keep connection alive - frames will be sent from MainActivity.processImage()
+                          // Wait for connection to close or be removed
+                          try {
+                              // Read from socket to detect when client disconnects
+                              while (socket.isConnected && !socket.isClosed) {
+                                  // Check if socket has data (client disconnect will cause exception)
+                                  if (reader.ready()) {
+                                      val line = reader.readLine()
+                                      if (line == null) break // Client disconnected
+                                  }
+                                  Thread.sleep(1000) // Check every second
+                              }
+                          } catch (e: IOException) {
+                              // Client disconnected
+                          } finally {
+                              // Remove client when connection closes
+                              clients.removeIf { it.socket == socket }
+                              try {
+                                  socket.close()
+                              } catch (e: Exception) {
+                                  // Ignore
+                              }
+                              onClientDisconnected()
+                          }
+        } catch (e: Exception) {
+            onLog("Error handling client connection from $clientIp: ${e.message}")
+            try {
+                socket.close()
+            } catch (closeException: Exception) {
+                // Ignore
             }
         }
     }
@@ -358,6 +480,54 @@ class StreamingServerHelper(
             return true
         }
         return false
+    }
+
+    suspend fun stopStreamingServer() {
+        val jobToCancel: Job?
+        val socketToClose: ServerSocket?
+
+        synchronized(this) {
+            // Get references to close outside synchronized block
+            jobToCancel = serverJob
+            socketToClose = serverSocket
+            serverSocket = null
+            serverJob = null
+        }
+
+        // If there's nothing to stop, return immediately
+        if (jobToCancel == null && socketToClose == null) {
+            return
+        }
+
+        // Run socket closing operations on background thread to avoid NetworkOnMainThreadException
+        withContext(Dispatchers.IO) {
+            // Close the server socket first to interrupt any blocking accept() calls
+            try {
+                socketToClose?.close()
+            } catch (e: IOException) {
+                onLog("Error closing server socket: ${e.message}")
+            }
+
+            // Cancel the server coroutine and wait for it to finish
+            jobToCancel?.cancel()
+            try {
+                // Wait for the coroutine to finish
+                jobToCancel?.join()
+            } catch (e: Exception) {
+                onLog("Error waiting for server job: ${e.message}")
+            }
+
+            // Close all client connections (this involves network operations)
+            closeClientConnection()
+
+            // Wait a bit longer to ensure port is fully released
+            try {
+                Thread.sleep(300)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+
+        }
     }
 
     fun closeClientConnection() {
