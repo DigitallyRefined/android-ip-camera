@@ -25,6 +25,20 @@
             android:defaultValue="1.0"
             android:entries="@array/stream_scale_entries"
             android:entryValues="@array/stream_scale_values" />
+        <ListPreference
+            android:key="camera_brightness"
+            android:title="Camera Brightness"
+            android:summary="%s"
+            android:defaultValue="0"
+            android:entries="@array/camera_brightness_entries"
+            android:entryValues="@array/camera_brightness_values" />
+        <ListPreference
+            android:key="camera_contrast"
+            android:title="Camera Contrast"
+            android:summary="%s"
+            android:defaultValue="0"
+            android:entries="@array/camera_contrast_entries"
+            android:entryValues="@array/camera_contrast_values" />
         <EditTextPreference
             android:key="stream_delay"
             android:title="Stream Delay (33ms = 30fps)"

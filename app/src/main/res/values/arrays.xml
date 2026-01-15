@@ -37,4 +37,36 @@
       <item>1.0</item>
       <item>2.0</item>
     </string-array>
+
+    <string-array name="camera_brightness_entries">
+        <item>Very Dark (-2 EV)</item>
+        <item>Dark (-1 EV)</item>
+        <item>Normal (0 EV)</item>
+        <item>Bright (+1 EV)</item>
+        <item>Very Bright (+2 EV)</item>
+    </string-array>
+
+    <string-array name="camera_brightness_values">
+        <item>-2</item>
+        <item>-1</item>
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+    </string-array>
+
+    <string-array name="camera_contrast_entries">
+        <item>Low Contrast (-50)</item>
+        <item>Medium-Low Contrast (-25)</item>
+        <item>Normal Contrast (0)</item>
+        <item>Medium-High Contrast (+25)</item>
+        <item>High Contrast (+50)</item>
+    </string-array>
+
+    <string-array name="camera_contrast_values">
+        <item>-50</item>
+        <item>-25</item>
+        <item>0</item>
+        <item>25</item>
+        <item>50</item>
+    </string-array>
 </resources>
