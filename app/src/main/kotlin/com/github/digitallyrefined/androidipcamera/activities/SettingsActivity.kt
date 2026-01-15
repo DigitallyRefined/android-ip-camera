@@ -237,6 +237,48 @@ class SettingsActivity : AppCompatActivity() {
                     true
                 }
             }
+
+            // Add listener for brightness changes (restart camera instead of app)
+            findPreference<Preference>("camera_brightness")?.apply {
+                setOnPreferenceChangeListener { _, newValue ->
+                    val brightness = (newValue as? String)?.toIntOrNull() ?: 0
+                    if (brightness < -2 || brightness > 2) {
+                        Toast.makeText(requireContext(),
+                            "Brightness must be between -2 and +2 EV",
+                            Toast.LENGTH_SHORT).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+
+                    // Send broadcast to restart camera with new brightness
+                    val intent = Intent("com.github.digitallyrefined.androidipcamera.RESTART_CAMERA").apply {
+                        setPackage(requireContext().packageName)
+                    }
+                    requireContext().sendBroadcast(intent)
+
+                    true
+                }
+            }
+
+            // Add listener for contrast changes (restart camera instead of app)
+            findPreference<Preference>("camera_contrast")?.apply {
+                setOnPreferenceChangeListener { _, newValue ->
+                    val contrast = (newValue as? String)?.toIntOrNull() ?: 0
+                    if (contrast < -50 || contrast > 50) {
+                        Toast.makeText(requireContext(),
+                            "Contrast must be between -50 and +50",
+                            Toast.LENGTH_SHORT).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+
+                    // Send broadcast to restart camera with new contrast
+                    val intent = Intent("com.github.digitallyrefined.androidipcamera.RESTART_CAMERA").apply {
+                        setPackage(requireContext().packageName)
+                    }
+                    requireContext().sendBroadcast(intent)
+
+                    true
+                }
+            }
         }
 
         override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

@@ -121,6 +121,49 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Apply contrast adjustment if needed
+        val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
+        if (contrastValue != 0) {
+            try {
+                val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                if (bitmap != null) {
+                    // Convert contrast value (-50 to +50) to contrast factor (0.5 to 1.5)
+                    val contrastFactor = 1.0f + (contrastValue / 100.0f)
+
+                    val contrastColorMatrix = android.graphics.ColorMatrix().apply {
+                        set(floatArrayOf(
+                            contrastFactor, 0f, 0f, 0f, 0f,  // Red
+                            0f, contrastFactor, 0f, 0f, 0f,  // Green
+                            0f, 0f, contrastFactor, 0f, 0f,  // Blue
+                            0f, 0f, 0f, 1f, 0f              // Alpha
+                        ))
+                    }
+
+                    val paint = android.graphics.Paint().apply {
+                        colorFilter = android.graphics.ColorMatrixColorFilter(contrastColorMatrix)
+                    }
+
+                    val contrastedBitmap = android.graphics.Bitmap.createBitmap(
+                        bitmap.width, bitmap.height, bitmap.config ?: Bitmap.Config.ARGB_8888
+                    )
+                    val canvas = android.graphics.Canvas(contrastedBitmap)
+                    canvas.drawBitmap(bitmap, 0f, 0f, paint)
+
+                    bitmap.recycle()
+
+                    // Convert back to JPEG bytes
+                    val outputStream = java.io.ByteArrayOutputStream()
+                    contrastedBitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
+                    jpegBytes = outputStream.toByteArray()
+                    contrastedBitmap.recycle()
+                    outputStream.close()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error applying contrast: ${e.message}")
+                // Continue with original image if contrast fails
+            }
+        }
+
         streamingServerHelper?.getClients()?.let { clients ->
             val toRemove = mutableListOf<StreamingServerHelper.Client>()
             clients.forEach { client ->
@@ -286,7 +329,7 @@ class MainActivity : AppCompatActivity() {
                 launch(Dispatchers.Main) {
                     Toast.makeText(
                         this@MainActivity,
-                        "Certificate generated. Configure settings if needed.",
+                        "Certificate generated.",
                         Toast.LENGTH_SHORT
                     ).show()
                 }
@@ -295,7 +338,7 @@ class MainActivity : AppCompatActivity() {
                 launch(Dispatchers.Main) {
                     Toast.makeText(
                         this@MainActivity,
-                        "Failed to generate certificate. Check logs.",
+                        "Failed to generate certificate.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -448,28 +491,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun calculateZoomCropRegion(cameraId: String, zoomFactor: Float): android.graphics.Rect? {
-        try {
-            val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
-            val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-            val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
-
-            val centerX = sensorSize.width() / 2
-            val centerY = sensorSize.height() / 2
-            val deltaX = (sensorSize.width() / (2 * zoomFactor)).toInt()
-            val deltaY = (sensorSize.height() / (2 * zoomFactor)).toInt()
-
-            return android.graphics.Rect(
-                centerX - deltaX,
-                centerY - deltaY,
-                centerX + deltaX,
-                centerY + deltaY
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error calculating zoom crop region: ${e.message}")
-            return null
-        }
-    }
 
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -566,32 +587,124 @@ class MainActivity : AppCompatActivity() {
 
                 // Apply zoom settings to camera
                 val prefs = PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
-                val zoomFactor = prefs.getString("camera_zoom", "1.0")?.toFloatOrNull() ?: 1.0f
+                val requestedZoomFactor = prefs.getString("camera_zoom", "1.0")?.toFloatOrNull() ?: 1.0f
 
-                if (zoomFactor != 1.0f) {
-                    val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
-                    val cameraId = when (lensFacing) {
-                        CameraSelector.DEFAULT_BACK_CAMERA -> {
-                            cameraManager.cameraIdList.find { id ->
-                                val characteristics = cameraManager.getCameraCharacteristics(id)
-                                characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
-                            } ?: "0"
-                        }
-                        CameraSelector.DEFAULT_FRONT_CAMERA -> {
-                            cameraManager.cameraIdList.find { id ->
-                                val characteristics = cameraManager.getCameraCharacteristics(id)
-                                characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-                            } ?: "1"
-                        }
-                        else -> "0"
+                // Check camera zoom capabilities
+                val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
+                val cameraId = when (lensFacing) {
+                    CameraSelector.DEFAULT_BACK_CAMERA -> {
+                        cameraManager.cameraIdList.find { id ->
+                            val characteristics = cameraManager.getCameraCharacteristics(id)
+                            characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+                        } ?: "0"
                     }
-
-                    val cropRegion = calculateZoomCropRegion(cameraId, zoomFactor)
-                    if (cropRegion != null) {
-                        camera.cameraControl.setZoomRatio(zoomFactor)
-                        Log.i(TAG, "Applied zoom factor: ${zoomFactor}x")
+                    CameraSelector.DEFAULT_FRONT_CAMERA -> {
+                        cameraManager.cameraIdList.find { id ->
+                            val characteristics = cameraManager.getCameraCharacteristics(id)
+                            characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+                        } ?: "1"
                     }
+                    else -> "0"
                 }
+
+                val zoomFactor = try {
+                    val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+                    val minZoom = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.lower ?: 1.0f
+                    val maxZoom = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.upper ?: 1.0f
+
+                    Log.i(TAG, "Camera zoom range: ${minZoom}x - ${maxZoom}x")
+
+                    // Clamp the requested zoom to camera capabilities
+                    when {
+                        requestedZoomFactor < minZoom -> {
+                            Log.w(TAG, "Requested zoom ${requestedZoomFactor}x below camera minimum ${minZoom}x, using minimum")
+                            minZoom
+                        }
+                        requestedZoomFactor > maxZoom -> {
+                            Log.w(TAG, "Requested zoom ${requestedZoomFactor}x above camera maximum ${maxZoom}x, using maximum")
+                            maxZoom
+                        }
+                        else -> requestedZoomFactor
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not check camera zoom capabilities: ${e.message}, using requested zoom ${requestedZoomFactor}x")
+                    requestedZoomFactor
+                }
+
+                // Apply zoom for all supported values
+                camera.cameraControl.setZoomRatio(zoomFactor).apply {
+                    addListener({
+                        try {
+                            get() // Wait for completion
+                            Log.i(TAG, "Successfully applied zoom factor: ${zoomFactor}x")
+                            if (zoomFactor != requestedZoomFactor) {
+                                Log.i(TAG, "Camera zoom limited to ${zoomFactor}x (hardware constraint)")
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to apply zoom factor ${zoomFactor}x: ${e.message}")
+                        }
+                    }, ContextCompat.getMainExecutor(this@MainActivity))
+                }
+
+                // Apply brightness settings to camera
+                val brightnessValue = prefs.getString("camera_brightness", "0")?.toIntOrNull() ?: 0
+
+                // Check camera exposure compensation capabilities
+                val brightnessCompensation = try {
+                    val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+                    val exposureCompensationRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+                    val exposureCompensationStep = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
+
+                    if (exposureCompensationRange != null && exposureCompensationStep != null) {
+                        val minCompensation = exposureCompensationRange.lower
+                        val maxCompensation = exposureCompensationRange.upper
+
+                        Log.i(TAG, "Camera exposure compensation range: ${minCompensation} to ${maxCompensation} (step: ${exposureCompensationStep})")
+
+                        // Clamp the requested brightness to camera capabilities
+                        when {
+                            brightnessValue < minCompensation -> {
+                                Log.w(TAG, "Requested brightness ${brightnessValue} below camera minimum ${minCompensation}, using minimum")
+                                minCompensation
+                            }
+                            brightnessValue > maxCompensation -> {
+                                Log.w(TAG, "Requested brightness ${brightnessValue} above camera maximum ${maxCompensation}, using maximum")
+                                maxCompensation
+                            }
+                            else -> brightnessValue
+                        }
+                    } else {
+                        Log.w(TAG, "Camera doesn't support exposure compensation")
+                        0 // Default to no compensation
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not check camera exposure compensation capabilities: ${e.message}, using requested brightness ${brightnessValue}")
+                    brightnessValue
+                }
+
+                // Apply brightness (exposure compensation) for supported values
+                camera.cameraControl.setExposureCompensationIndex(brightnessCompensation).apply {
+                    addListener({
+                        try {
+                            get() // Wait for completion
+                            Log.i(TAG, "Successfully applied brightness compensation: ${brightnessCompensation} EV")
+                            if (brightnessCompensation != brightnessValue) {
+                                Log.i(TAG, "Camera brightness limited to ${brightnessCompensation} EV (hardware constraint)")
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to apply brightness compensation ${brightnessCompensation} EV: ${e.message}")
+                        }
+                    }, ContextCompat.getMainExecutor(this@MainActivity))
+                }
+
+                // Apply contrast settings to camera
+                val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
+
+                // Check camera contrast capabilities (limited support in CameraX)
+                // For now, we'll use a software-based contrast adjustment in the image processing
+                // Note: Hardware contrast control is limited in CameraX
+                // The contrast adjustment will be applied in the image processing pipeline
+                Log.i(TAG, "Contrast setting applied: ${contrastValue} (software-based adjustment)")
             } catch (exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
             }
