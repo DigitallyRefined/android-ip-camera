@@ -368,8 +368,18 @@ class StreamingServerHelper(
                           }
 
                           // SECURITY: Require Basic Authentication header for all requests
-                          val authHeader = headers.find { it.startsWith("Authorization: Basic ") }
-                          if (authHeader == null) {
+                          // Parse headers in a robust, case-insensitive way (RFC 7230: header field names are case-insensitive)
+                          val authHeaderPair = headers.mapNotNull { hdr ->
+                              val idx = hdr.indexOf(":")
+                              if (idx == -1) return@mapNotNull null
+                              val name = hdr.substring(0, idx).trim()
+                              val value = hdr.substring(idx + 1).trim()
+                              name to value
+                          }.find { (name, value) ->
+                              name.equals("Authorization", ignoreCase = true) && value.startsWith("Basic ", ignoreCase = true)
+                          }
+
+                          if (authHeaderPair == null) {
                               // Rate limiting ONLY applies to unauthenticated requests
                               if (isRateLimited(clientIp)) {
                                   writer.print("HTTP/1.1 429 Too Many Requests\r\n")
@@ -377,21 +387,47 @@ class StreamingServerHelper(
                                   writer.print("Connection: close\r\n\r\n")
                                   writer.flush()
                                   socket.close()
-                              onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
-                              Thread.sleep(100)
+                                  onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
+                                  Thread.sleep(100)
+                                  return
+                              }
+                              recordFailedAttempt(clientIp)
+                              writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                              writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
+                              writer.print("Connection: close\r\n\r\n")
+                              writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                              writer.flush()
+                              socket.close()
                               return
                           }
-                          recordFailedAttempt(clientIp)
-                          writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                          writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
-                          writer.print("Connection: close\r\n\r\n")
-                          writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                          writer.flush()
-                          socket.close()
-                          return
+
+                          val authValue = authHeaderPair.second
+                          val providedAuthEncoded = authValue.substringAfter("Basic ", "")
+                          val providedAuth = try {
+                              val decoded = Base64.decode(providedAuthEncoded, Base64.DEFAULT)
+                              String(decoded)
+                          } catch (e: IllegalArgumentException) {
+                              // Malformed base64
+                              if (isRateLimited(clientIp)) {
+                                  writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                                  writer.print("Retry-After: 30\r\n")
+                                  writer.print("Connection: close\r\n\r\n")
+                                  writer.flush()
+                                  socket.close()
+                                  onLog("SECURITY: Rate limited malformed auth attempt from $clientIp")
+                                  Thread.sleep(100)
+                                  return
+                              }
+                              recordFailedAttempt(clientIp)
+                              writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                              writer.print("Connection: close\r\n\r\n")
+                              writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                              writer.flush()
+                              socket.close()
+                              onLog("SECURITY: Failed authentication attempt from $clientIp (malformed base64)")
+                              return
                           }
 
-                          val providedAuth = String(Base64.decode(authHeader.substring(21), Base64.DEFAULT))
                           if (providedAuth != "$username:$password") {
                               // Rate limiting ONLY applies to failed authentication attempts
                               if (isRateLimited(clientIp)) {
@@ -400,18 +436,18 @@ class StreamingServerHelper(
                                   writer.print("Connection: close\r\n\r\n")
                                   writer.flush()
                                   socket.close()
-                              onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
-                              Thread.sleep(100)
+                                  onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
+                                  Thread.sleep(100)
+                                  return
+                              }
+                              recordFailedAttempt(clientIp)
+                              writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                              writer.print("Connection: close\r\n\r\n")
+                              writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                              writer.flush()
+                              socket.close()
+                              onLog("SECURITY: Failed authentication attempt from $clientIp")
                               return
-                          }
-                          recordFailedAttempt(clientIp)
-                          writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                          writer.print("Connection: close\r\n\r\n")
-                          writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                          writer.flush()
-                          socket.close()
-                          onLog("SECURITY: Failed authentication attempt from $clientIp")
-                          return
                           }
 
                           // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
