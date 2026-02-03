@@ -65,13 +65,19 @@ class MainActivity : AppCompatActivity() {
     private var hasRequestedPermissions = false
     private var cameraResolutionHelper: CameraResolutionHelper? = null
     private var lastFrameTime = 0L
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var isCameraRunning = false
+    private var userHiddenPreview = false
+    private lateinit var noClientMessage: TextView
 
     private val cameraRestartReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == "com.github.digitallyrefined.androidipcamera.RESTART_CAMERA") {
                 // Restart camera with new settings
                 if (allPermissionsGranted()) {
-                    startCamera()
+                    if (streamingServerHelper?.getClients()?.isNotEmpty() == true) {
+                        startCamera()
+                    }
                 }
             }
         }
@@ -215,7 +221,21 @@ class MainActivity : AppCompatActivity() {
             if (streamingServerHelper == null) {
                 streamingServerHelper = StreamingServerHelper(
                     this,
-                    onLog = { message -> Log.i(TAG, "StreamingServer: $message") }
+                    onLog = { message -> Log.i(TAG, "StreamingServer: $message") },
+                    onClientConnected = {
+                        runOnUiThread {
+                            showNoClientMessage(false)
+                            startCameraIfNeeded()
+                        }
+                    },
+                    onClientDisconnected = {
+                        if (streamingServerHelper?.getClients()?.isEmpty() == true) {
+                            runOnUiThread {
+                                stopCamera()
+                                showNoClientMessage(true)
+                            }
+                        }
+                    }
                 )
             }
             streamingServerHelper?.startStreamingServer()
@@ -291,7 +311,21 @@ class MainActivity : AppCompatActivity() {
                 // Certificate exists, start server immediately
                 streamingServerHelper = StreamingServerHelper(
                     this,
-                    onLog = { message -> Log.i(TAG, "StreamingServer: $message") }
+                    onLog = { message -> Log.i(TAG, "StreamingServer: $message") },
+                    onClientConnected = {
+                        runOnUiThread {
+                            showNoClientMessage(false)
+                            startCameraIfNeeded()
+                        }
+                    },
+                    onClientDisconnected = {
+                        if (streamingServerHelper?.getClients()?.isEmpty() == true) {
+                            runOnUiThread {
+                                stopCamera()
+                                showNoClientMessage(true)
+                            }
+                        }
+                    }
                 )
                 startStreamingServer()
                 return
@@ -320,7 +354,21 @@ class MainActivity : AppCompatActivity() {
                 if (streamingServerHelper == null) {
                     streamingServerHelper = StreamingServerHelper(
                         this@MainActivity,
-                        onLog = { message -> Log.i(TAG, "StreamingServer: $message") }
+                        onLog = { message -> Log.i(TAG, "StreamingServer: $message") },
+                        onClientConnected = {
+                            runOnUiThread {
+                                showNoClientMessage(false)
+                                startCameraIfNeeded()
+                            }
+                        },
+                        onClientDisconnected = {
+                            if (streamingServerHelper?.getClients()?.isEmpty() == true) {
+                                runOnUiThread {
+                                    stopCamera()
+                                    showNoClientMessage(true)
+                                }
+                            }
+                        }
                     )
                 }
                 startStreamingServer()
@@ -355,6 +403,7 @@ class MainActivity : AppCompatActivity() {
         // Initialize view binding first
         viewBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(viewBinding.root)
+        noClientMessage = findViewById(R.id.noClientMessage)
 
         // Hide the action bar
         supportActionBar?.hide()
@@ -380,13 +429,21 @@ class MainActivity : AppCompatActivity() {
         // Keep screen on
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        // Load last used camera facing
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        lensFacing = if (prefs.getString(PREF_LAST_CAMERA_FACING, CAMERA_FACING_BACK) == CAMERA_FACING_FRONT) {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
+
         // Request permissions before starting camera
         if (!allPermissionsGranted() && !hasRequestedPermissions) {
             hasRequestedPermissions = true
             ActivityCompat.requestPermissions(
                 this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
         } else if (allPermissionsGranted()) {
-            startCamera()
+            // Camera will only start when a client connects
         } else {
             finish()
         }
@@ -405,6 +462,7 @@ class MainActivity : AppCompatActivity() {
         // Get and display the IP address
         val ipAddress = getLocalIpAddress()
         ipAddressText.text = "https://$ipAddress:$STREAM_PORT"
+        showNoClientMessage(true)
 
         // Add toggle preview button
         findViewById<ImageButton>(R.id.hidePreviewButton).setOnClickListener {
@@ -418,9 +476,17 @@ class MainActivity : AppCompatActivity() {
             } else {
                 CameraSelector.DEFAULT_FRONT_CAMERA
             }
+            prefs.edit()
+                .putString(
+                    PREF_LAST_CAMERA_FACING,
+                    if (lensFacing == CameraSelector.DEFAULT_FRONT_CAMERA) CAMERA_FACING_FRONT else CAMERA_FACING_BACK
+                )
+                .apply()
             // Reset resolution helper to detect new camera's resolutions
             cameraResolutionHelper = null
-            startCamera()
+            if (streamingServerHelper?.getClients()?.isNotEmpty() == true) {
+                startCamera()
+            }
         }
 
         // Add settings button
@@ -438,7 +504,7 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
-                startCamera()
+                // Camera will start on first client connection
             } else {
                 // Show which permissions are missing
                 REQUIRED_PERMISSIONS.filter {
@@ -474,21 +540,67 @@ class MainActivity : AppCompatActivity() {
         val switchCameraButton = findViewById<ImageButton>(R.id.switchCameraButton)
         val hidePreviewButton = findViewById<ImageButton>(R.id.hidePreviewButton)
 
-        if (viewFinder.isVisible) {
-            viewFinder.visibility = View.GONE
+        // Use user's explicit preference as the single source of truth for toggling preview
+        if (!userHiddenPreview) {
+            // Hide preview and related UI. Use INVISIBLE so CameraX's SurfaceProvider remains available when the view is hidden
+            viewFinder.visibility = View.INVISIBLE
             ipAddressText.visibility = View.GONE
             settingsButton.visibility = View.GONE
             switchCameraButton.visibility = View.GONE
+            noClientMessage.visibility = View.GONE
             rootView.setBackgroundColor(android.graphics.Color.BLACK)
             hidePreviewButton.setImageResource(android.R.drawable.ic_menu_slideshow) // use open eye as placeholder for closed eye
+            userHiddenPreview = true
         } else {
-            viewFinder.visibility = View.VISIBLE
+            // Show preview and related UI (respect whether clients are connected)
+            val hasClients = streamingServerHelper?.getClients()?.isNotEmpty() == true
+
             ipAddressText.visibility = View.VISIBLE
             settingsButton.visibility = View.VISIBLE
             switchCameraButton.visibility = View.VISIBLE
-            rootView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+
+            // If there are no clients, keep the preview INVISIBLE to avoid showing the last frame
+            viewFinder.visibility = if (hasClients) View.VISIBLE else View.INVISIBLE
+
+            // Show or hide the "no client" message appropriately
+            noClientMessage.visibility = if (hasClients) View.GONE else View.VISIBLE
+
+            // Use black background when there's no client to clearly indicate cleared preview
+            rootView.setBackgroundColor(if (hasClients) android.graphics.Color.TRANSPARENT else android.graphics.Color.BLACK)
+
             hidePreviewButton.setImageResource(android.R.drawable.ic_menu_view) // open eye
+            userHiddenPreview = false
+            if (hasClients) {
+                startCameraIfNeeded()
+            }
         }
+    }
+
+    private fun showNoClientMessage(show: Boolean) {
+        noClientMessage.visibility = if (show && !userHiddenPreview) View.VISIBLE else View.GONE
+        val rootView = viewBinding.root
+        if (show) {
+            viewBinding.viewFinder.visibility = View.INVISIBLE
+            rootView.setBackgroundColor(android.graphics.Color.BLACK)
+        } else {
+            // Don't show the preview if the user explicitly hid it
+            if (!userHiddenPreview) {
+                viewBinding.viewFinder.visibility = View.VISIBLE
+                rootView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            }
+            // If preview was hidden by user, leave it hidden and do not change background
+        }
+    }
+
+    private fun startCameraIfNeeded() {
+        if (!allPermissionsGranted() || isCameraRunning) return
+        startCamera()
+    }
+
+    private fun stopCamera() {
+        cameraProvider?.unbindAll()
+        imageAnalyzer = null
+        isCameraRunning = false
     }
 
 
@@ -497,6 +609,7 @@ class MainActivity : AppCompatActivity() {
 
         cameraProviderFuture.addListener({
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
+            this.cameraProvider = cameraProvider
 
             val preview = Preview.Builder()
                 .build()
@@ -584,6 +697,7 @@ class MainActivity : AppCompatActivity() {
                     preview,
                     imageAnalyzer
                 )
+                isCameraRunning = true
 
                 // Apply zoom settings to camera
                 val prefs = PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
@@ -713,6 +827,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        stopCamera()
         // Stop streaming server when activity is paused (run on background thread to avoid NetworkOnMainThreadException)
         lifecycleScope.launch(Dispatchers.IO) {
             streamingServerHelper?.stopStreamingServer()
@@ -730,6 +845,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
+        stopCamera()
         // Stop streaming server (run on background thread to avoid NetworkOnMainThreadException)
         lifecycleScope.launch(Dispatchers.IO) {
             streamingServerHelper?.stopStreamingServer()
@@ -742,6 +858,9 @@ class MainActivity : AppCompatActivity() {
         private const val STREAM_PORT = 4444
         private const val REQUEST_CODE_PERMISSIONS = 10
         private const val MAX_CLIENTS = 3  // Limit concurrent connections
+        private const val PREF_LAST_CAMERA_FACING = "last_camera_facing"
+        private const val CAMERA_FACING_BACK = "back"
+        private const val CAMERA_FACING_FRONT = "front"
         private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             arrayOf(Manifest.permission.CAMERA)
         } else {
