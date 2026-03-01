@@ -337,271 +337,217 @@ class StreamingServerHelper(
             socket.soTimeout = SOCKET_TIMEOUT_MS
 
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-            
+
             // Read the request line (e.g., GET /stream HTTP/1.1)
             val requestLine = reader.readLine() ?: return
             val requestParts = requestLine.split(" ")
             if (requestParts.size < 2) return
             val uri = requestParts[1]
 
-                          val secureStorage = SecureStorage(context)
-                          val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
-                          val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: ""
+            val secureStorage = SecureStorage(context)
+            val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
+            val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: ""
 
-                          // SECURITY: Authentication is now MANDATORY for all connections
-                          // Validate stored credentials - require both username and password
-                          val username = InputValidator.validateAndSanitizeUsername(rawUsername)
-                          val password = InputValidator.validateAndSanitizePassword(rawPassword)
+            // SECURITY: Authentication is now MANDATORY for all connections
+            // Validate stored credentials - require both username and password
+            val username = InputValidator.validateAndSanitizeUsername(rawUsername)
+            val password = InputValidator.validateAndSanitizePassword(rawPassword)
 
-                          if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
-                              // CRITICAL: No valid credentials configured - reject all connections
-                              recordFailedAttempt(clientIp)
-                              writer.print("HTTP/1.1 403 Forbidden\r\n")
-                              writer.print("Content-Type: text/plain\r\n")
-                              writer.print("Connection: close\r\n\r\n")
-                              writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
-                              writer.print("Configure username and password in app settings.\r\n")
-                              writer.flush()
-                              socket.close()
-                              onLog("SECURITY: Connection rejected - authentication credentials not configured")
-                              return
-                          }
+            if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
+                // CRITICAL: No valid credentials configured - reject all connections
+                recordFailedAttempt(clientIp)
+                writer.print("HTTP/1.1 403 Forbidden\r\n")
+                writer.print("Content-Type: text/plain\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
+                writer.print("Configure username and password in app settings.\r\n")
+                writer.flush()
+                socket.close()
+                onLog("SECURITY: Connection rejected - authentication credentials not configured")
+                return
+            }
 
-                          // Read HTTP headers
-                          val headers = mutableListOf<String>()
-                          var line: String?
-                          while (reader.readLine().also { line = it } != null) {
-                              if (line.isNullOrEmpty()) break
-                              headers.add(line!!)
-                          }
+            // Read HTTP headers
+            val headers = mutableListOf<String>()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                if (line.isNullOrEmpty()) break
+                headers.add(line!!)
+            }
 
-                          // SECURITY: Require Basic Authentication header for all requests
-                          // Parse headers in a robust, case-insensitive way (RFC 7230: header field names are case-insensitive)
-                          val authHeaderPair = headers.mapNotNull { hdr ->
-                              val idx = hdr.indexOf(":")
-                              if (idx == -1) return@mapNotNull null
-                              val name = hdr.substring(0, idx).trim()
-                              val value = hdr.substring(idx + 1).trim()
-                              name to value
-                          }.find { (name, value) ->
-                              name.equals("Authorization", ignoreCase = true) && value.startsWith("Basic ", ignoreCase = true)
-                          }
+            // SECURITY: Require Basic Authentication header for all requests
+            // Parse headers in a robust, case-insensitive way (RFC 7230: header field names are case-insensitive)
+            val authHeaderPair = headers.mapNotNull { hdr ->
+                val idx = hdr.indexOf(":")
+                if (idx == -1) return@mapNotNull null
+                val name = hdr.substring(0, idx).trim()
+                val value = hdr.substring(idx + 1).trim()
+                name to value
+            }.find { (name, value) ->
+                name.equals("Authorization", ignoreCase = true) && value.startsWith("Basic ", ignoreCase = true)
+            }
 
-                          if (authHeaderPair == null) {
-                              // Rate limiting ONLY applies to unauthenticated requests
-                              if (isRateLimited(clientIp)) {
-                                  writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                                  writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
-                                  writer.print("Connection: close\r\n\r\n")
-                                  writer.flush()
-                                  socket.close()
-                                  onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
-                                  Thread.sleep(100)
-                                  return
-                              }
-                              recordFailedAttempt(clientIp)
-                              writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                              writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
-                              writer.print("Connection: close\r\n\r\n")
-                              writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                              writer.flush()
-                              socket.close()
-                              return
-                          }
+            if (authHeaderPair == null) {
+                // Rate limiting ONLY applies to unauthenticated requests
+                if (isRateLimited(clientIp)) {
+                    writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                    writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.flush()
+                    socket.close()
+                    onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
+                    Thread.sleep(100)
+                    return
+                }
+                recordFailedAttempt(clientIp)
+                writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                writer.flush()
+                socket.close()
+                return
+            }
 
-                          val authValue = authHeaderPair.second
-                          val providedAuthEncoded = authValue.substringAfter("Basic ", "")
-                          val providedAuth = try {
-                              val decoded = Base64.decode(providedAuthEncoded, Base64.DEFAULT)
-                              String(decoded)
-                          } catch (e: IllegalArgumentException) {
-                              // Malformed base64
-                              if (isRateLimited(clientIp)) {
-                                  writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                                  writer.print("Retry-After: 30\r\n")
-                                  writer.print("Connection: close\r\n\r\n")
-                                  writer.flush()
-                                  socket.close()
-                                  onLog("SECURITY: Rate limited malformed auth attempt from $clientIp")
-                                  Thread.sleep(100)
-                                  return
-                              }
-                              recordFailedAttempt(clientIp)
-                              writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                              writer.print("Connection: close\r\n\r\n")
-                              writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                              writer.flush()
-                              socket.close()
-                              onLog("SECURITY: Failed authentication attempt from $clientIp (malformed base64)")
-                              return
-                          }
+            val authValue = authHeaderPair.second
+            val providedAuthEncoded = authValue.substringAfter("Basic ", "")
+            val providedAuth = try {
+                val decoded = Base64.decode(providedAuthEncoded, Base64.DEFAULT)
+                String(decoded)
+            } catch (e: IllegalArgumentException) {
+                // Malformed base64
+                if (isRateLimited(clientIp)) {
+                    writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                    writer.print("Retry-After: 30\r\n")
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.flush()
+                    socket.close()
+                    onLog("SECURITY: Rate limited malformed auth attempt from $clientIp")
+                    Thread.sleep(100)
+                    return
+                }
+                recordFailedAttempt(clientIp)
+                writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                writer.flush()
+                socket.close()
+                onLog("SECURITY: Failed authentication attempt from $clientIp (malformed base64)")
+                return
+            }
 
-                          if (providedAuth != "$username:$password") {
-                              // Rate limiting ONLY applies to failed authentication attempts
-                              if (isRateLimited(clientIp)) {
-                                  writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                                  writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for failed auth
-                                  writer.print("Connection: close\r\n\r\n")
-                                  writer.flush()
-                                  socket.close()
-                                  onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
-                                  Thread.sleep(100)
-                                  return
-                              }
-                              recordFailedAttempt(clientIp)
-                              writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                              writer.print("Connection: close\r\n\r\n")
-                              writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                              writer.flush()
-                              socket.close()
-                              onLog("SECURITY: Failed authentication attempt from $clientIp")
-                              return
-                          }
+            if (providedAuth != "$username:$password") {
+                // Rate limiting ONLY applies to failed authentication attempts
+                if (isRateLimited(clientIp)) {
+                    writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                    writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for failed auth
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.flush()
+                    socket.close()
+                    onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
+                    Thread.sleep(100)
+                    return
+                }
+                recordFailedAttempt(clientIp)
+                writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                writer.flush()
+                socket.close()
+                onLog("SECURITY: Failed authentication attempt from $clientIp")
+                return
+            }
 
-                          // Handle Control UI and Commands
-                          if (uri == "/" || uri == "") {
-                              val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-                              val curResolution = prefs.getString("camera_resolution", "low") ?: "low"
-                              val curZoom = prefs.getString("camera_zoom", "1.0") ?: "1.0"
-                              val curScale = prefs.getString("stream_scale", "1.0") ?: "1.0"
-                              val curBrightness = prefs.getString("camera_brightness", "0") ?: "0"
-                              val curContrast = prefs.getString("camera_contrast", "0") ?: "0"
-                              val curDelay = prefs.getString("stream_delay", "33") ?: "33"
+            // Handle Control UI and Commands
+            if (uri == "/" || uri == "") {
+                val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+                val curResolution = prefs.getString("camera_resolution", "low") ?: "low"
+                val curZoom = prefs.getString("camera_zoom", "1.0") ?: "1.0"
+                val curScale = prefs.getString("stream_scale", "1.0") ?: "1.0"
+                val curBrightness = prefs.getString("camera_brightness", "0") ?: "0"
+                val curContrast = prefs.getString("camera_contrast", "0") ?: "0"
+                val curDelay = prefs.getString("stream_delay", "33") ?: "33"
 
-                              writer.print("HTTP/1.1 200 OK\r\n")
-                              writer.print("Content-Type: text/html\r\n")
-                              writer.print("Connection: close\r\n\r\n")
-                              writer.print("<html><head><title>IP Camera Control</title><style>")
-                              writer.print("body { background:#121212; color:#fff; font-family:sans-serif; margin:0; display:flex; flex-direction:column; height:100vh; overflow:hidden; }")
-                              writer.print(".header { padding:10px 20px; background:#1e1e1e; border-bottom:1px solid #333; display:flex; justify-content:space-between; align-items:center; z-index:10; }")
-                              writer.print(".main { display:flex; flex:1; overflow:hidden; }")
-                              writer.print(".stream-container { flex:1; background:#000; display:flex; align-items:center; justify-content:center; overflow:auto; position:relative; }")
-                              writer.print(".controls-panel { width:350px; background:#1e1e1e; padding:20px; border-left:1px solid #333; overflow-y:auto; }")
-                              writer.print("img { transition: all 0.2s ease; }")
-                              writer.print(".fit-screen img { max-height:100%; max-width:100%; object-fit:contain; width:auto; height:auto; }")
-                              writer.print(".original-size img { max-width:none; max-height:none; width:auto; height:auto; }")
-                              writer.print(".btn { background:#333; color:#fff; border:1px solid #555; padding:8px 15px; border-radius:6px; cursor:pointer; font-size:14px; transition:0.2s; }")
-                              writer.print(".btn:hover { background:#444; } .btn.active { background:#007AFF; border-color:#007AFF; }")
-                              writer.print(".btn-rotate { width:100%; margin-top:10px; background:#444; border-color:#666; font-weight:bold; }")
-                              writer.print(".setting-group { background:#252525; padding:15px; border-radius:10px; margin-bottom:15px; }")
-                              writer.print("h3 { margin-top:0; font-size:14px; color:#888; text-transform:uppercase; letter-spacing:1px; margin-bottom:15px; }")
-                              writer.print("label { display:block; margin-bottom:5px; font-size:13px; color:#ccc; }")
-                              writer.print("input[type=range] { width:100%; margin:10px 0; cursor:pointer; }")
-                              writer.print("select, input[type=number] { background:#333; color:#fff; border:1px solid #555; padding:8px; border-radius:4px; width:100%; margin-top:5px; box-sizing:border-box; }")
-                              writer.print(".val-badge { float:right; color:#007AFF; font-weight:bold; }")
-                              writer.print("@media (max-width: 900px) { .main { flex-direction:column; } .controls-panel { width:auto; height:45%; border-left:none; border-top:1px solid #333; } }")
-                              writer.print("</style></head><body class='fit-screen'>")
-                              
-                              writer.print("<div class='header'>")
-                              writer.print("<h2 style='margin:0;font-size:18px;'>Android IP Camera</h2>")
-                              writer.print("<div>")
-                              writer.print("<button id='fitBtn' class='btn active' onclick='setView(\"fit\")'>Fit Screen</button> ")
-                              writer.print("<button id='origBtn' class='btn' onclick='setView(\"original\")'>Original Size</button>")
-                              writer.print("</div>")
-                              writer.print("</div>")
-                              
-                              writer.print("<div class='main'>")
-                              writer.print("<div class='stream-container' id='streamContainer'>")
-                              writer.print("<img src='/stream' id='streamImg'>")
-                              writer.print("</div>")
-                              
-                              writer.print("<div class='controls-panel'>")
-                              
-                              writer.print("<div class='setting-group'>")
-                              writer.print("<h3>Camera Hardware</h3>")
-                              writer.print("<label>Resolution</label><select onchange='fetch(\"/?resolution=\"+this.value)'>")
-                              writer.print("<option value='low' ${if(curResolution=="low") "selected" else ""}>Low (Fastest)</option>")
-                              writer.print("<option value='medium' ${if(curResolution=="medium") "selected" else ""}>Medium</option>")
-                              writer.print("<option value='high' ${if(curResolution=="high") "selected" else ""}>High (Sharpest)</option>")
-                              writer.print("</select><br><br>")
-                              writer.print("<label>Zoom <span class='val-badge' id='zoomVal'>${curZoom}x</span></label><input type='range' min='1' max='8' step='0.1' value='$curZoom' oninput='document.getElementById(\"zoomVal\").innerText=this.value+\"x\";fetch(\"/?zoom=\"+this.value)'>")
-                              writer.print("<label>Brightness <span class='val-badge' id='brightVal'>${curBrightness}</span></label><input type='range' min='-10' max='10' step='1' value='$curBrightness' oninput='document.getElementById(\"brightVal\").innerText=this.value;fetch(\"/?brightness=\"+this.value)'>")
-                              writer.print("<button class='btn btn-rotate' onclick='fetch(\"/?rotate=90\")'>Rotate 90&deg;</button>")
-                              writer.print("</div>")
-                              
-                              writer.print("<div class='setting-group'>")
-                              writer.print("<h3>Image Processing</h3>")
-                              writer.print("<label>Scale <span class='val-badge' id='scaleVal'>${curScale}x</span></label><input type='range' min='0.5' max='2.0' step='0.1' value='$curScale' oninput='document.getElementById(\"scaleVal\").innerText=this.value+\"x\";fetch(\"/?scale=\"+this.value)'>")
-                              writer.print("<label>Contrast <span class='val-badge' id='contVal'>${curContrast}</span></label><input type='range' min='-50' max='50' step='1' value='$curContrast' oninput='document.getElementById(\"contVal\").innerText=this.value;fetch(\"/?contrast=\"+this.value)'>")
-                              writer.print("<label>Frame Delay (ms)</label><input type='number' min='10' max='1000' value='$curDelay' onchange='fetch(\"/?delay=\"+this.value)'>")
-                              writer.print("</div>")
-                              
-                              writer.print("<p style='color:#555;font-size:11px;text-align:center;'>Resolution changes will momentarily restart the camera.</p>")
-                              writer.print("</div>") // controls-panel
-                              writer.print("</div>") // main
-                              
-                              writer.print("<script>")
-                              writer.print("function setView(mode) {")
-                              writer.print("  const b = document.body; const f = document.getElementById('fitBtn'); const o = document.getElementById('origBtn');")
-                              writer.print("  if(mode === 'fit') {")
-                              writer.print("    b.className = 'fit-screen'; f.className = 'btn active'; o.className = 'btn';")
-                              writer.print("  } else {")
-                              writer.print("    b.className = 'original-size'; f.className = 'btn'; o.className = 'btn active';")
-                              writer.print("  }")
-                              writer.print("}")
-                              writer.print("</script>")
-                              
-                              writer.print("</body></html>")
-                              writer.flush()
-                              socket.close()
-                              return
-                          }
+                val htmlTemplate = try {
+                    context.assets.open("index.html").bufferedReader().use { it.readText() }
+                } catch (e: Exception) {
+                    "<html><body>Error loading interface.</body></html>"
+                }
 
-                          if (uri.contains("?")) {
-                              val query = uri.substringAfter("?")
-                              query.split("&").forEach { param ->
-                                  val keyValue = param.split("=")
-                                  if (keyValue.size == 2) {
-                                      onControlCommand(keyValue[0], keyValue[1])
-                                  }
-                              }
-                              writer.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK")
-                              writer.flush()
-                              socket.close()
-                              return
-                          }
+                val htmlResponse = htmlTemplate
+                    .replace("{{RES_LOW_SELECTED}}", if (curResolution == "low") "selected" else "")
+                    .replace("{{RES_MEDIUM_SELECTED}}", if (curResolution == "medium") "selected" else "")
+                    .replace("{{RES_HIGH_SELECTED}}", if (curResolution == "high") "selected" else "")
+                    .replace("{{CUR_ZOOM}}", curZoom)
+                    .replace("{{CUR_BRIGHTNESS}}", curBrightness)
+                    .replace("{{CUR_SCALE}}", curScale)
+                    .replace("{{CUR_CONTRAST}}", curContrast)
+                    .replace("{{CUR_DELAY}}", curDelay)
 
-                          // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
-                          if (handleMaxClients(socket, isAuthenticated = true)) return
+                writer.print("HTTP/1.1 200 OK\r\n")
+                writer.print("Content-Type: text/html\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print(htmlResponse)
+                writer.flush()
+                socket.close()
+                return
+            }
 
-                          // Send HTTP response headers for MJPEG stream
-                          // Use HTTP/1.1 with keep-alive for better streaming performance
-                          writer.print("HTTP/1.1 200 OK\r\n")
-                          writer.print("Connection: keep-alive\r\n")
-                          writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
-                          writer.print("Pragma: no-cache\r\n")
-                          writer.print("Expires: 0\r\n")
-                          writer.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n")
-                          writer.flush()
+            if (uri.contains("?")) {
+                val query = uri.substringAfter("?")
+                query.split("&").forEach { param ->
+                    val keyValue = param.split("=")
+                    if (keyValue.size == 2) {
+                        onControlCommand(keyValue[0], keyValue[1])
+                    }
+                }
+                writer.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK")
+                writer.flush()
+                socket.close()
+                return
+            }
 
-                          // Add client to list - frames will be sent from MainActivity.processImage()
-                          clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = true))
-                          onClientConnected()
+            // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
+            if (handleMaxClients(socket, isAuthenticated = true)) return
 
-                          // Keep connection alive - frames will be sent from MainActivity.processImage()
-                          // Wait for connection to close or be removed
-                          try {
-                              // Read from socket to detect when client disconnects
-                              while (socket.isConnected && !socket.isClosed) {
-                                  // Check if socket has data (client disconnect will cause exception)
-                                  if (reader.ready()) {
-                                      val line = reader.readLine()
-                                      if (line == null) break // Client disconnected
-                                  }
-                                  Thread.sleep(1000) // Check every second
-                              }
-                          } catch (e: IOException) {
-                              // Client disconnected
-                          } finally {
-                              // Remove client when connection closes
-                              clients.removeIf { it.socket == socket }
-                              try {
-                                  socket.close()
-                              } catch (e: Exception) {
-                                  // Ignore
-                              }
-                              onClientDisconnected()
-                          }
+            // Send HTTP response headers for MJPEG stream
+            // Use HTTP/1.1 with keep-alive for better streaming performance
+            writer.print("HTTP/1.1 200 OK\r\n")
+            writer.print("Connection: keep-alive\r\n")
+            writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
+            writer.print("Pragma: no-cache\r\n")
+            writer.print("Expires: 0\r\n")
+            writer.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n")
+            writer.flush()
+
+            // Add client to list - frames will be sent from MainActivity.processImage()
+            clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = true))
+            onClientConnected()
+
+            // Keep connection alive - frames will be sent from MainActivity.processImage()
+            // Wait for connection to close or be removed
+            try {
+                // Read from socket to detect when client disconnects
+                while (socket.isConnected && !socket.isClosed) {
+                    // Check if socket has data (client disconnect will cause exception)
+                    if (reader.ready()) {
+                        val line = reader.readLine()
+                        if (line == null) break // Client disconnected
+                    }
+                    Thread.sleep(1000) // Check every second
+                }
+            } catch (e: IOException) {
+                // Client disconnected
+            } finally {
+                // Remove client when connection closes
+                clients.removeIf { it.socket == socket }
+                try {
+                    socket.close()
+                } catch (e: Exception) {
+                    // Ignore
+                }
+                onClientDisconnected()
+            }
         } catch (e: Exception) {
             onLog("Error handling client connection from $clientIp: ${e.message}")
             try {
