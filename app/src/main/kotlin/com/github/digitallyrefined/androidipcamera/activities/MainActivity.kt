@@ -69,6 +69,7 @@ class MainActivity : AppCompatActivity() {
     private var isCameraRunning = false
     private var userHiddenPreview = false
     private lateinit var noClientMessage: TextView
+    private var camera: androidx.camera.core.Camera? = null
 
     private val cameraRestartReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -79,6 +80,62 @@ class MainActivity : AppCompatActivity() {
                         startCamera()
                     }
                 }
+            }
+        }
+    }
+
+    private fun handleRemoteControl(key: String, value: String) {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        when (key) {
+            "zoom" -> {
+                val zoomFactor = value.toFloatOrNull() ?: return
+                prefs.edit().putString("camera_zoom", zoomFactor.toString()).apply()
+                runOnUiThread {
+                    camera?.cameraControl?.setZoomRatio(zoomFactor)
+                }
+                Log.i(TAG, "Remote Control: Zoom set to $zoomFactor")
+            }
+            "brightness" -> {
+                val brightness = value.toIntOrNull() ?: return
+                prefs.edit().putString("camera_brightness", brightness.toString()).apply()
+                runOnUiThread {
+                    camera?.cameraControl?.setExposureCompensationIndex(brightness)
+                }
+                Log.i(TAG, "Remote Control: Brightness set to $brightness")
+            }
+            "contrast" -> {
+                val contrast = value.toIntOrNull() ?: return
+                prefs.edit().putString("camera_contrast", contrast.toString()).apply()
+                Log.i(TAG, "Remote Control: Contrast set to $contrast (software-based)")
+            }
+            "resolution" -> {
+                if (value in listOf("low", "medium", "high")) {
+                    prefs.edit().putString("camera_resolution", value).apply()
+                    runOnUiThread {
+                        startCamera() // Restart camera to apply new resolution
+                    }
+                    Log.i(TAG, "Remote Control: Resolution set to $value")
+                }
+            }
+            "scale" -> {
+                val scale = value.toFloatOrNull() ?: return
+                if (scale in 0.5f..2.0f) {
+                    prefs.edit().putString("stream_scale", value).apply()
+                    Log.i(TAG, "Remote Control: Stream Scale set to $scale")
+                }
+            }
+            "delay" -> {
+                val delay = value.toLongOrNull() ?: return
+                if (delay in 10L..1000L) {
+                    prefs.edit().putString("stream_delay", value).apply()
+                    Log.i(TAG, "Remote Control: Stream Delay set to $delay ms")
+                }
+            }
+            "rotate" -> {
+                val currentRotation = prefs.getInt("camera_manual_rotate", 0)
+                val nextRotation = (currentRotation + 90) % 360
+                prefs.edit().putInt("camera_manual_rotate", nextRotation).apply()
+                Log.i(TAG, "Remote Control: Manual Rotation set to $nextRotation")
             }
         }
     }
@@ -96,77 +153,83 @@ class MainActivity : AppCompatActivity() {
         }
         lastFrameTime = currentTime
 
+        val autoRotation = image.imageInfo.rotationDegrees
+        val manualRotation = prefs.getInt("camera_manual_rotate", 0)
+        val totalRotation = (autoRotation + manualRotation) % 360
+        
+        val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
+        val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
+
         // Convert YUV_420_888 to NV21
         val nv21 = convertYUV420toNV21(image)
 
         // Convert NV21 to JPEG
         var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height)
 
-        // Apply scaling if needed
-        val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
-        if (scaleFactor != 1.0f) {
+        // Apply transformations if needed (Rotation, Scaling, Contrast)
+        if (totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0) {
             try {
-                val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
                 if (bitmap != null) {
-                    val newWidth = (bitmap.width * scaleFactor).toInt()
-                    val newHeight = (bitmap.height * scaleFactor).toInt()
+                    val matrix = Matrix()
+                    
+                    // Apply Rotation
+                    if (totalRotation != 0) {
+                        matrix.postRotate(totalRotation.toFloat())
+                    }
+                    
+                    // Apply Scaling
+                    if (scaleFactor != 1.0f) {
+                        matrix.postScale(scaleFactor, scaleFactor)
+                    }
 
-                    val scaledBitmap = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
-                    bitmap.recycle()
+                    // Create new bitmap with rotation and scaling applied
+                    val transformedBitmap = Bitmap.createBitmap(
+                        bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+                    )
+                    
+                    if (transformedBitmap != bitmap) {
+                        bitmap.recycle()
+                        bitmap = transformedBitmap
+                    }
 
-                    // Convert back to JPEG bytes
-                    val outputStream = java.io.ByteArrayOutputStream()
-                    scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
-                    jpegBytes = outputStream.toByteArray()
-                    scaledBitmap.recycle()
-                    outputStream.close()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error scaling image: ${e.message}")
-                // Continue with original image if scaling fails
-            }
-        }
+                    // Apply Contrast if needed
+                    if (contrastValue != 0) {
+                        val contrastFactor = 1.0f + (contrastValue / 100.0f)
 
-        // Apply contrast adjustment if needed
-        val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
-        if (contrastValue != 0) {
-            try {
-                val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
-                if (bitmap != null) {
-                    // Convert contrast value (-50 to +50) to contrast factor (0.5 to 1.5)
-                    val contrastFactor = 1.0f + (contrastValue / 100.0f)
-
-                    val contrastColorMatrix = android.graphics.ColorMatrix().apply {
-                        set(floatArrayOf(
+                        val contrastColorMatrix = android.graphics.ColorMatrix().apply {
+                            set(floatArrayOf(
                             contrastFactor, 0f, 0f, 0f, 0f,  // Red
                             0f, contrastFactor, 0f, 0f, 0f,  // Green
                             0f, 0f, contrastFactor, 0f, 0f,  // Blue
                             0f, 0f, 0f, 1f, 0f              // Alpha
-                        ))
+                            ))
+                        }
+                        
+                        val paint = android.graphics.Paint().apply {
+                            colorFilter = android.graphics.ColorMatrixColorFilter(contrastColorMatrix)
+                        }
+
+                        val contrastedBitmap = Bitmap.createBitmap(
+                            bitmap.width, bitmap.height, bitmap.config ?: Bitmap.Config.ARGB_8888
+                        )
+                        val canvas = android.graphics.Canvas(contrastedBitmap)
+                        canvas.drawBitmap(bitmap, 0f, 0f, paint)
+                        
+                        bitmap.recycle()
+                        bitmap = contrastedBitmap
                     }
-
-                    val paint = android.graphics.Paint().apply {
-                        colorFilter = android.graphics.ColorMatrixColorFilter(contrastColorMatrix)
-                    }
-
-                    val contrastedBitmap = android.graphics.Bitmap.createBitmap(
-                        bitmap.width, bitmap.height, bitmap.config ?: Bitmap.Config.ARGB_8888
-                    )
-                    val canvas = android.graphics.Canvas(contrastedBitmap)
-                    canvas.drawBitmap(bitmap, 0f, 0f, paint)
-
-                    bitmap.recycle()
 
                     // Convert back to JPEG bytes
                     val outputStream = java.io.ByteArrayOutputStream()
-                    contrastedBitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
                     jpegBytes = outputStream.toByteArray()
-                    contrastedBitmap.recycle()
+                    bitmap.recycle()
                     outputStream.close()
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error applying contrast: ${e.message}")
-                // Continue with original image if contrast fails
+                Log.e(TAG, "Error transforming image: ${e.message}")
+                // Continue with original image if transforming image fails
             }
         }
 
@@ -235,7 +298,8 @@ class MainActivity : AppCompatActivity() {
                                 showNoClientMessage(true)
                             }
                         }
-                    }
+                    },
+                    onControlCommand = { key: String, value: String -> handleRemoteControl(key, value) }
                 )
             }
             streamingServerHelper?.startStreamingServer()
@@ -325,7 +389,8 @@ class MainActivity : AppCompatActivity() {
                                 showNoClientMessage(true)
                             }
                         }
-                    }
+                    },
+                    onControlCommand = { key: String, value: String -> handleRemoteControl(key, value) }
                 )
                 startStreamingServer()
                 return
@@ -368,7 +433,8 @@ class MainActivity : AppCompatActivity() {
                                     showNoClientMessage(true)
                                 }
                             }
-                        }
+                        },
+                        onControlCommand = { key: String, value: String -> handleRemoteControl(key, value) }
                     )
                 }
                 startStreamingServer()
@@ -601,6 +667,7 @@ class MainActivity : AppCompatActivity() {
         cameraProvider?.unbindAll()
         imageAnalyzer = null
         isCameraRunning = false
+        camera = null
     }
 
 
@@ -697,6 +764,7 @@ class MainActivity : AppCompatActivity() {
                     preview,
                     imageAnalyzer
                 )
+                this.camera = camera
                 isCameraRunning = true
 
                 // Apply zoom settings to camera
