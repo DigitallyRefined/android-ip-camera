@@ -51,15 +51,13 @@
             android:key="username"
             android:title="Username"
             android:defaultValue=""
-            android:singleLine="true"
-            android:dialogTitle="Enter Username" />
+            android:singleLine="true" />
         <EditTextPreference
             android:key="password"
             android:title="Password"
             android:defaultValue=""
             android:inputType="textPassword"
-            android:singleLine="true"
-            android:dialogTitle="Enter Password" />
+            android:singleLine="true" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Certificate Settings">

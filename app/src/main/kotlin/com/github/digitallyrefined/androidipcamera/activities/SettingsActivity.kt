@@ -70,17 +70,33 @@ class SettingsActivity : AppCompatActivity() {
 
             // Configure password (optional - defaults available)
             findPreference<EditTextPreference>("password")?.apply {
+                // Do not show the existing password when editing
+                setOnBindEditTextListener { editText ->
+                    editText.text = null
+                    editText.hint = "Enter new password"
+                }
+
                 setOnPreferenceChangeListener { _, newValue ->
                     val password = newValue.toString()
-                    if (password.isNotEmpty() && !InputValidator.isValidPassword(password)) {
-                        Toast.makeText(requireContext(),
-                            "Password must be 8-128 characters with uppercase, lowercase, and number",
-                            Toast.LENGTH_LONG).show()
+
+                    // Empty input means "no change" – keep existing password
+                    if (password.isEmpty()) {
                         return@setOnPreferenceChangeListener false
                     }
-                    // Store securely (empty string means use default)
+
+                    if (!InputValidator.isValidPassword(password)) {
+                        Toast.makeText(
+                            requireContext(),
+                            "Password must be 8-128 characters with uppercase, lowercase, and number",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+
+                    // Store securely only; do not persist plaintext in SharedPreferences
                     secureStorage.putSecureString(SecureStorage.KEY_PASSWORD, password)
-                    true
+                    // Returning false prevents EditTextPreference from saving the plaintext
+                    false
                 }
             }
 
@@ -100,32 +116,43 @@ class SettingsActivity : AppCompatActivity() {
 
             // Add validation for certificate password
             findPreference<EditTextPreference>("certificate_password")?.apply {
-                // Load current value from secure storage
-                text = secureStorage.getSecureString(SecureStorage.KEY_CERT_PASSWORD, "")
+                // Do not pre-fill the existing certificate password when editing
+                setOnBindEditTextListener { editText ->
+                    editText.text = null
+                    editText.hint = "Enter certificate password"
+                }
 
                 setOnPreferenceChangeListener { _, newValue ->
                     val password = newValue.toString()
                     if (!InputValidator.isValidCertificatePassword(password)) {
-                        Toast.makeText(requireContext(),
+                        Toast.makeText(
+                            requireContext(),
                             "Certificate password too long (max 256 characters)",
-                            Toast.LENGTH_LONG).show()
+                            Toast.LENGTH_LONG
+                        ).show()
                         return@setOnPreferenceChangeListener false
                     }
 
                     // Basic validation - check if password is not empty for certificate usage
                     if (password.isEmpty()) {
-                        Toast.makeText(requireContext(),
+                        Toast.makeText(
+                            requireContext(),
                             "Certificate password is required",
-                            Toast.LENGTH_LONG).show()
+                            Toast.LENGTH_LONG
+                        ).show()
                         return@setOnPreferenceChangeListener false
                     }
 
-                    // Store securely
+                    // Store securely only; do not persist plaintext in SharedPreferences
                     secureStorage.putSecureString(SecureStorage.KEY_CERT_PASSWORD, password)
-                    Toast.makeText(requireContext(),
+                    Toast.makeText(
+                        requireContext(),
                         "Certificate password saved. Use 'Test Certificate Setup' to validate.",
-                        Toast.LENGTH_SHORT).show()
-                    true
+                        Toast.LENGTH_SHORT
+                    ).show()
+
+                    // Returning false prevents EditTextPreference from saving the plaintext
+                    false
                 }
             }
 
