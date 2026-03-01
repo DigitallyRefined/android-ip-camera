@@ -38,7 +38,8 @@ class StreamingServerHelper(
     private val maxAuthenticatedClients: Int = 10, // Higher limit for authenticated users
     private val onLog: (String) -> Unit = {},
     private val onClientConnected: () -> Unit = {},
-    private val onClientDisconnected: () -> Unit = {}
+    private val onClientDisconnected: () -> Unit = {},
+    private val onControlCommand: (String, String) -> Unit = { _, _ -> }
 ) {
     data class Client(
         val socket: Socket,
@@ -336,161 +337,217 @@ class StreamingServerHelper(
             socket.soTimeout = SOCKET_TIMEOUT_MS
 
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-                          val secureStorage = SecureStorage(context)
-                          val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
-                          val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: ""
 
-                          // SECURITY: Authentication is now MANDATORY for all connections
-                          // Validate stored credentials - require both username and password
-                          val username = InputValidator.validateAndSanitizeUsername(rawUsername)
-                          val password = InputValidator.validateAndSanitizePassword(rawPassword)
+            // Read the request line (e.g., GET /stream HTTP/1.1)
+            val requestLine = reader.readLine() ?: return
+            val requestParts = requestLine.split(" ")
+            if (requestParts.size < 2) return
+            val uri = requestParts[1]
 
-                          if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
-                              // CRITICAL: No valid credentials configured - reject all connections
-                              recordFailedAttempt(clientIp)
-                              writer.print("HTTP/1.1 403 Forbidden\r\n")
-                              writer.print("Content-Type: text/plain\r\n")
-                              writer.print("Connection: close\r\n\r\n")
-                              writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
-                              writer.print("Configure username and password in app settings.\r\n")
-                              writer.flush()
-                              socket.close()
-                              onLog("SECURITY: Connection rejected - authentication credentials not configured")
-                              return
-                          }
+            val secureStorage = SecureStorage(context)
+            val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
+            val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: ""
 
-                          // Read HTTP headers
-                          val headers = mutableListOf<String>()
-                          var line: String?
-                          while (reader.readLine().also { line = it } != null) {
-                              if (line.isNullOrEmpty()) break
-                              headers.add(line!!)
-                          }
+            // SECURITY: Authentication is now MANDATORY for all connections
+            // Validate stored credentials - require both username and password
+            val username = InputValidator.validateAndSanitizeUsername(rawUsername)
+            val password = InputValidator.validateAndSanitizePassword(rawPassword)
 
-                          // SECURITY: Require Basic Authentication header for all requests
-                          // Parse headers in a robust, case-insensitive way (RFC 7230: header field names are case-insensitive)
-                          val authHeaderPair = headers.mapNotNull { hdr ->
-                              val idx = hdr.indexOf(":")
-                              if (idx == -1) return@mapNotNull null
-                              val name = hdr.substring(0, idx).trim()
-                              val value = hdr.substring(idx + 1).trim()
-                              name to value
-                          }.find { (name, value) ->
-                              name.equals("Authorization", ignoreCase = true) && value.startsWith("Basic ", ignoreCase = true)
-                          }
+            if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
+                // CRITICAL: No valid credentials configured - reject all connections
+                recordFailedAttempt(clientIp)
+                writer.print("HTTP/1.1 403 Forbidden\r\n")
+                writer.print("Content-Type: text/plain\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
+                writer.print("Configure username and password in app settings.\r\n")
+                writer.flush()
+                socket.close()
+                onLog("SECURITY: Connection rejected - authentication credentials not configured")
+                return
+            }
 
-                          if (authHeaderPair == null) {
-                              // Rate limiting ONLY applies to unauthenticated requests
-                              if (isRateLimited(clientIp)) {
-                                  writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                                  writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
-                                  writer.print("Connection: close\r\n\r\n")
-                                  writer.flush()
-                                  socket.close()
-                                  onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
-                                  Thread.sleep(100)
-                                  return
-                              }
-                              recordFailedAttempt(clientIp)
-                              writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                              writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
-                              writer.print("Connection: close\r\n\r\n")
-                              writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                              writer.flush()
-                              socket.close()
-                              return
-                          }
+            // Read HTTP headers
+            val headers = mutableListOf<String>()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                if (line.isNullOrEmpty()) break
+                headers.add(line!!)
+            }
 
-                          val authValue = authHeaderPair.second
-                          val providedAuthEncoded = authValue.substringAfter("Basic ", "")
-                          val providedAuth = try {
-                              val decoded = Base64.decode(providedAuthEncoded, Base64.DEFAULT)
-                              String(decoded)
-                          } catch (e: IllegalArgumentException) {
-                              // Malformed base64
-                              if (isRateLimited(clientIp)) {
-                                  writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                                  writer.print("Retry-After: 30\r\n")
-                                  writer.print("Connection: close\r\n\r\n")
-                                  writer.flush()
-                                  socket.close()
-                                  onLog("SECURITY: Rate limited malformed auth attempt from $clientIp")
-                                  Thread.sleep(100)
-                                  return
-                              }
-                              recordFailedAttempt(clientIp)
-                              writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                              writer.print("Connection: close\r\n\r\n")
-                              writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                              writer.flush()
-                              socket.close()
-                              onLog("SECURITY: Failed authentication attempt from $clientIp (malformed base64)")
-                              return
-                          }
+            // SECURITY: Require Basic Authentication header for all requests
+            // Parse headers in a robust, case-insensitive way (RFC 7230: header field names are case-insensitive)
+            val authHeaderPair = headers.mapNotNull { hdr ->
+                val idx = hdr.indexOf(":")
+                if (idx == -1) return@mapNotNull null
+                val name = hdr.substring(0, idx).trim()
+                val value = hdr.substring(idx + 1).trim()
+                name to value
+            }.find { (name, value) ->
+                name.equals("Authorization", ignoreCase = true) && value.startsWith("Basic ", ignoreCase = true)
+            }
 
-                          if (providedAuth != "$username:$password") {
-                              // Rate limiting ONLY applies to failed authentication attempts
-                              if (isRateLimited(clientIp)) {
-                                  writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                                  writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for failed auth
-                                  writer.print("Connection: close\r\n\r\n")
-                                  writer.flush()
-                                  socket.close()
-                                  onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
-                                  Thread.sleep(100)
-                                  return
-                              }
-                              recordFailedAttempt(clientIp)
-                              writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                              writer.print("Connection: close\r\n\r\n")
-                              writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                              writer.flush()
-                              socket.close()
-                              onLog("SECURITY: Failed authentication attempt from $clientIp")
-                              return
-                          }
+            if (authHeaderPair == null) {
+                // Rate limiting ONLY applies to unauthenticated requests
+                if (isRateLimited(clientIp)) {
+                    writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                    writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.flush()
+                    socket.close()
+                    onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
+                    Thread.sleep(100)
+                    return
+                }
+                recordFailedAttempt(clientIp)
+                writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                writer.flush()
+                socket.close()
+                return
+            }
 
-                          // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
-                          if (handleMaxClients(socket, isAuthenticated = true)) return
+            val authValue = authHeaderPair.second
+            val providedAuthEncoded = authValue.substringAfter("Basic ", "")
+            val providedAuth = try {
+                val decoded = Base64.decode(providedAuthEncoded, Base64.DEFAULT)
+                String(decoded)
+            } catch (e: IllegalArgumentException) {
+                // Malformed base64
+                if (isRateLimited(clientIp)) {
+                    writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                    writer.print("Retry-After: 30\r\n")
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.flush()
+                    socket.close()
+                    onLog("SECURITY: Rate limited malformed auth attempt from $clientIp")
+                    Thread.sleep(100)
+                    return
+                }
+                recordFailedAttempt(clientIp)
+                writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                writer.flush()
+                socket.close()
+                onLog("SECURITY: Failed authentication attempt from $clientIp (malformed base64)")
+                return
+            }
 
-                          // Send HTTP response headers for MJPEG stream
-                          // Use HTTP/1.1 with keep-alive for better streaming performance
-                          writer.print("HTTP/1.1 200 OK\r\n")
-                          writer.print("Connection: keep-alive\r\n")
-                          writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
-                          writer.print("Pragma: no-cache\r\n")
-                          writer.print("Expires: 0\r\n")
-                          writer.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n")
-                          writer.flush()
+            if (providedAuth != "$username:$password") {
+                // Rate limiting ONLY applies to failed authentication attempts
+                if (isRateLimited(clientIp)) {
+                    writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                    writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for failed auth
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.flush()
+                    socket.close()
+                    onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
+                    Thread.sleep(100)
+                    return
+                }
+                recordFailedAttempt(clientIp)
+                writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print("Unauthorized. Check username and password in the app settings.\r\n")
+                writer.flush()
+                socket.close()
+                onLog("SECURITY: Failed authentication attempt from $clientIp")
+                return
+            }
 
-                          // Add client to list - frames will be sent from MainActivity.processImage()
-                          clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = true))
-                          onClientConnected()
+            // Handle Control UI and Commands
+            if (uri == "/" || uri == "") {
+                val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+                val curResolution = prefs.getString("camera_resolution", "low") ?: "low"
+                val curZoom = prefs.getString("camera_zoom", "1.0") ?: "1.0"
+                val curScale = prefs.getString("stream_scale", "1.0") ?: "1.0"
+                val curBrightness = prefs.getString("camera_brightness", "0") ?: "0"
+                val curContrast = prefs.getString("camera_contrast", "0") ?: "0"
+                val curDelay = prefs.getString("stream_delay", "33") ?: "33"
 
-                          // Keep connection alive - frames will be sent from MainActivity.processImage()
-                          // Wait for connection to close or be removed
-                          try {
-                              // Read from socket to detect when client disconnects
-                              while (socket.isConnected && !socket.isClosed) {
-                                  // Check if socket has data (client disconnect will cause exception)
-                                  if (reader.ready()) {
-                                      val line = reader.readLine()
-                                      if (line == null) break // Client disconnected
-                                  }
-                                  Thread.sleep(1000) // Check every second
-                              }
-                          } catch (e: IOException) {
-                              // Client disconnected
-                          } finally {
-                              // Remove client when connection closes
-                              clients.removeIf { it.socket == socket }
-                              try {
-                                  socket.close()
-                              } catch (e: Exception) {
-                                  // Ignore
-                              }
-                              onClientDisconnected()
-                          }
+                val htmlTemplate = try {
+                    context.assets.open("index.html").bufferedReader().use { it.readText() }
+                } catch (e: Exception) {
+                    "<html><body>Error loading interface.</body></html>"
+                }
+
+                val htmlResponse = htmlTemplate
+                    .replace("{{RES_LOW_SELECTED}}", if (curResolution == "low") "selected" else "")
+                    .replace("{{RES_MEDIUM_SELECTED}}", if (curResolution == "medium") "selected" else "")
+                    .replace("{{RES_HIGH_SELECTED}}", if (curResolution == "high") "selected" else "")
+                    .replace("{{CUR_ZOOM}}", curZoom)
+                    .replace("{{CUR_BRIGHTNESS}}", curBrightness)
+                    .replace("{{CUR_SCALE}}", curScale)
+                    .replace("{{CUR_CONTRAST}}", curContrast)
+                    .replace("{{CUR_DELAY}}", curDelay)
+
+                writer.print("HTTP/1.1 200 OK\r\n")
+                writer.print("Content-Type: text/html\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print(htmlResponse)
+                writer.flush()
+                socket.close()
+                return
+            }
+
+            if (uri.contains("?")) {
+                val query = uri.substringAfter("?")
+                query.split("&").forEach { param ->
+                    val keyValue = param.split("=")
+                    if (keyValue.size == 2) {
+                        onControlCommand(keyValue[0], keyValue[1])
+                    }
+                }
+                writer.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK")
+                writer.flush()
+                socket.close()
+                return
+            }
+
+            // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
+            if (handleMaxClients(socket, isAuthenticated = true)) return
+
+            // Send HTTP response headers for MJPEG stream
+            // Use HTTP/1.1 with keep-alive for better streaming performance
+            writer.print("HTTP/1.1 200 OK\r\n")
+            writer.print("Connection: keep-alive\r\n")
+            writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
+            writer.print("Pragma: no-cache\r\n")
+            writer.print("Expires: 0\r\n")
+            writer.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n")
+            writer.flush()
+
+            // Add client to list - frames will be sent from MainActivity.processImage()
+            clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = true))
+            onClientConnected()
+
+            // Keep connection alive - frames will be sent from MainActivity.processImage()
+            // Wait for connection to close or be removed
+            try {
+                // Read from socket to detect when client disconnects
+                while (socket.isConnected && !socket.isClosed) {
+                    // Check if socket has data (client disconnect will cause exception)
+                    if (reader.ready()) {
+                        val line = reader.readLine()
+                        if (line == null) break // Client disconnected
+                    }
+                    Thread.sleep(1000) // Check every second
+                }
+            } catch (e: IOException) {
+                // Client disconnected
+            } finally {
+                // Remove client when connection closes
+                clients.removeIf { it.socket == socket }
+                try {
+                    socket.close()
+                } catch (e: Exception) {
+                    // Ignore
+                }
+                onClientDisconnected()
+            }
         } catch (e: Exception) {
             onLog("Error handling client connection from $clientIp: ${e.message}")
             try {
