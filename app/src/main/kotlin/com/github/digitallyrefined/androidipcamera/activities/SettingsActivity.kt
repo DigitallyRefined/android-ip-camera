@@ -106,7 +106,7 @@ class SettingsActivity : AppCompatActivity() {
                     val delay = newValue.toString()
                     if (!InputValidator.isValidStreamDelay(delay)) {
                         Toast.makeText(requireContext(),
-                            "Stream delay must be between 10-1000 milliseconds",
+                            "Frame delay must be between 10-1000 milliseconds",
                             Toast.LENGTH_LONG).show()
                         return@setOnPreferenceChangeListener false
                     }

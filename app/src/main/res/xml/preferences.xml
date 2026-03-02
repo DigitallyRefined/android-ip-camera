@@ -41,7 +41,7 @@
             android:entryValues="@array/camera_contrast_values" />
         <EditTextPreference
             android:key="stream_delay"
-            android:title="Stream Delay (33ms = 30fps)"
+            android:title="Frame Delay (33ms = 30fps)"
             android:defaultValue="33"
             android:inputType="number" />
     </PreferenceCategory>

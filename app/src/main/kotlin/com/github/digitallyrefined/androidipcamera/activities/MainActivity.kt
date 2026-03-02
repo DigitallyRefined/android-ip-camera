@@ -137,6 +137,26 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit().putInt("camera_manual_rotate", nextRotation).apply()
                 Log.i(TAG, "Remote Control: Manual Rotation set to $nextRotation")
             }
+            "camera" -> {
+                lensFacing = if (value == "front") {
+                    CameraSelector.DEFAULT_FRONT_CAMERA
+                } else {
+                    CameraSelector.DEFAULT_BACK_CAMERA
+                }
+                prefs.edit()
+                    .putString(
+                        PREF_LAST_CAMERA_FACING,
+                        if (lensFacing == CameraSelector.DEFAULT_FRONT_CAMERA) CAMERA_FACING_FRONT else CAMERA_FACING_BACK
+                    )
+                    .apply()
+                cameraResolutionHelper = null
+                if (streamingServerHelper?.getClients()?.isNotEmpty() == true) {
+                    runOnUiThread {
+                        startCamera()
+                    }
+                }
+                Log.i(TAG, "Remote Control: Camera switched to $value")
+            }
         }
     }
 
@@ -156,7 +176,7 @@ class MainActivity : AppCompatActivity() {
         val autoRotation = image.imageInfo.rotationDegrees
         val manualRotation = prefs.getInt("camera_manual_rotate", 0)
         val totalRotation = (autoRotation + manualRotation) % 360
-        
+
         val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
         val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
 
@@ -172,12 +192,12 @@ class MainActivity : AppCompatActivity() {
                 var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
                 if (bitmap != null) {
                     val matrix = Matrix()
-                    
+
                     // Apply Rotation
                     if (totalRotation != 0) {
                         matrix.postRotate(totalRotation.toFloat())
                     }
-                    
+
                     // Apply Scaling
                     if (scaleFactor != 1.0f) {
                         matrix.postScale(scaleFactor, scaleFactor)
@@ -187,7 +207,7 @@ class MainActivity : AppCompatActivity() {
                     val transformedBitmap = Bitmap.createBitmap(
                         bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
                     )
-                    
+
                     if (transformedBitmap != bitmap) {
                         bitmap.recycle()
                         bitmap = transformedBitmap
@@ -205,7 +225,7 @@ class MainActivity : AppCompatActivity() {
                             0f, 0f, 0f, 1f, 0f              // Alpha
                             ))
                         }
-                        
+
                         val paint = android.graphics.Paint().apply {
                             colorFilter = android.graphics.ColorMatrixColorFilter(contrastColorMatrix)
                         }
@@ -215,7 +235,7 @@ class MainActivity : AppCompatActivity() {
                         )
                         val canvas = android.graphics.Canvas(contrastedBitmap)
                         canvas.drawBitmap(bitmap, 0f, 0f, paint)
-                        
+
                         bitmap.recycle()
                         bitmap = contrastedBitmap
                     }

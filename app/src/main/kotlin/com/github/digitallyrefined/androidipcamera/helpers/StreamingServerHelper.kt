@@ -461,6 +461,7 @@ class StreamingServerHelper(
             // Handle Control UI and Commands
             if (uri == "/" || uri == "") {
                 val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+                val curCamera = prefs.getString("last_camera_facing", "back") ?: "back"
                 val curResolution = prefs.getString("camera_resolution", "low") ?: "low"
                 val curZoom = prefs.getString("camera_zoom", "1.0") ?: "1.0"
                 val curScale = prefs.getString("stream_scale", "1.0") ?: "1.0"
@@ -475,6 +476,7 @@ class StreamingServerHelper(
                 }
 
                 val htmlResponse = htmlTemplate
+                    .replace("{{CUR_CAMERA}}", curCamera)
                     .replace("{{RES_LOW_SELECTED}}", if (curResolution == "low") "selected" else "")
                     .replace("{{RES_MEDIUM_SELECTED}}", if (curResolution == "medium") "selected" else "")
                     .replace("{{RES_HIGH_SELECTED}}", if (curResolution == "high") "selected" else "")
