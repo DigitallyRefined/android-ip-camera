@@ -49,34 +49,6 @@
         overflow-y: auto;
       }
 
-      img {
-        transition: all 0.2s ease;
-      }
-
-      .fit-screen img {
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-      }
-      .fit-screen canvas {
-        width: 100%;
-        height: 100%;
-        image-rendering: auto;
-        object-fit: contain;
-        display: block;
-      }
-
-      .original-size img {
-        width: auto;
-        height: auto;
-      }
-      .original-size canvas {
-        width: auto;
-        height: auto;
-        image-rendering: auto;
-        display: block;
-      }
-
       .btn {
         background: #333;
         color: #fff;
@@ -172,7 +144,7 @@
       }
     </style>
   </head>
-  <body class='fit-screen'>
+  <body>
     <div class='header'>
       <h2 style='margin:0;font-size:18px;'>Android IP Camera</h2>
       <div>
@@ -184,7 +156,6 @@
     <div class='main'>
       <div class='stream-container' id='streamContainer'>
         <canvas id='streamCanvas'></canvas>
-        <img id='streamImg' alt='stream'>
         <audio id="audioEl" preload="none" muted></audio>
       </div>
 
@@ -239,8 +210,7 @@
       const audioEl = document.getElementById('audioEl');
       const muteBtn = document.getElementById('muteBtn');
       const avDelayContainer = document.getElementById('avDelayContainer');
-      const streamImg = document.getElementById('streamImg');
-      const streamCanvas = document.getElementById('streamCanvas');
+      const streamContainer = document.getElementById('streamContainer');
       const avDelay = document.getElementById('avDelay');
       const avDelayVal = document.getElementById('avDelayVal');
       const STREAM_SRC = '/stream';
@@ -250,6 +220,31 @@
       let frameQueue = [];
       let lastDrawn = null;
       let drawing = false;
+      let viewMode = 'fit';
+
+      function targetCanvasSize(frame) {
+        if (viewMode === 'fit') {
+          const w = (streamContainer && streamContainer.clientWidth)
+            ? streamContainer.clientWidth
+            : (frame ? frame.width : (lastDrawn ? lastDrawn.width : streamCanvas.width));
+          const h = (streamContainer && streamContainer.clientHeight)
+            ? streamContainer.clientHeight
+            : (frame ? frame.height : (lastDrawn ? lastDrawn.height : streamCanvas.height));
+          return { w, h };
+        } else {
+          const w = frame ? frame.width : (lastDrawn ? lastDrawn.width : streamCanvas.width);
+          const h = frame ? frame.height : (lastDrawn ? lastDrawn.height : streamCanvas.height);
+          return { w, h };
+        }
+      }
+
+      function applyCanvasSize(size) {
+        if (!size) return;
+        if (streamCanvas.width !== size.w || streamCanvas.height !== size.h) {
+          streamCanvas.width = size.w;
+          streamCanvas.height = size.h;
+        }
+      }
 
       function updateMuteButton() {
         muteBtn.textContent = audioEl.muted
@@ -264,10 +259,6 @@
       muteBtn.addEventListener('click', () => {
         const willUnmute = audioEl.muted;
         if (willUnmute) {
-          const delayMs = Math.max(0, (parseFloat(
-            avDelay
-            ? avDelay.value
-            : '2.0') || 0) * 1000);
           if (!audioEl.src) {
             audioEl.src = '/audio';
             audioEl.load();
@@ -276,11 +267,6 @@
           audioEl
             .play()
             .catch(() => {});
-          if (streamImg) {
-            streamImg.style.display = 'none';
-            streamCanvas.style.display = 'block';
-            setTimeout(() => {}, delayMs);
-          }
         } else {
           audioEl.muted = true;
           audioEl.pause();
@@ -313,8 +299,6 @@
         mjpegRunning = true;
         frameQueue = [];
         lastDrawn = null;
-        streamImg.style.display = 'none';
-        streamCanvas.style.display = 'block';
         const ctx = streamCanvas.getContext('2d');
         fetch(STREAM_SRC, {
           cache: 'no-store',
@@ -396,12 +380,10 @@
                 }
               }
               if (candidate && candidate.bmp) {
-                const w = streamCanvas.clientWidth || candidate.bmp.width;
-                const h = streamCanvas.clientHeight || candidate.bmp.height;
-                if (streamCanvas.width !== w || streamCanvas.height !== h) {
-                  streamCanvas.width = w;
-                  streamCanvas.height = h;
-                }
+                const size = targetCanvasSize(candidate.bmp);
+                const w = size.w;
+                const h = size.h;
+                applyCanvasSize(size);
                 const iw = candidate.bmp.width;
                 const ih = candidate.bmp.height;
                 const scale = Math.min(w / iw, h / ih);
@@ -471,19 +453,19 @@
       updateCameraToggleBtn();
 
       function setView(mode) {
-        const b = document.body;
         const f = document.getElementById('fitBtn');
         const o = document.getElementById('origBtn');
 
         if (mode === 'fit') {
-          b.className = 'fit-screen';
           f.className = 'btn active';
           o.className = 'btn';
+          viewMode = 'fit';
         } else {
-          b.className = 'original-size';
           f.className = 'btn';
           o.className = 'btn active';
+          viewMode = 'original';
         }
+        applyCanvasSize(targetCanvasSize(lastDrawn));
       }
     </script>
   </body>
