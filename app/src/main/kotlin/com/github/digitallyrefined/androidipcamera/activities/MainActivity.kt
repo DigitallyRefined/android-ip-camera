@@ -597,7 +597,7 @@ class MainActivity : AppCompatActivity() {
                     ContextCompat.checkSelfPermission(baseContext, it) != PackageManager.PERMISSION_GRANTED
                 }
                 Toast.makeText(this,
-                    "Please allow camera permissions",
+                    "Please allow camera and microphone permissions",
                     Toast.LENGTH_LONG).show()
             }
         }
@@ -915,6 +915,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        streamingServerHelper?.setAppInForeground(false)
         stopCamera()
         // Stop streaming server when activity is paused (run on background thread to avoid NetworkOnMainThreadException)
         lifecycleScope.launch(Dispatchers.IO) {
@@ -924,6 +925,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        streamingServerHelper?.setAppInForeground(true)
         // Restart streaming server when activity resumes (e.g., returning from Settings)
         if (allPermissionsGranted()) {
             startStreamingServer()
@@ -950,13 +952,16 @@ class MainActivity : AppCompatActivity() {
         private const val CAMERA_FACING_BACK = "back"
         private const val CAMERA_FACING_FRONT = "front"
         private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(Manifest.permission.CAMERA)
+            arrayOf(
+                Manifest.permission.CAMERA,
+                Manifest.permission.RECORD_AUDIO
+            )
         } else {
             arrayOf(
                 Manifest.permission.CAMERA,
+                Manifest.permission.RECORD_AUDIO,
                 Manifest.permission.READ_EXTERNAL_STORAGE
             )
         }
     }
 }
-

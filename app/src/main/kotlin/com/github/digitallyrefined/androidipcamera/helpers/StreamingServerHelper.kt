@@ -1,6 +1,9 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -24,6 +27,8 @@ import java.io.PrintWriter
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -61,6 +66,8 @@ class StreamingServerHelper(
     private var isStarting = false
     private val clients = CopyOnWriteArrayList<Client>()
     private val failedAttempts = ConcurrentHashMap<String, FailedAttempt>()
+    @Volatile
+    private var appInForeground: Boolean = true
 
     // SECURITY: Rate limiting constants (only for unauthenticated connections)
     private val MAX_FAILED_ATTEMPTS = 5  // 5 failed attempts allowed
@@ -509,46 +516,139 @@ class StreamingServerHelper(
                 return
             }
 
-            // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
-            if (handleMaxClients(socket, isAuthenticated = true)) return
+            if (uri.startsWith("/audio")) {
+                try {
+                    writer.print("HTTP/1.1 200 OK\r\n")
+                    writer.print("Connection: keep-alive\r\n")
+                    writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
+                    writer.print("Pragma: no-cache\r\n")
+                    writer.print("Expires: 0\r\n")
+                    writer.print("Content-Type: audio/wav\r\n")
+                    writer.print("Transfer-Encoding: chunked\r\n\r\n")
+                    writer.flush()
 
-            // Send HTTP response headers for MJPEG stream
-            // Use HTTP/1.1 with keep-alive for better streaming performance
-            writer.print("HTTP/1.1 200 OK\r\n")
-            writer.print("Connection: keep-alive\r\n")
-            writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
-            writer.print("Pragma: no-cache\r\n")
-            writer.print("Expires: 0\r\n")
-            writer.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n")
-            writer.flush()
-
-            // Add client to list - frames will be sent from MainActivity.processImage()
-            clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = true))
-            onClientConnected()
-
-            // Keep connection alive - frames will be sent from MainActivity.processImage()
-            // Wait for connection to close or be removed
-            try {
-                // Read from socket to detect when client disconnects
-                while (socket.isConnected && !socket.isClosed) {
-                    // Check if socket has data (client disconnect will cause exception)
-                    if (reader.ready()) {
-                        val line = reader.readLine()
-                        if (line == null) break // Client disconnected
+                    val sampleRate = 44100
+                    val channelConfig = AudioFormat.CHANNEL_IN_MONO
+                    val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+                    val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+                    if (minBuffer <= 0) {
+                        throw IOException("Invalid AudioRecord buffer size: $minBuffer")
                     }
-                    Thread.sleep(1000) // Check every second
+                    val bufferSize = minBuffer * 2
+                    val audioRecord = AudioRecord(
+                        MediaRecorder.AudioSource.MIC,
+                        sampleRate,
+                        channelConfig,
+                        audioFormat,
+                        bufferSize
+                    )
+
+                    val wavHeader = createWavHeader(
+                        sampleRate = sampleRate,
+                        bitsPerSample = 16,
+                        channels = 1
+                    )
+                    writeChunk(outputStream, wavHeader, wavHeader.size)
+
+                    audioRecord.startRecording()
+                    val pcmBuffer = ByteArray(bufferSize)
+                    try {
+                        while (socket.isConnected && !socket.isClosed && appInForeground) {
+                            val read = audioRecord.read(pcmBuffer, 0, pcmBuffer.size)
+                            if (read <= 0) continue
+                            writeChunk(outputStream, pcmBuffer, read)
+                        }
+                    } finally {
+                        try {
+                            audioRecord.stop()
+                        } catch (_: Exception) {
+                        }
+                        audioRecord.release()
+                        try {
+                            outputStream.write("0\r\n\r\n".toByteArray())
+                            outputStream.flush()
+                        } catch (_: Exception) {
+                        }
+                        try {
+                            socket.close()
+                        } catch (_: Exception) {
+                        }
+                    }
+                } catch (sec: SecurityException) {
+                    writer.print("HTTP/1.1 403 Forbidden\r\n")
+                    writer.print("Content-Type: text/plain\r\n")
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.print("Microphone permission not granted.\r\n")
+                    writer.flush()
+                    try { socket.close() } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    onLog("Audio stream error: ${e.message}")
+                    try {
+                        writer.print("HTTP/1.1 500 Internal Server Error\r\n")
+                        writer.print("Content-Type: text/plain\r\n")
+                        writer.print("Connection: close\r\n\r\n")
+                        writer.print("Audio streaming failed.\r\n")
+                        writer.flush()
+                    } catch (_: Exception) {
+                    } finally {
+                        try { socket.close() } catch (_: Exception) {}
+                    }
                 }
-            } catch (e: IOException) {
-                // Client disconnected
-            } finally {
-                // Remove client when connection closes
-                clients.removeIf { it.socket == socket }
+                return
+            }
+
+            if (uri.startsWith("/stream")) {
+                // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
+                if (handleMaxClients(socket, isAuthenticated = true)) return
+
+                // Send HTTP response headers for MJPEG stream
+                // Use HTTP/1.1 with keep-alive for better streaming performance
+                writer.print("HTTP/1.1 200 OK\r\n")
+                writer.print("Connection: keep-alive\r\n")
+                writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
+                writer.print("Pragma: no-cache\r\n")
+                writer.print("Expires: 0\r\n")
+                writer.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n")
+                writer.flush()
+
+                // Add client to list - frames will be sent from MainActivity.processImage()
+                clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = true))
+                onClientConnected()
+
+                // Keep connection alive - frames will be sent from MainActivity.processImage()
+                // Wait for connection to close or be removed
+                try {
+                    // Read from socket to detect when client disconnects
+                    while (socket.isConnected && !socket.isClosed) {
+                        // Check if socket has data (client disconnect will cause exception)
+                        if (reader.ready()) {
+                            val line = reader.readLine()
+                            if (line == null) break // Client disconnected
+                        }
+                        Thread.sleep(1000) // Check every second
+                    }
+                } catch (e: IOException) {
+                    // Client disconnected
+                } finally {
+                    // Remove client when connection closes
+                    clients.removeIf { it.socket == socket }
+                    try {
+                        socket.close()
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                    onClientDisconnected()
+                }
+            } else {
+                writer.print("HTTP/1.1 404 Not Found\r\n")
+                writer.print("Content-Type: text/plain\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print("Not Found\r\n")
+                writer.flush()
                 try {
                     socket.close()
-                } catch (e: Exception) {
-                    // Ignore
+                } catch (_: Exception) {
                 }
-                onClientDisconnected()
             }
         } catch (e: Exception) {
             onLog("Error handling client connection from $clientIp: ${e.message}")
@@ -558,6 +658,37 @@ class StreamingServerHelper(
                 // Ignore
             }
         }
+    }
+
+    private fun createWavHeader(sampleRate: Int, bitsPerSample: Int, channels: Int): ByteArray {
+        val byteRate = sampleRate * channels * bitsPerSample / 8
+        val blockAlign = (channels * bitsPerSample / 8).toShort()
+        val dataChunkSize = 0x7FFFFFFF // Placeholder large size for live stream
+        val riffChunkSize = 36 + dataChunkSize
+
+        val buffer = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.put("RIFF".toByteArray(Charsets.US_ASCII))
+        buffer.putInt(riffChunkSize)
+        buffer.put("WAVE".toByteArray(Charsets.US_ASCII))
+        buffer.put("fmt ".toByteArray(Charsets.US_ASCII))
+        buffer.putInt(16) // Subchunk1Size for PCM
+        buffer.putShort(1) // AudioFormat PCM
+        buffer.putShort(channels.toShort())
+        buffer.putInt(sampleRate)
+        buffer.putInt(byteRate)
+        buffer.putShort(blockAlign)
+        buffer.putShort(bitsPerSample.toShort())
+        buffer.put("data".toByteArray(Charsets.US_ASCII))
+        buffer.putInt(dataChunkSize)
+        return buffer.array()
+    }
+
+    private fun writeChunk(outputStream: OutputStream, data: ByteArray, length: Int) {
+        val header = length.toString(16) + "\r\n"
+        outputStream.write(header.toByteArray())
+        outputStream.write(data, 0, length)
+        outputStream.write("\r\n".toByteArray())
+        outputStream.flush()
     }
 
     fun handleMaxClients(socket: Socket, isAuthenticated: Boolean = false): Boolean {
@@ -575,6 +706,10 @@ class StreamingServerHelper(
             return true
         }
         return false
+    }
+
+    fun setAppInForeground(foreground: Boolean) {
+        appInForeground = foreground
     }
 
     suspend fun stopStreamingServer() {

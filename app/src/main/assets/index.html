@@ -1,263 +1,490 @@
 <!DOCTYPE html>
-<html>
-
-<head>
-  <title>Android IP Camera</title>
-  <style>
-    body {
-      background: #121212;
-      color: #fff;
-      font-family: sans-serif;
-      margin: 0;
-      display: flex;
-      flex-direction: column;
-      height: 100vh;
-      overflow: hidden;
-    }
-
-    .header {
-      padding: 10px 20px;
-      background: #1e1e1e;
-      border-bottom: 1px solid #333;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      z-index: 10;
-    }
-
-    .main {
-      display: flex;
-      flex: 1;
-      overflow: hidden;
-    }
-
-    .stream-container {
-      flex: 1;
-      background: #000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: auto;
-      position: relative;
-    }
-
-    .controls-panel {
-      width: 350px;
-      background: #1e1e1e;
-      padding: 20px;
-      border-left: 1px solid #333;
-      overflow-y: auto;
-    }
-
-    img {
-      transition: all 0.2s ease;
-    }
-
-    .fit-screen img {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-    }
-
-    .original-size img {
-      width: auto;
-      height: auto;
-    }
-
-    .btn {
-      background: #333;
-      color: #fff;
-      border: 1px solid #555;
-      padding: 8px 15px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 14px;
-      transition: 0.2s;
-    }
-
-    .btn:hover {
-      background: #444;
-    }
-
-    .btn.active {
-      background: #007AFF;
-      border-color: #007AFF;
-    }
-
-    .btn-action {
-      width: 100%;
-      margin-bottom: 15px;
-      background: #444;
-      border-color: #666;
-      font-weight: bold;
-    }
-
-    .setting-group {
-      background: #252525;
-      padding: 15px;
-      border-radius: 10px;
-      margin-bottom: 15px;
-    }
-
-    h3 {
-      margin-top: 0;
-      font-size: 14px;
-      color: #888;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-bottom: 15px;
-    }
-
-    label {
-      display: block;
-      margin-bottom: 5px;
-      font-size: 13px;
-      color: #ccc;
-    }
-
-    input[type=range] {
-      width: 100%;
-      margin-bottom: 20px;
-      cursor: pointer;
-    }
-
-    select,
-    input[type=number] {
-      background: #333;
-      color: #fff;
-      border: 1px solid #555;
-      padding: 8px;
-      border-radius: 4px;
-      width: 100%;
-      margin-top: 5px;
-      box-sizing: border-box;
-    }
-
-    .val-badge {
-      float: right;
-      color: #007AFF;
-      font-weight: bold;
-    }
-
-    .notice {
-      color: #555;
-      font-size: 11px;
-      text-align: center;
-    }
-
-    @media (max-width: 900px) {
-      .main {
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <title>Android IP Camera</title>
+    <style>
+      body {
+        background: #121212;
+        color: #fff;
+        font-family: sans-serif;
+        margin: 0;
+        display: flex;
         flex-direction: column;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .header {
+        padding: 10px 20px;
+        background: #1e1e1e;
+        border-bottom: 1px solid #333;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        z-index: 10;
+      }
+
+      .main {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+      }
+
+      .stream-container {
+        flex: 1;
+        background: #000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: auto;
+        position: relative;
       }
 
       .controls-panel {
-        width: auto;
-        height: 45%;
-        border-left: none;
-        border-top: 1px solid #333;
+        width: 350px;
+        background: #1e1e1e;
+        padding: 20px;
+        border-left: 1px solid #333;
+        overflow-y: auto;
       }
-    }
-  </style>
-</head>
 
-<body class='fit-screen'>
+      img {
+        transition: all 0.2s ease;
+      }
 
-  <div class='header'>
-    <h2 style='margin:0;font-size:18px;'>Android IP Camera</h2>
-    <div>
-      <button id='fitBtn' class='btn active' onclick='setView("fit")'>Fit Screen</button>
-      <button id='origBtn' class='btn' onclick='setView("original")'>Original Size</button>
+      .fit-screen img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .fit-screen canvas {
+        width: 100%;
+        height: 100%;
+        image-rendering: auto;
+        object-fit: contain;
+        display: block;
+      }
+
+      .original-size img {
+        width: auto;
+        height: auto;
+      }
+      .original-size canvas {
+        width: auto;
+        height: auto;
+        image-rendering: auto;
+        display: block;
+      }
+
+      .btn {
+        background: #333;
+        color: #fff;
+        border: 1px solid #555;
+        padding: 8px 15px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: 0.2s;
+      }
+
+      .btn:hover {
+        background: #444;
+      }
+
+      .btn.active {
+        background: #007AFF;
+        border-color: #007AFF;
+      }
+
+      .btn-action {
+        width: 100%;
+        margin-bottom: 15px;
+        background: #444;
+        border-color: #666;
+        font-weight: bold;
+      }
+
+      .setting-group {
+        background: #252525;
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 15px;
+      }
+
+      h3 {
+        margin-top: 0;
+        font-size: 14px;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 15px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 13px;
+        color: #ccc;
+      }
+
+      input[type=range] {
+        width: 100%;
+        margin-bottom: 20px;
+        cursor: pointer;
+      }
+
+      input[type=number],
+      select {
+        background: #333;
+        color: #fff;
+        border: 1px solid #555;
+        padding: 8px;
+        border-radius: 4px;
+        width: 100%;
+        margin-top: 5px;
+        box-sizing: border-box;
+      }
+
+      .val-badge {
+        float: right;
+        color: #007AFF;
+        font-weight: bold;
+      }
+
+      .notice {
+        color: #555;
+        font-size: 11px;
+        text-align: center;
+      }
+
+      @media (max-width: 900px) {
+        .main {
+          flex-direction: column;
+        }
+
+        .controls-panel {
+          width: auto;
+          height: 45%;
+          border-left: none;
+          border-top: 1px solid #333;
+        }
+      }
+    </style>
+  </head>
+  <body class='fit-screen'>
+    <div class='header'>
+      <h2 style='margin:0;font-size:18px;'>Android IP Camera</h2>
+      <div>
+        <button id='fitBtn' class='btn active' onclick='setView("fit")'>Fit Screen</button>
+        <button id='origBtn' class='btn' onclick='setView("original")'>Original Size</button>
+      </div>
     </div>
-  </div>
 
-  <div class='main'>
-    <div class='stream-container' id='streamContainer'>
-      <img src='/stream' id='streamImg'>
-    </div>
-
-    <div class='controls-panel'>
-
-      <div class='setting-group'>
-        <h3>Settings</h3>
-        <label>Camera</label>
-        <div style="margin-bottom: 10px">
-          <button id='backBtn' class='btn active' style='width: 49%;' onclick='setCamera("back")'>Back</button>
-          <button id='frontBtn' class='btn' style='width: 49%;' onclick='setCamera("front")'>Front</button>
-        </div>
-
-        <button class='btn btn-action' onclick='fetch("/?rotate=90")'>Rotate 90&deg;</button>
-
-        <label for="resolutionSelect">Resolution</label>
-        <select id="resolutionSelect" style="margin-bottom: 20px" onchange='fetch("/?resolution="+this.value)'>
-          <option value='low' {{RES_LOW_SELECTED}}>Low (Fastest)</option>
-          <option value='medium' {{RES_MEDIUM_SELECTED}}>Medium</option>
-          <option value='high' {{RES_HIGH_SELECTED}}>High (Sharpest)</option>
-        </select>
-
-        <label>Zoom <span class='val-badge' id='zoomVal'>{{CUR_ZOOM}}x</span></label><input type='range' min='1' max='8'
-          step='0.1' value='{{CUR_ZOOM}}'
-          oninput='document.getElementById("zoomVal").innerText=this.value+"x";fetch("/?zoom="+this.value)'>
-
-        <label>Scale <span class='val-badge' id='scaleVal'>{{CUR_SCALE}}x</span></label><input type='range' min='0.5'
-          max='2.0' step='0.1' value='{{CUR_SCALE}}'
-          oninput='setView("original"); document.getElementById("scaleVal").innerText=this.value+"x";fetch("/?scale="+this.value)'>
-
-        <label>Brightness <span class='val-badge' id='brightVal'>{{CUR_BRIGHTNESS}}</span></label><input type='range'
-          min='-10' max='10' step='1' value='{{CUR_BRIGHTNESS}}'
-          oninput='document.getElementById("brightVal").innerText=this.value;fetch("/?brightness="+this.value)'>
-
-        <label>Contrast <span class='val-badge' id='contVal'>{{CUR_CONTRAST}}</span></label><input type='range'
-          min='-50' max='50' step='1' value='{{CUR_CONTRAST}}'
-          oninput='document.getElementById("contVal").innerText=this.value;fetch("/?contrast="+this.value)'>
-
-        <label>Frame Delay (ms)</label><input type='number' min='10' max='1000' value='{{CUR_DELAY}}'
-          onchange='fetch("/?delay="+this.value)'>
+    <div class='main'>
+      <div class='stream-container' id='streamContainer'>
+        <canvas id='streamCanvas'></canvas>
+        <img id='streamImg' alt='stream'>
+        <audio id="audioEl" preload="none" muted></audio>
       </div>
 
-      <p class="notice">Some changes will momentarily restart the camera.</p>
+      <div class='controls-panel'>
+
+        <div class='setting-group'>
+          <h3>Settings</h3>
+          <label>Camera</label>
+          <div style="margin-bottom: 15px">
+            <button id='backBtn' class='btn active' style='width: 49%;' onclick='setCamera("back")'>Back</button>
+            <button id='frontBtn' class='btn' style='width: 49%;' onclick='setCamera("front")'>Front</button>
+          </div>
+
+          <button class='btn btn-action' onclick='fetch("/?rotate=90")'>Rotate 90&deg;</button>
+
+          <button id="muteBtn" class="btn btn-action">🔇 Unmute Audio</button>
+
+          <div id="avDelayContainer">
+            <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.0s</span></label>
+            <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
+          </div>
+
+          <label for="resolutionSelect">Resolution</label>
+          <select id="resolutionSelect" style="margin-bottom: 20px" onchange='fetch("/?resolution="+this.value)'>
+            <option value='low' {{RES_LOW_SELECTED}}>Low (Fastest)</option>
+            <option value='medium' {{RES_MEDIUM_SELECTED}}>Medium</option>
+            <option value='high' {{RES_HIGH_SELECTED}}>High (Sharpest)</option>
+          </select>
+
+          <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>{{CUR_ZOOM}}x</span></label>
+          <input id="zoom" type='range' min='1' max='8' step='0.1' value='{{CUR_ZOOM}}' oninput='document.getElementById("zoomVal").innerText=this.value+"x";fetch("/?zoom="+this.value)'>
+
+          <label for="scale">Scale <span class='val-badge' id='scaleVal'>{{CUR_SCALE}}x</span></label>
+          <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='{{CUR_SCALE}}' oninput='setView("original"); document.getElementById("scaleVal").innerText=this.value+"x";fetch("/?scale="+this.value)'>
+
+          <label for="brightness">Brightness <span class='val-badge' id='brightVal'>{{CUR_BRIGHTNESS}}</span></label>
+          <input id="brightness" type='range' min='-10' max='10' step='1' value='{{CUR_BRIGHTNESS}}' oninput='document.getElementById("brightVal").innerText=this.value;fetch("/?brightness="+this.value)'>
+
+          <label for="contrast">Contrast <span class='val-badge' id='contVal'>{{CUR_CONTRAST}}</span></label>
+          <input id="contrast" type='range' min='-50' max='50' step='1' value='{{CUR_CONTRAST}}' oninput='document.getElementById("contVal").innerText=this.value;fetch("/?contrast="+this.value)'>
+
+          <label for="delay">Frame Delay (ms)</label>
+          <input id="delay" type='number' min='10' max='1000' value='{{CUR_DELAY}}' onchange='fetch("/?delay="+this.value)'>
+        </div>
+
+        <p class="notice">Some changes will momentarily restart the camera.</p>
+      </div>
     </div>
-  </div>
 
-  <script>
-    let currentCamera = '{{CUR_CAMERA}}';
+    <script>
+      let currentCamera = '{{CUR_CAMERA}}';
+      const audioEl = document.getElementById('audioEl');
+      const muteBtn = document.getElementById('muteBtn');
+      const avDelayContainer = document.getElementById('avDelayContainer');
+      const streamImg = document.getElementById('streamImg');
+      const streamCanvas = document.getElementById('streamCanvas');
+      const avDelay = document.getElementById('avDelay');
+      const avDelayVal = document.getElementById('avDelayVal');
+      const STREAM_SRC = '/stream';
+      let videoDelayMs = 2500;
+      let mjpegAbort = null;
+      let mjpegRunning = false;
+      let frameQueue = [];
+      let lastDrawn = null;
+      let drawing = false;
 
-    function updateCameraToggleBtn() {
-      const backBtn = document.getElementById('backBtn');
-      const frontBtn = document.getElementById('frontBtn');
-      if (currentCamera === 'front') {
-        backBtn.className = 'btn';
-        frontBtn.className = 'btn active';
-      } else {
-        backBtn.className = 'btn active';
-        frontBtn.className = 'btn';
+      function updateMuteButton() {
+        muteBtn.textContent = audioEl.muted
+          ? '🔇 Unmute Audio'
+          : '🔊 Mute Audio';
+
+        avDelayContainer.style.display = audioEl.muted
+          ? 'none'
+          : 'block';
       }
-    }
 
-    function setCamera(camera) {
-      fetch("/?camera=" + camera);
-      currentCamera = camera;
+      muteBtn.addEventListener('click', () => {
+        const willUnmute = audioEl.muted;
+        if (willUnmute) {
+          const delayMs = Math.max(0, (parseFloat(
+            avDelay
+            ? avDelay.value
+            : '2.0') || 0) * 1000);
+          if (!audioEl.src) {
+            audioEl.src = '/audio';
+            audioEl.load();
+          }
+          audioEl.muted = false;
+          audioEl
+            .play()
+            .catch(() => {});
+          if (streamImg) {
+            streamImg.style.display = 'none';
+            streamCanvas.style.display = 'block';
+            setTimeout(() => {}, delayMs);
+          }
+        } else {
+          audioEl.muted = true;
+          audioEl.pause();
+          audioEl.removeAttribute('src');
+          audioEl.load();
+        }
+        updateMuteButton();
+      });
+      updateMuteButton();
+
+      if (avDelay && avDelayVal) {
+        avDelay.addEventListener('input', () => {
+          avDelayVal.textContent = `${avDelay.value}s`;
+          videoDelayMs = Math.max(0, (parseFloat(avDelay.value) || 0) * 1000);
+        });
+        avDelayVal.textContent = `${avDelay.value}s`;
+        videoDelayMs = Math.max(0, (parseFloat(avDelay.value) || 0) * 1000);
+      }
+
+      function startMjpegStream() {
+        if (!streamCanvas)
+          return;
+        if (mjpegRunning && mjpegAbort) {
+          return;
+        }
+        if (mjpegAbort)
+          mjpegAbort.abort();
+        const controller = new AbortController();
+        mjpegAbort = controller;
+        mjpegRunning = true;
+        frameQueue = [];
+        lastDrawn = null;
+        streamImg.style.display = 'none';
+        streamCanvas.style.display = 'block';
+        const ctx = streamCanvas.getContext('2d');
+        fetch(STREAM_SRC, {
+          cache: 'no-store',
+          credentials: 'include',
+          signal: controller.signal
+        })
+          .then(res => {
+            const reader = res
+              .body
+              .getReader();
+            let buffer = new Uint8Array(0);
+            function concat(a, b) {
+              const c = new Uint8Array(a.length + b.length);
+              c.set(a, 0);
+              c.set(b, a.length);
+              return c;
+            }
+            function findMarker(buf, marker) {
+              for (let i = 0; i < buf.length - 1; i++) {
+                if (buf[i] === 0xFF && buf[i + 1] === marker)
+                  return i;
+                }
+              return -1;
+            }
+            function process() {
+              while (true) {
+                const soi = findMarker(buffer, 0xD8);
+                if (soi < 0)
+                  break;
+                const rest = buffer.subarray(soi);
+                const eoiRel = findMarker(rest, 0xD9);
+                if (eoiRel < 0)
+                  break;
+                const eoi = soi + eoiRel + 2;
+                const frameBytes = buffer.subarray(soi, eoi);
+                buffer = buffer.subarray(eoi);
+                const blob = new Blob([frameBytes], {type: 'image/jpeg'});
+                createImageBitmap(blob)
+                  .then(bitmap => {
+                    frameQueue.push({ts: performance.now(), bmp: bitmap});
+                    if (frameQueue.length > 180)
+                      frameQueue.shift();
+                    }
+                  )
+                  .catch(() => {});
+              }
+            }
+            function pump() {
+              return reader
+                .read()
+                .then(({done, value}) => {
+                  if (done)
+                    return;
+                  if (value && value.length) {
+                    buffer = concat(buffer, value);
+                    process();
+                  }
+                  return pump();
+                });
+            }
+            pump().catch(() => { mjpegRunning = false; });
+            function drawLoop() {
+              if (!drawing)
+                return;
+              const now = performance.now();
+              const effDelay = (audioEl && !audioEl.muted)
+                ? videoDelayMs
+                : 0;
+              let candidate = null;
+              while (frameQueue.length && frameQueue[0].ts <= now - effDelay) {
+                candidate = frameQueue.shift();
+              }
+              if (!candidate && frameQueue.length) {
+                const idx = frameQueue.findIndex(f => f.ts > now - effDelay);
+                if (idx > 0) {
+                  candidate = frameQueue
+                    .splice(0, idx)
+                    .pop() || null;
+                }
+              }
+              if (candidate && candidate.bmp) {
+                const w = streamCanvas.clientWidth || candidate.bmp.width;
+                const h = streamCanvas.clientHeight || candidate.bmp.height;
+                if (streamCanvas.width !== w || streamCanvas.height !== h) {
+                  streamCanvas.width = w;
+                  streamCanvas.height = h;
+                }
+                const iw = candidate.bmp.width;
+                const ih = candidate.bmp.height;
+                const scale = Math.min(w / iw, h / ih);
+                const dw = Math.max(1, Math.floor(iw * scale));
+                const dh = Math.max(1, Math.floor(ih * scale));
+                const dx = Math.floor((w - dw) / 2);
+                const dy = Math.floor((h - dh) / 2);
+                ctx.clearRect(0, 0, w, h);
+                ctx.drawImage(candidate.bmp, dx, dy, dw, dh);
+                lastDrawn = candidate.bmp;
+              }
+              requestAnimationFrame(drawLoop);
+            }
+            if (!drawing) {
+              drawing = true;
+              requestAnimationFrame(drawLoop);
+            }
+          })
+          .catch(() => { mjpegRunning = false; });
+      }
+      startMjpegStream();
+
+      function stopMjpegStream() {
+        if (mjpegAbort) {
+          try { mjpegAbort.abort(); } catch (_) {}
+        }
+        mjpegAbort = null;
+        mjpegRunning = false;
+      }
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          // Stop audio and image streams when backgrounded
+          if (!audioEl.muted) {
+            audioEl.muted = true;
+            audioEl.pause();
+          }
+          if (audioEl.src) {
+            audioEl.removeAttribute('src');
+            audioEl.load();
+          }
+          stopMjpegStream();
+        } else {
+          // Restart only the image stream on foreground
+          startMjpegStream();
+        }
+      });
+
+      function updateCameraToggleBtn() {
+        const backBtn = document.getElementById('backBtn');
+        const frontBtn = document.getElementById('frontBtn');
+        if (currentCamera === 'front') {
+          backBtn.className = 'btn';
+          frontBtn.className = 'btn active';
+        } else {
+          backBtn.className = 'btn active';
+          frontBtn.className = 'btn';
+        }
+      }
+
+      function setCamera(camera) {
+        fetch("/?camera=" + camera);
+        currentCamera = camera;
+        updateCameraToggleBtn();
+      }
+
       updateCameraToggleBtn();
-    }
 
-    updateCameraToggleBtn();
+      function setView(mode) {
+        const b = document.body;
+        const f = document.getElementById('fitBtn');
+        const o = document.getElementById('origBtn');
 
-    function setView(mode) {
-      const b = document.body;
-      const f = document.getElementById('fitBtn');
-      const o = document.getElementById('origBtn');
-
-      if (mode === 'fit') {
-        b.className = 'fit-screen';
-        f.className = 'btn active';
-        o.className = 'btn';
-      } else {
-        b.className = 'original-size';
-        f.className = 'btn';
-        o.className = 'btn active';
+        if (mode === 'fit') {
+          b.className = 'fit-screen';
+          f.className = 'btn active';
+          o.className = 'btn';
+        } else {
+          b.className = 'original-size';
+          f.className = 'btn';
+          o.className = 'btn active';
+        }
       }
-    }
-  </script>
-
-</body>
-
+    </script>
+  </body>
 </html>
