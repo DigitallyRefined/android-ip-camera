@@ -283,21 +283,36 @@
       muteBtn.addEventListener('click', () => {
         const willUnmute = audioEl.muted;
         if (willUnmute) {
-          if (!audioEl.src) {
-            audioEl.src = '/audio';
-            audioEl.load();
-          }
-          audioEl.muted = false;
-          audioEl
-            .play()
-            .catch(() => {});
+          // Preflight check to detect 403 without toggling UI state
+          const controller = new AbortController();
+          fetch('/audio', {
+            method: 'GET',
+            cache: 'no-store',
+            credentials: 'include',
+            signal: controller.signal
+          }).then(res => {
+            if (res && res.status === 403) {
+              alert('Audio is disabled because microphone permission is not granted.');
+              return;
+            }
+            try { controller.abort(); } catch (_) {}
+            if (!audioEl.src) {
+              audioEl.src = '/audio';
+              audioEl.load();
+            }
+            audioEl.muted = false;
+            audioEl.play().catch(() => {});
+            updateMuteButton();
+          }).catch(() => {
+            // Network or other error: keep muted and do not toggle button
+          });
         } else {
           audioEl.muted = true;
           audioEl.pause();
           audioEl.removeAttribute('src');
           audioEl.load();
+          updateMuteButton();
         }
-        updateMuteButton();
       });
       updateMuteButton();
 

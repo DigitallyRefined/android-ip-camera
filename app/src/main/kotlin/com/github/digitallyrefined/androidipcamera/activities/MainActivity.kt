@@ -358,6 +358,8 @@ class MainActivity : AppCompatActivity() {
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
         ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
     }
+    private fun hasAudioPermission() =
+        ContextCompat.checkSelfPermission(baseContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
     private fun generateRandomPassword(): String {
         // Generate a secure random password that meets validation requirements:
@@ -551,14 +553,15 @@ class MainActivity : AppCompatActivity() {
             CameraSelector.DEFAULT_BACK_CAMERA
         }
 
-        // Request permissions before starting camera
+        // Request permissions before starting camera (audio is optional)
         if (!allPermissionsGranted() && !hasRequestedPermissions) {
             hasRequestedPermissions = true
-            ActivityCompat.requestPermissions(
-                this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
+            val toRequest = (REQUIRED_PERMISSIONS + OPTIONAL_PERMISSIONS).distinct().toTypedArray()
+            ActivityCompat.requestPermissions(this, toRequest, REQUEST_CODE_PERMISSIONS)
         } else if (allPermissionsGranted()) {
-            // Camera will only start when a client connects
+            // Proceed; camera will start when a client connects
         } else {
+            // Required permission (camera) missing
             finish()
         }
 
@@ -618,15 +621,13 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
+                if (!hasAudioPermission()) {
+                    Toast.makeText(this, "Microphone permission denied. Audio streaming disabled.", Toast.LENGTH_LONG).show()
+                }
                 // Camera will start on first client connection
             } else {
-                // Show which permissions are missing
-                REQUIRED_PERMISSIONS.filter {
-                    ContextCompat.checkSelfPermission(baseContext, it) != PackageManager.PERMISSION_GRANTED
-                }
-                Toast.makeText(this,
-                    "Please allow camera and microphone permissions",
-                    Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Camera permission is required.", Toast.LENGTH_LONG).show()
+                finish()
             }
         }
     }
@@ -995,15 +996,16 @@ class MainActivity : AppCompatActivity() {
         private const val CAMERA_FACING_FRONT = "front"
         private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             arrayOf(
-                Manifest.permission.CAMERA,
-                Manifest.permission.RECORD_AUDIO
+                Manifest.permission.CAMERA
             )
         } else {
             arrayOf(
                 Manifest.permission.CAMERA,
-                Manifest.permission.RECORD_AUDIO,
                 Manifest.permission.READ_EXTERNAL_STORAGE
             )
         }
+        private val OPTIONAL_PERMISSIONS = arrayOf(
+            Manifest.permission.RECORD_AUDIO
+        )
     }
 }

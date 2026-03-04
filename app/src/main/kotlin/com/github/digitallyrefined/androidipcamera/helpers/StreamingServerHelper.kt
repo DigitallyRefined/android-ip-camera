@@ -1,6 +1,8 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -8,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
@@ -519,6 +522,15 @@ class StreamingServerHelper(
             }
 
             if (uri.startsWith("/audio")) {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    writer.print("HTTP/1.1 403 Forbidden\r\n")
+                    writer.print("Content-Type: text/plain\r\n")
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.print("Microphone permission not granted.\r\n")
+                    writer.flush()
+                    try { socket.close() } catch (_: Exception) {}
+                    return
+                }
                 try {
                     writer.print("HTTP/1.1 200 OK\r\n")
                     writer.print("Connection: keep-alive\r\n")
