@@ -24,7 +24,7 @@ alt="Get it on Obtainium" align="center" height="54" /></a>
 - 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a Home Assistant MJPEG IP Camera (using `https://<ip_address>:4444/stream`)
 - 📴 Option to turn the display off while streaming
 - 🤳 Switch between the main or selfie camera
-- 🎛️ Remote web interface with controls for camera section, image rotation, audio/video sync, resolution, zoom, brightness and contrast
+- 🎛️ Remote web interface with controls for camera section, image rotation, audio/video sync, flash light toggle, resolution, zoom, brightness and contrast
 - 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
 - 🛂 Username and password protection
 - 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS
