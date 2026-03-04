@@ -1,0 +1,7 @@
+## What's Changed
+* Allow running app without microphone permission fixes #15
+* Add flash light/torch toggle
+* Hide all icons on black screen
+
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.2.1...v0.2.2
