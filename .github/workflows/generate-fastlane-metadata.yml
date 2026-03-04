@@ -1,0 +1,95 @@
+name: Generate Fastlane Metadata
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to use'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set release context
+        id: rel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          BODY="${{ github.event.release.body }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ inputs.tag }}"
+          fi
+
+          if [ -z "$BODY" ] && [ -n "$TAG" ]; then
+             echo "Fetching release notes for tag: $TAG"
+             BODY=$(gh release view "$TAG" --json body --jq .body || echo "")
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "RELEASE_NOTES<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2
+          python -m pip install --upgrade pip
+          pip install pillow cairosvg
+
+      - name: Generate metadata
+        env:
+          RELEASE_TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          python scripts/generate_fastlane_metadata.py
+          echo "Metadata generated at fastlane/metadata/android/en-US"
+
+      - name: Validate Fastlane Supply Metadata
+        uses: ashutoshgngwr/validate-fastlane-supply-metadata@v2
+        with:
+          fastlaneDir: ./fastlane/metadata/android
+          usePlayStoreLocales: true
+
+      - name: Commit and push metadata
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add fastlane/metadata gradle/wrapper/gradle-wrapper.properties
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore(fastlane): generate metadata for ${TAG:-manual run}"
+            git push origin main
+
+            # Update the release tag to point to this new commit
+            if [ -n "$TAG" ]; then
+              echo "Updating tag $TAG to point to new commit..."
+              git tag -f "$TAG"
+              git push origin "$TAG" --force
+            fi
+          fi
