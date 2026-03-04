@@ -2,6 +2,21 @@
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <PreferenceCategory
+        android:title="Authentication">
+        <EditTextPreference
+            android:key="username"
+            android:title="Username"
+            android:defaultValue=""
+            android:singleLine="true" />
+        <EditTextPreference
+            android:key="password"
+            android:title="Password"
+            android:defaultValue=""
+            android:inputType="textPassword"
+            android:singleLine="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
         android:title="Stream Camera Quality"
         android:summary="Change to prevent phone getting too hot">
         <ListPreference
@@ -44,20 +59,6 @@
             android:title="Frame Delay (33ms = 30fps)"
             android:defaultValue="33"
             android:inputType="number" />
-    </PreferenceCategory>
-    <PreferenceCategory
-        android:title="Authentication">
-        <EditTextPreference
-            android:key="username"
-            android:title="Username"
-            android:defaultValue=""
-            android:singleLine="true" />
-        <EditTextPreference
-            android:key="password"
-            android:title="Password"
-            android:defaultValue=""
-            android:inputType="textPassword"
-            android:singleLine="true" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Certificate Settings">

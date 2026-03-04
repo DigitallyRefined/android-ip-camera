@@ -171,7 +171,10 @@
 
           <button class='btn btn-action' onclick='fetch("/?rotate=90")'>Rotate 90&deg;</button>
 
-          <button id="muteBtn" class="btn btn-action">🔇 Unmute Audio</button>
+          <div style="margin-bottom: 15px">
+            <button id="muteBtn" class="btn btn-action" style='width: 49%;'>🔇 Unmute Audio</button>
+            <button id="flashBtn" class="btn btn-action" style='width: 49%;'>💡 Flash On</button>
+          </div>
 
           <div id="avDelayContainer">
             <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.0s</span></label>
@@ -221,6 +224,7 @@
       let lastDrawn = null;
       let drawing = false;
       let viewMode = 'fit';
+      let torchState = ('{{CUR_TORCH}}' === 'on') ? 'on' : 'off';
 
       function targetCanvasSize(frame) {
         if (viewMode === 'fit') {
@@ -254,6 +258,26 @@
         avDelayContainer.style.display = audioEl.muted
           ? 'none'
           : 'block';
+      }
+
+      const flashBtn = document.getElementById('flashBtn');
+      function updateFlashButton() {
+        if (!flashBtn) return;
+        flashBtn.textContent = (torchState === 'on')
+          ? '⚡ Flash Off'
+          : '💡 Flash On';
+      }
+
+      if (flashBtn) {
+        flashBtn.addEventListener('click', () => {
+          const next = (torchState === 'on') ? 'off' : 'on';
+          try {
+            fetch('/?torch=' + next).catch(() => {});
+          } catch (_) {}
+          torchState = next;
+          updateFlashButton();
+        });
+        updateFlashButton();
       }
 
       muteBtn.addEventListener('click', () => {

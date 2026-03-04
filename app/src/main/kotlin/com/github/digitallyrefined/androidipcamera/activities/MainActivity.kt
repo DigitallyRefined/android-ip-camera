@@ -12,7 +12,6 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CaptureRequest
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -21,10 +20,10 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.TextView
 import android.widget.ImageButton
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -35,7 +34,6 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
@@ -47,7 +45,6 @@ import com.github.digitallyrefined.androidipcamera.helpers.CertificateHelper
 import com.github.digitallyrefined.androidipcamera.helpers.convertNV21toJPEG
 import com.github.digitallyrefined.androidipcamera.helpers.convertYUV420toNV21
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
@@ -70,6 +67,7 @@ class MainActivity : AppCompatActivity() {
     private var userHiddenPreview = false
     private lateinit var noClientMessage: TextView
     private var camera: androidx.camera.core.Camera? = null
+    private lateinit var backGestureCallback: OnBackPressedCallback
 
     private val cameraRestartReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -87,6 +85,29 @@ class MainActivity : AppCompatActivity() {
     private fun handleRemoteControl(key: String, value: String) {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         when (key) {
+            "torch" -> {
+                val current = prefs.getString("camera_torch", "off") ?: "off"
+                val next = when (value.lowercase()) {
+                    "on" -> "on"
+                    "off" -> "off"
+                    "toggle" -> if (current == "on") "off" else "on"
+                    else -> return
+                }
+                prefs.edit().putString("camera_torch", next).apply()
+                runOnUiThread {
+                    try {
+                        val hasFlash = camera?.cameraInfo?.hasFlashUnit() == true
+                        if (hasFlash) {
+                            camera?.cameraControl?.enableTorch(next == "on")
+                        } else {
+                            Log.w(TAG, "Torch command ignored: camera has no flash unit")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to set torch state: ${e.message}")
+                    }
+                }
+                Log.i(TAG, "Remote Control: Torch set to $next")
+            }
             "zoom" -> {
                 val zoomFactor = value.toFloatOrNull() ?: return
                 prefs.edit().putString("camera_zoom", zoomFactor.toString()).apply()
@@ -491,6 +512,13 @@ class MainActivity : AppCompatActivity() {
         setContentView(viewBinding.root)
         noClientMessage = findViewById(R.id.noClientMessage)
 
+        backGestureCallback = object : OnBackPressedCallback(false) {
+            override fun handleOnBackPressed() {
+                hideShowPreview()
+            }
+        }
+        onBackPressedDispatcher.addCallback(this, backGestureCallback)
+
         // Hide the action bar
         supportActionBar?.hide()
 
@@ -552,7 +580,7 @@ class MainActivity : AppCompatActivity() {
 
         // Add toggle preview button
         findViewById<ImageButton>(R.id.hidePreviewButton).setOnClickListener {
-            hidePreview()
+            hideShowPreview()
         }
 
         // Add switch camera button handler
@@ -618,7 +646,7 @@ class MainActivity : AppCompatActivity() {
         return "unknown"
     }
 
-    private fun hidePreview() {
+    private fun hideShowPreview() {
         val viewFinder = viewBinding.viewFinder
         val rootView = viewBinding.root
         val ipAddressText = findViewById<TextView>(R.id.ipAddressText)
@@ -634,9 +662,14 @@ class MainActivity : AppCompatActivity() {
             settingsButton.visibility = View.GONE
             switchCameraButton.visibility = View.GONE
             noClientMessage.visibility = View.GONE
+            hidePreviewButton.visibility = View.GONE
             rootView.setBackgroundColor(android.graphics.Color.BLACK)
-            hidePreviewButton.setImageResource(android.R.drawable.ic_menu_slideshow) // use open eye as placeholder for closed eye
             userHiddenPreview = true
+            backGestureCallback.isEnabled = true
+
+            runOnUiThread {
+                Toast.makeText(this, "Black screen, swipe back to exit", Toast.LENGTH_SHORT).show()
+            }
         } else {
             // Show preview and related UI (respect whether clients are connected)
             val hasClients = streamingServerHelper?.getClients()?.isNotEmpty() == true
@@ -644,6 +677,7 @@ class MainActivity : AppCompatActivity() {
             ipAddressText.visibility = View.VISIBLE
             settingsButton.visibility = View.VISIBLE
             switchCameraButton.visibility = View.VISIBLE
+            hidePreviewButton.visibility = View.VISIBLE
 
             // If there are no clients, keep the preview INVISIBLE to avoid showing the last frame
             viewFinder.visibility = if (hasClients) View.VISIBLE else View.INVISIBLE
@@ -654,8 +688,8 @@ class MainActivity : AppCompatActivity() {
             // Use black background when there's no client to clearly indicate cleared preview
             rootView.setBackgroundColor(if (hasClients) android.graphics.Color.TRANSPARENT else android.graphics.Color.BLACK)
 
-            hidePreviewButton.setImageResource(android.R.drawable.ic_menu_view) // open eye
             userHiddenPreview = false
+            backGestureCallback.isEnabled = false
             if (hasClients) {
                 startCameraIfNeeded()
             }
@@ -787,8 +821,16 @@ class MainActivity : AppCompatActivity() {
                 this.camera = camera
                 isCameraRunning = true
 
-                // Apply zoom settings to camera
                 val prefs = PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
+                try {
+                    val torchPref = prefs.getString("camera_torch", "off") ?: "off"
+                    if (camera.cameraInfo.hasFlashUnit()) {
+                        camera.cameraControl.enableTorch(torchPref == "on")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Unable to apply torch state on start: ${e.message}")
+                }
+                // Apply zoom settings to camera
                 val requestedZoomFactor = prefs.getString("camera_zoom", "1.0")?.toFloatOrNull() ?: 1.0f
 
                 // Check camera zoom capabilities

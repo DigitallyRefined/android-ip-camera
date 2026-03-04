@@ -475,6 +475,7 @@ class StreamingServerHelper(
                 val curBrightness = prefs.getString("camera_brightness", "0") ?: "0"
                 val curContrast = prefs.getString("camera_contrast", "0") ?: "0"
                 val curDelay = prefs.getString("stream_delay", "33") ?: "33"
+                val curTorch = prefs.getString("camera_torch", "off") ?: "off"
 
                 val htmlTemplate = try {
                     context.assets.open("index.html").bufferedReader().use { it.readText() }
@@ -492,6 +493,7 @@ class StreamingServerHelper(
                     .replace("{{CUR_SCALE}}", curScale)
                     .replace("{{CUR_CONTRAST}}", curContrast)
                     .replace("{{CUR_DELAY}}", curDelay)
+                    .replace("{{CUR_TORCH}}", curTorch)
 
                 writer.print("HTTP/1.1 200 OK\r\n")
                 writer.print("Content-Type: text/html\r\n")
