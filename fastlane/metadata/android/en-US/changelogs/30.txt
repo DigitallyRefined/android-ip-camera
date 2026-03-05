@@ -1,0 +1,7 @@
+## What's Changed
+* Allow app to run in the background fixes #15
+* Added notification to quit app while it's running in the background
+* Moved camera controls to web UI
+
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.2.2...v0.3.0
