@@ -1,4 +1,4 @@
-package com.github.digitallyrefined.androidipcamera
+package com.github.digitallyrefined.androidipcamera.activities
 
 import android.app.Activity
 import android.content.Intent
@@ -12,6 +12,7 @@ import androidx.preference.EditTextPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
+import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 
@@ -147,7 +148,7 @@ class SettingsActivity : AppCompatActivity() {
                     secureStorage.putSecureString(SecureStorage.KEY_CERT_PASSWORD, password)
                     Toast.makeText(
                         requireContext(),
-                        "Certificate password saved. Use 'Test Certificate Setup' to validate.",
+                        "Certificate password saved, use 'Test Certificate Setup' to validate",
                         Toast.LENGTH_SHORT
                     ).show()
 
@@ -165,7 +166,7 @@ class SettingsActivity : AppCompatActivity() {
 
                     if (certPassword.isNullOrEmpty()) {
                         Toast.makeText(requireContext(),
-                            "Certificate password not configured. Set it above first.",
+                            "Certificate password not configured, set it above first",
                             Toast.LENGTH_LONG).show()
                         return@setOnPreferenceClickListener true
                     }
@@ -181,11 +182,11 @@ class SettingsActivity : AppCompatActivity() {
 
                     if (isValid) {
                         Toast.makeText(requireContext(),
-                            "✅ Certificate configuration is valid!",
+                            "✅ Certificate configuration is valid",
                             Toast.LENGTH_LONG).show()
                     } else {
                         Toast.makeText(requireContext(),
-                            "❌ Certificate validation failed. Check password and certificate file.",
+                            "❌ Certificate validation failed, check password and certificate file",
                             Toast.LENGTH_LONG).show()
                     }
 
@@ -265,18 +266,18 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
-            // Add listener for brightness changes (restart camera instead of app)
-            findPreference<Preference>("camera_brightness")?.apply {
+            // Add listener for exposure changes (restart camera instead of app)
+            findPreference<Preference>("camera_exposure")?.apply {
                 setOnPreferenceChangeListener { _, newValue ->
-                    val brightness = (newValue as? String)?.toIntOrNull() ?: 0
-                    if (brightness < -2 || brightness > 2) {
+                    val exposure = (newValue as? String)?.toIntOrNull() ?: 0
+                    if (exposure < -2 || exposure > 2) {
                         Toast.makeText(requireContext(),
-                            "Brightness must be between -2 and +2 EV",
+                            "Exposure must be between -2 and +2 EV",
                             Toast.LENGTH_SHORT).show()
                         return@setOnPreferenceChangeListener false
                     }
 
-                    // Send broadcast to restart camera with new brightness
+                    // Send broadcast to restart camera with new exposure
                     val intent = Intent("com.github.digitallyrefined.androidipcamera.RESTART_CAMERA").apply {
                         setPackage(requireContext().packageName)
                     }
@@ -316,7 +317,7 @@ class SettingsActivity : AppCompatActivity() {
                     // Enhanced certificate validation
                     if (!InputValidator.isValidCertificatePath(certificatePath)) {
                         Toast.makeText(requireContext(),
-                            "Invalid certificate file. Must be a valid .p12 or .pfx file under 10MB",
+                            "Invalid certificate file, must be a valid .p12 or .pfx file under 10MB",
                             Toast.LENGTH_LONG).show()
                         return@let
                     }
@@ -328,7 +329,7 @@ class SettingsActivity : AppCompatActivity() {
 
                     if (!InputValidator.validateCertificateUsability(requireContext(), certificateUri, certPassword)) {
                         Toast.makeText(requireContext(),
-                            "Certificate cannot be loaded. Check password and file integrity.",
+                            "Certificate cannot be loaded, check password and file integrity",
                             Toast.LENGTH_LONG).show()
                         return@let
                     }
@@ -342,7 +343,7 @@ class SettingsActivity : AppCompatActivity() {
                     findPreference<Preference>("certificate_path")?.summary = certificatePath
 
                     Toast.makeText(requireContext(),
-                        "Certificate configured. Restart the app for changes to take effect.",
+                        "Certificate configured, restart the app for changes to take effect",
                         Toast.LENGTH_SHORT).show()
                 }
             }

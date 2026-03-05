@@ -43,19 +43,19 @@
             android:src="@android:drawable/ic_menu_preferences"
             android:contentDescription="Settings" />
         <ImageButton
-            android:id="@+id/switchCameraButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="@android:color/transparent"
-            android:src="@android:drawable/ic_menu_camera"
-            android:contentDescription="Switch Camera" />
-        <ImageButton
             android:id="@+id/hidePreviewButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="@android:color/transparent"
             android:src="@android:drawable/ic_menu_view"
             android:contentDescription="Toggle Preview" />
+        <ImageButton
+            android:id="@+id/exitButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            android:contentDescription="Exit App" />
     </LinearLayout>
 
     <TextView

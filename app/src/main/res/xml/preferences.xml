@@ -16,51 +16,6 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
-    <PreferenceCategory
-        android:title="Stream Camera Quality"
-        android:summary="Change to prevent phone getting too hot">
-        <ListPreference
-            android:key="camera_resolution"
-            android:title="Camera Resolution"
-            android:summary="%s"
-            android:defaultValue="low"
-            android:entries="@array/camera_resolution_entries"
-            android:entryValues="@array/camera_resolution_values" />
-        <ListPreference
-            android:key="camera_zoom"
-            android:title="Camera Zoom"
-            android:summary="%s"
-            android:defaultValue="1.0"
-            android:entries="@array/camera_zoom_entries"
-            android:entryValues="@array/camera_zoom_values" />
-        <ListPreference
-            android:key="stream_scale"
-            android:title="Stream Scale"
-            android:summary="%s"
-            android:defaultValue="1.0"
-            android:entries="@array/stream_scale_entries"
-            android:entryValues="@array/stream_scale_values" />
-        <ListPreference
-            android:key="camera_brightness"
-            android:title="Camera Brightness"
-            android:summary="%s"
-            android:defaultValue="0"
-            android:entries="@array/camera_brightness_entries"
-            android:entryValues="@array/camera_brightness_values" />
-        <ListPreference
-            android:key="camera_contrast"
-            android:title="Camera Contrast"
-            android:summary="%s"
-            android:defaultValue="0"
-            android:entries="@array/camera_contrast_entries"
-            android:entryValues="@array/camera_contrast_values" />
-        <EditTextPreference
-            android:key="stream_delay"
-            android:title="Frame Delay (33ms = 30fps)"
-            android:defaultValue="33"
-            android:inputType="number" />
-    </PreferenceCategory>
-
     <PreferenceCategory android:title="Certificate Settings">
         <Preference
             android:key="certificate_path"

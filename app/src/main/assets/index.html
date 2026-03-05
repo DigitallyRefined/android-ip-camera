@@ -194,11 +194,11 @@
           <label for="scale">Scale <span class='val-badge' id='scaleVal'>{{CUR_SCALE}}x</span></label>
           <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='{{CUR_SCALE}}' oninput='setView("original"); document.getElementById("scaleVal").innerText=this.value+"x";fetch("/?scale="+this.value)'>
 
-          <label for="brightness">Brightness <span class='val-badge' id='brightVal'>{{CUR_BRIGHTNESS}}</span></label>
-          <input id="brightness" type='range' min='-10' max='10' step='1' value='{{CUR_BRIGHTNESS}}' oninput='document.getElementById("brightVal").innerText=this.value;fetch("/?brightness="+this.value)'>
+          <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>{{CUR_EXPOSURE}}</span></label>
+          <input id="exposure" type='range' min='-10' max='10' step='1' value='{{CUR_EXPOSURE}}' oninput='document.getElementById("exposureVal").innerText=this.value;fetch("/?exposure="+this.value)'>
 
           <label for="contrast">Contrast <span class='val-badge' id='contVal'>{{CUR_CONTRAST}}</span></label>
-          <input id="contrast" type='range' min='-50' max='50' step='1' value='{{CUR_CONTRAST}}' oninput='document.getElementById("contVal").innerText=this.value;fetch("/?contrast="+this.value)'>
+          <input id="contrast" type='range' min='-50' max='50' step='10' value='{{CUR_CONTRAST}}' oninput='document.getElementById("contVal").innerText=this.value;fetch("/?contrast="+this.value)'>
 
           <label for="delay">Frame Delay (ms)</label>
           <input id="delay" type='number' min='10' max='1000' value='{{CUR_DELAY}}' onchange='fetch("/?delay="+this.value)'>

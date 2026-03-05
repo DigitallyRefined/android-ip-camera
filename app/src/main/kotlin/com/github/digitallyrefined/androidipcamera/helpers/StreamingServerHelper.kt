@@ -119,11 +119,6 @@ class StreamingServerHelper(
     }
 
     fun startStreamingServer() {
-        // Show toast when starting server
-        Handler(Looper.getMainLooper()).post {
-            Toast.makeText(context, "Server starting...", Toast.LENGTH_SHORT).show()
-        }
-
         // Prevent concurrent starts
         synchronized(this) {
             if (isStarting) {
@@ -136,6 +131,11 @@ class StreamingServerHelper(
             }
 
             isStarting = true
+        }
+
+        // Show toast when starting server
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context, "Server starting...", Toast.LENGTH_SHORT).show()
         }
 
         // Stop existing server BEFORE creating new one (outside the coroutine)
@@ -205,7 +205,7 @@ class StreamingServerHelper(
                                   Handler(Looper.getMainLooper()).post {
                                       onLog("Certificate not found.")
                                       Toast.makeText(context,
-                                          "Certificate missing. Reset app to generate a new certificate",
+                                          "Certificate missing, reset app to generate a new certificate",
                                           Toast.LENGTH_LONG).show()
                                   }
                                   return@launch
@@ -221,7 +221,7 @@ class StreamingServerHelper(
                       } catch (e: Exception) {
                           Handler(Looper.getMainLooper()).post {
                               onLog("ERROR: Could not load certificate: ${e.message}")
-                              Toast.makeText(context, "Certificate error. Check certificate file and password in Settings.", Toast.LENGTH_LONG).show()
+                              Toast.makeText(context, "Certificate error, check certificate file and password in Settings", Toast.LENGTH_LONG).show()
                           }
                           return@launch
                       }
@@ -272,9 +272,9 @@ class StreamingServerHelper(
                                   onLog("Certificate loading failed: ${keystoreException.message}")
                                   val errorMsg = when {
                                       keystoreException.message?.contains("password") == true ->
-                                          "Certificate password is incorrect. Check Settings > Advanced Security."
+                                          "Certificate password is incorrect, check Settings > Advanced Security"
                                       keystoreException.message?.contains("keystore") == true ->
-                                          "Certificate file is corrupted or invalid. Regenerate with setup.bat."
+                                          "Certificate file is corrupted or invalid, regenerate with setup.bat"
                                       else ->
                                           "Certificate error: ${keystoreException.message}"
                                   }
@@ -475,7 +475,7 @@ class StreamingServerHelper(
                 val curResolution = prefs.getString("camera_resolution", "low") ?: "low"
                 val curZoom = prefs.getString("camera_zoom", "1.0") ?: "1.0"
                 val curScale = prefs.getString("stream_scale", "1.0") ?: "1.0"
-                val curBrightness = prefs.getString("camera_brightness", "0") ?: "0"
+                val curExposure = prefs.getString("camera_exposure", "0") ?: "0"
                 val curContrast = prefs.getString("camera_contrast", "0") ?: "0"
                 val curDelay = prefs.getString("stream_delay", "33") ?: "33"
                 val curTorch = prefs.getString("camera_torch", "off") ?: "off"
@@ -492,8 +492,8 @@ class StreamingServerHelper(
                     .replace("{{RES_MEDIUM_SELECTED}}", if (curResolution == "medium") "selected" else "")
                     .replace("{{RES_HIGH_SELECTED}}", if (curResolution == "high") "selected" else "")
                     .replace("{{CUR_ZOOM}}", curZoom)
-                    .replace("{{CUR_BRIGHTNESS}}", curBrightness)
                     .replace("{{CUR_SCALE}}", curScale)
+                    .replace("{{CUR_EXPOSURE}}", curExposure)
                     .replace("{{CUR_CONTRAST}}", curContrast)
                     .replace("{{CUR_DELAY}}", curDelay)
                     .replace("{{CUR_TORCH}}", curTorch)

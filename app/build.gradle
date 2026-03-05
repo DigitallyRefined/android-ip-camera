@@ -18,7 +18,7 @@ android {
         minSdk 24
         targetSdk 34
         versionCode 1
-        versionName "0.2.2"
+        versionName "0.3.0"
     }
 
     signingConfigs {
@@ -110,6 +110,7 @@ dependencies {
     // Coroutines for asynchronous operations
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
+    implementation 'androidx.lifecycle:lifecycle-service:2.6.2'
 
     // BouncyCastle for certificate generation
     implementation 'org.bouncycastle:bcprov-jdk15on:1.70'
