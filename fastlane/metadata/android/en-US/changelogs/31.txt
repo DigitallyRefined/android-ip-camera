@@ -1,0 +1,5 @@
+## What's Changed
+* Fix streaming server stopping when notification dismissed
+
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.3.0...v0.3.1
