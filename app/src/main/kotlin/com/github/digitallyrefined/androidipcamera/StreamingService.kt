@@ -5,8 +5,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -35,6 +37,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.helpers.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
@@ -65,6 +68,24 @@ class StreamingService : LifecycleService() {
     // Preview surface provider
     private var currentSurfaceProvider: Preview.SurfaceProvider? = null
 
+    private val notificationChannelReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                if (intent?.action == NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED) {
+                    val channelId = intent.getStringExtra(NotificationManager.EXTRA_NOTIFICATION_CHANNEL_ID)
+                    if (channelId == CHANNEL_ID) {
+                        val manager = getSystemService(NotificationManager::class.java)
+                        val channel = manager.getNotificationChannel(CHANNEL_ID)
+                        if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) {
+                            Log.w(TAG, "Notification channel $channelId blocked by user. Stopping service.")
+                            handleStopService()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "StreamingService"
         private const val STREAM_PORT = 4444
@@ -74,6 +95,7 @@ class StreamingService : LifecycleService() {
         private const val CAMERA_FACING_BACK = "back"
         private const val CAMERA_FACING_FRONT = "front"
         const val ACTION_STOP_SERVICE = "com.github.digitallyrefined.androidipcamera.STOP_SERVICE"
+        const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
     }
 
     inner class LocalBinder : Binder() {
@@ -87,15 +109,21 @@ class StreamingService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_SERVICE) {
-            val closeIntent = Intent("com.github.digitallyrefined.androidipcamera.CLOSE_APP")
-            closeIntent.setPackage(packageName) // Ensure only our app receives this
-            sendBroadcast(closeIntent)
-
-            stopForeground(true)
-            stopSelf()
+            handleStopService()
             return START_NOT_STICKY
+        } else if (intent?.action == ACTION_RESTART_NOTIFICATION) {
+            startForegroundService()
         }
         return super.onStartCommand(intent, flags, startId)
+    }
+
+    private fun handleStopService() {
+        val closeIntent = Intent("com.github.digitallyrefined.androidipcamera.CLOSE_APP")
+        closeIntent.setPackage(packageName) // Ensure only our app receives this
+        sendBroadcast(closeIntent)
+
+        stopForeground(true)
+        stopSelf()
     }
 
     override fun onCreate() {
@@ -110,10 +138,39 @@ class StreamingService : LifecycleService() {
         } else {
             CameraSelector.DEFAULT_BACK_CAMERA
         }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val filter = IntentFilter(NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED)
+            registerReceiver(notificationChannelReceiver, filter)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startNotificationChannelCheckFallback()
+        }
+    }
+
+    private fun startNotificationChannelCheckFallback() {
+        lifecycleScope.launch(Dispatchers.Main) {
+            while (isActive) {
+                val manager = getSystemService(NotificationManager::class.java)
+                val channel = manager.getNotificationChannel(CHANNEL_ID)
+                if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) {
+                    Log.w(TAG, "Notification channel $CHANNEL_ID blocked (fallback check). Stopping service.")
+                    handleStopService()
+                    break
+                }
+                kotlinx.coroutines.delay(5000)
+            }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                unregisterReceiver(notificationChannelReceiver)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error unregistering notification receiver: ${e.message}")
+            }
+        }
         cameraExecutor?.shutdown()
         stopCamera()
         lifecycleScope.launch(Dispatchers.IO) {
@@ -136,6 +193,11 @@ class StreamingService : LifecycleService() {
         }
         val stopPendingIntent = PendingIntent.getService(this, 1, stopIntent, PendingIntent.FLAG_IMMUTABLE)
 
+        val restartIntent = Intent(this, StreamingService::class.java).apply {
+            action = ACTION_RESTART_NOTIFICATION
+        }
+        val restartPendingIntent = PendingIntent.getService(this, 2, restartIntent, PendingIntent.FLAG_IMMUTABLE)
+
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Android IP Camera Streaming")
             .setContentText("Camera server is running in background")
@@ -143,6 +205,7 @@ class StreamingService : LifecycleService() {
             .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
             .setContentIntent(pendingIntent)
             .addAction(R.drawable.ic_notification, "Exit App", stopPendingIntent)
+            .setDeleteIntent(restartPendingIntent)
             .setOngoing(true)
             .build()
 

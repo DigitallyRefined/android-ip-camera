@@ -163,10 +163,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<ImageButton>(R.id.exitButton).setOnClickListener {
-            val stopIntent = Intent(this, StreamingService::class.java).apply {
-                action = StreamingService.ACTION_STOP_SERVICE
-            }
-            startService(stopIntent)
+            exitApp()
         }
     }
 
@@ -184,6 +181,18 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         if (isBound && !userHiddenPreview) {
             streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+        }
+        checkNotificationChannelEnabled()
+    }
+
+    private fun checkNotificationChannelEnabled() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val channel = manager.getNotificationChannel("streaming_service_channel")
+            if (channel != null && channel.importance == android.app.NotificationManager.IMPORTANCE_NONE) {
+                Toast.makeText(this, "Notification permissions are required for the camera server to function", Toast.LENGTH_LONG).show()
+                exitApp()
+            }
         }
     }
 
@@ -204,6 +213,23 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(closeAppReceiver)
     }
 
+    public fun exitApp() {
+        val stopIntent = Intent(this, StreamingService::class.java).apply {
+            action = StreamingService.ACTION_STOP_SERVICE
+        }
+        startService(stopIntent)
+
+        try {
+            unbindService(connection)
+        } catch (e: IllegalArgumentException) {
+            // Ignore if not bound
+        }
+        isBound = false
+        streamingService = null
+        val intent = Intent(this, StreamingService::class.java)
+        stopService(intent)
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<String>,
@@ -217,10 +243,23 @@ class MainActivity : AppCompatActivity() {
                 }
                 startService()
             } else {
-                Toast.makeText(this, "Camera & notification permissions are required", Toast.LENGTH_LONG).show()
-                finish()
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Permissions Required")
+                    .setMessage("Camera and notification permissions are required for the camera server to function. Please enable them in App Settings.")
+                    .setPositiveButton("Settings") { _, _ ->
+                        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = android.net.Uri.fromParts("package", packageName, null)
+                        }
+                        startActivity(intent)
+                    }
+                    .setOnCancelListener {
+                        exitApp()
+                    }
+                    .show()
             }
         }
+
+        checkNotificationChannelEnabled()
     }
 
     private fun getLocalIpAddress(): String {
@@ -321,7 +360,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             arrayOf(
                 Manifest.permission.CAMERA,
-                Manifest.permission.POST_NOTIFICATIONS,
                 Manifest.permission.READ_EXTERNAL_STORAGE
             )
         }
