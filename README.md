@@ -7,17 +7,6 @@ An Android MJPEG IP Camera app
 
 ![Desktop Browser](screenshot.webp)
 
-## Install
-
-<div align="center">
-<a href="https://github.com/DigitallyRefined/android-ip-camera/releases">
-<img src="https://user-images.githubusercontent.com/69304392/148696068-0cfea65d-b18f-4685-82b5-329a330b1c0d.png"
-alt="Get it on GitHub" align="center" height="80" /></a>
-
-<a href="https://github.com/ImranR98/Obtainium">
-<img src="https://raw.githubusercontent.com/ImranR98/Obtainium/refs/heads/main/assets/graphics/badge_obtainium.png"
-alt="Get it on Obtainium" align="center" height="54" /></a>
-</div>
 
 ## Features
 
