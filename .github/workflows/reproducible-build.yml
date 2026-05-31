@@ -1,0 +1,71 @@
+name: Reproducible Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify-reproducible:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: |
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Build release APK (first)
+        run: |
+          ./gradlew clean :app:assembleRelease \
+            -PskipSigning \
+            --no-daemon \
+            --max-workers=1 \
+            -Dorg.gradle.parallel=false
+          mkdir -p build/unsigned
+          cp app/build/outputs/apk/release/*universal-release.apk build/unsigned/build1.apk
+
+      - name: Clean and build release APK (second)
+        run: |
+          ./gradlew clean :app:assembleRelease \
+            -PskipSigning \
+            --no-daemon \
+            --max-workers=1 \
+            -Dorg.gradle.parallel=false
+          mkdir -p build/unsigned
+          cp app/build/outputs/apk/release/*universal-release.apk build/unsigned/build2.apk
+
+      - name: Install verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends diffoscope
+
+      - name: Compare APKs
+        run: |
+          cmp -s build/unsigned/build1.apk build/unsigned/build2.apk
+          echo "Reproducible build verification passed (APKs are identical)."
+
+      - name: diffoscope report on failure
+        if: failure()
+        continue-on-error: true
+        run: diffoscope build/unsigned/build1.apk build/unsigned/build2.apk > diffoscope.txt || true
+
+      - name: Upload diffoscope report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diffoscope-report
+          path: diffoscope.txt
+          retention-days: 7

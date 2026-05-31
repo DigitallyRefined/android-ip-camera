@@ -3,6 +3,9 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def skipSigning = project.hasProperty('skipSigning')
+def enableAbiSplits = project.properties.getOrDefault('enableAbiSplits', 'true').toBoolean()
+
 def keystorePropertiesFile = rootProject.file("signing.properties")
 def keystoreProperties = new Properties()
 if (keystorePropertiesFile.exists()) {
@@ -17,13 +20,23 @@ android {
         applicationId "com.github.digitallyrefined.androidipcamera"
         minSdk 24
         targetSdk 34
-        versionCode 1
+        versionCode 31
         versionName "0.3.1"
+
+        // https://f-droid.org/docs/Reproducible_Builds/#pngs-generated-from-vector-drawables
+        vectorDrawables.generatedDensities = []
+    }
+
+    // https://f-droid.org/docs/Reproducible_Builds/#png-crushcrunch
+    aaptOptions {
+        cruncherEnabled false
     }
 
     signingConfigs {
         release {
-          if (keystorePropertiesFile.exists() && keystoreProperties['storeFile']) {
+          if (skipSigning) {
+              // Unsigned release builds for reproducible build verification.
+          } else if (keystorePropertiesFile.exists() && keystoreProperties['storeFile']) {
               storeFile file(keystoreProperties['storeFile'])
               storePassword keystoreProperties['storePassword']
               keyAlias keystoreProperties['keyAlias']
@@ -45,12 +58,19 @@ android {
             minifyEnabled false
         }
         release {
-            signingConfig signingConfigs.release
+            if (!skipSigning) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled true
+            crunchPngs false
+            // https://f-droid.org/docs/Reproducible_Builds/#vcs-info
+            vcsInfo {
+                include false
+            }
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             splits {
                 abi {
-                    enable true
+                    enable enableAbiSplits
                     reset()
                     include "armeabi-v7a", "arm64-v8a"
                     universalApk true
@@ -72,6 +92,11 @@ android {
         viewBinding true
     }
 
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     packaging {
         jniLibs {
             useLegacyPackaging = true
@@ -87,6 +112,13 @@ android {
             def newApkName = "${project.rootProject.name}-${versionName}-${abi}-${buildType}.apk"
             outputFileName = newApkName
         }
+    }
+}
+
+// https://f-droid.org/docs/Reproducible_Builds/#bug-baselineprof-not-deterministic
+tasks.whenTaskAdded { task ->
+    if (task.name.contains("ArtProfile")) {
+        task.enabled = false
     }
 }
 

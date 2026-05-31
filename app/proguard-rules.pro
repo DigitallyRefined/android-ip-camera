@@ -65,6 +65,11 @@
 -keep class kotlinx.coroutines.** { *; }
 -dontwarn kotlinx.coroutines.**
 
+# R8: avoid non-deterministic ServiceLoader optimizations
+# https://f-droid.org/docs/Reproducible_Builds/#r8-optimizer
+-keep class kotlinx.coroutines.CoroutineExceptionHandler
+-keep class kotlinx.coroutines.internal.MainDispatcherFactory
+
 # Keep Lifecycle classes
 -keep class androidx.lifecycle.** { *; }
 -dontwarn androidx.lifecycle.**
