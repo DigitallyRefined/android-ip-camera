@@ -1,6 +1,9 @@
 Categories:
-  - Internet
+  - Camera
+  - Connectivity
   - Multimedia
+  - Remote Access
+  - Remote Controller
 License: MIT
 AuthorName: DigitallyRefined
 SourceCode: https://github.com/DigitallyRefined/android-ip-camera
@@ -25,9 +28,19 @@ Builds:
       - skipSigning=true
       - enableAbiSplits=false
 
+  - versionName: 0.4.0
+    versionCode: 40
+    commit: ff13748335039a109c43b6453b59a17aaaf0bbf6
+    subdir: app
+    gradle:
+      - yes
+    gradleprops:
+      - skipSigning=true
+      - enableAbiSplits=false
+
 AllowedAPKSigningKeys: 1111be81c861e199c6485d367c37680c4b778fba301980d2f0f9a2800f77f70a
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
-CurrentVersion: 0.3.1
-CurrentVersionCode: 31
+CurrentVersion: 0.4.0
+CurrentVersionCode: 40
