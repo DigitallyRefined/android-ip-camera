@@ -59,7 +59,7 @@ def bullets_to_html(lines):
     items = []
     for line in lines:
         s = line.strip()
-        if s.startswith("- "):
+        if s.startswith("* "):
             items.append(s[2:].strip())
     if not items:
         return ""

@@ -96,6 +96,7 @@ class StreamingService : LifecycleService() {
         private const val CAMERA_FACING_FRONT = "front"
         const val ACTION_STOP_SERVICE = "com.github.digitallyrefined.androidipcamera.STOP_SERVICE"
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
+        const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
     }
 
     inner class LocalBinder : Binder() {
@@ -113,6 +114,8 @@ class StreamingService : LifecycleService() {
             return START_NOT_STICKY
         } else if (intent?.action == ACTION_RESTART_NOTIFICATION) {
             startForegroundService()
+        } else if (intent?.action == ACTION_RESTART_SERVER) {
+            restartServer()
         }
         return super.onStartCommand(intent, flags, startId)
     }
@@ -124,6 +127,14 @@ class StreamingService : LifecycleService() {
 
         stopForeground(true)
         stopSelf()
+    }
+
+    private fun restartServer() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            streamingServerHelper?.stopServer()
+            kotlinx.coroutines.delay(500) // Brief delay to ensure clean shutdown
+            streamingServerHelper?.startStreamingServer()
+        }
     }
 
     override fun onCreate() {
@@ -546,6 +557,10 @@ class StreamingService : LifecycleService() {
                 val currentRotation = prefs.getInt("camera_manual_rotate", 0)
                 val nextRotation = (currentRotation + 90) % 360
                 prefs.edit().putInt("camera_manual_rotate", nextRotation).apply()
+            }
+            "audio_gain" -> {
+                val gain = value.toFloatOrNull() ?: return
+                if (gain in 0.5f..3.0f) prefs.edit().putString("audio_gain", gain.toString()).apply()
             }
         }
     }

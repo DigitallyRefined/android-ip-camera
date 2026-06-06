@@ -151,7 +151,10 @@ class MainActivity : AppCompatActivity() {
 
         val ipAddressText = findViewById<TextView>(R.id.ipAddressText)
         val ipAddress = getLocalIpAddress()
-        ipAddressText.text = "https://$ipAddress:$STREAM_PORT"
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val tlsVersion = prefs.getString("tls_version", "1.3") ?: "1.3"
+        val protocol = if (tlsVersion == "disabled") "http" else "https"
+        ipAddressText.text = "$protocol://$ipAddress:$STREAM_PORT"
         showNoClientMessage(true)
 
         findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {

@@ -176,9 +176,12 @@
             <button id="flashBtn" class="btn btn-action" style='width: 49%;'>💡 Flash On</button>
           </div>
 
-          <div id="avDelayContainer">
+          <div id="audioControls">
             <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.0s</span></label>
             <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
+
+            <label for="audioGain">Audio Gain <span class='val-badge' id='audioGainVal'>{{CUR_AUDIO_GAIN}}</span></label>
+            <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='{{CUR_AUDIO_GAIN}}' oninput='document.getElementById("audioGainVal").innerText=this.value;fetch("/?audio_gain="+this.value)'>
           </div>
 
           <label for="resolutionSelect">Resolution</label>
@@ -200,6 +203,7 @@
           <label for="contrast">Contrast <span class='val-badge' id='contVal'>{{CUR_CONTRAST}}</span></label>
           <input id="contrast" type='range' min='-50' max='50' step='10' value='{{CUR_CONTRAST}}' oninput='document.getElementById("contVal").innerText=this.value;fetch("/?contrast="+this.value)'>
 
+
           <label for="delay">Frame Delay (ms)</label>
           <input id="delay" type='number' min='10' max='1000' value='{{CUR_DELAY}}' onchange='fetch("/?delay="+this.value)'>
         </div>
@@ -212,7 +216,7 @@
       let currentCamera = '{{CUR_CAMERA}}';
       const audioEl = document.getElementById('audioEl');
       const muteBtn = document.getElementById('muteBtn');
-      const avDelayContainer = document.getElementById('avDelayContainer');
+      const audioControls = document.getElementById('audioControls');
       const streamContainer = document.getElementById('streamContainer');
       const avDelay = document.getElementById('avDelay');
       const avDelayVal = document.getElementById('avDelayVal');
@@ -255,7 +259,7 @@
           ? '🔇 Unmute Audio'
           : '🔊 Mute Audio';
 
-        avDelayContainer.style.display = audioEl.muted
+        audioControls.style.display = audioEl.muted
           ? 'none'
           : 'block';
       }

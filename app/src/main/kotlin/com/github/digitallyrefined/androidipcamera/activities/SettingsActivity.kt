@@ -13,6 +13,7 @@ import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
+import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 
@@ -46,9 +47,53 @@ class SettingsActivity : AppCompatActivity() {
                     )
                     true
                 }
+
+                setOnPreferenceChangeListener { _, _ ->
+                    // Restart server when certificate path changes
+                    restartStreamingServer()
+                    true
+                }
             }
 
             val secureStorage = SecureStorage(requireContext())
+
+            // Configure authentication enable/disable checkbox
+            findPreference<androidx.preference.CheckBoxPreference>("enable_auth")?.apply {
+                // Initialize visibility based on current value
+                val enabled = isChecked
+                findPreference<EditTextPreference>("username")?.isVisible = enabled
+                findPreference<EditTextPreference>("password")?.isVisible = enabled
+
+                setOnPreferenceChangeListener { _, newValue ->
+                    val enabled = newValue as Boolean
+                    // Show/hide username and password preferences
+                    findPreference<EditTextPreference>("username")?.isVisible = enabled
+                    findPreference<EditTextPreference>("password")?.isVisible = enabled
+                    // Restart server when authentication setting changes
+                    restartStreamingServer()
+                    true
+                }
+            }
+
+            // Configure TLS version preference to hide/show certificate options
+            findPreference<androidx.preference.ListPreference>("tls_version")?.apply {
+                // Initialize visibility based on current value
+                val tlsEnabled = value != "disabled"
+                findPreference<Preference>("certificate_path")?.isVisible = tlsEnabled
+                findPreference<EditTextPreference>("certificate_password")?.isVisible = tlsEnabled
+                findPreference<Preference>("test_certificate")?.isVisible = tlsEnabled
+
+                setOnPreferenceChangeListener { _, newValue ->
+                    val tlsEnabled = newValue != "disabled"
+                    // Show/hide certificate preferences
+                    findPreference<Preference>("certificate_path")?.isVisible = tlsEnabled
+                    findPreference<EditTextPreference>("certificate_password")?.isVisible = tlsEnabled
+                    findPreference<Preference>("test_certificate")?.isVisible = tlsEnabled
+                    // Restart server when TLS version changes
+                    restartStreamingServer()
+                    true
+                }
+            }
 
             // Configure username (optional - defaults available)
             findPreference<EditTextPreference>("username")?.apply {
@@ -65,6 +110,8 @@ class SettingsActivity : AppCompatActivity() {
                     }
                     // Store securely (empty string means use default)
                     secureStorage.putSecureString(SecureStorage.KEY_USERNAME, username)
+                    // Restart server when username changes
+                    restartStreamingServer()
                     true
                 }
             }
@@ -96,6 +143,8 @@ class SettingsActivity : AppCompatActivity() {
 
                     // Store securely only; do not persist plaintext in SharedPreferences
                     secureStorage.putSecureString(SecureStorage.KEY_PASSWORD, password)
+                    // Restart server when password changes
+                    restartStreamingServer()
                     // Returning false prevents EditTextPreference from saving the plaintext
                     false
                 }
@@ -151,7 +200,8 @@ class SettingsActivity : AppCompatActivity() {
                         "Certificate password saved, use 'Test Certificate Setup' to validate",
                         Toast.LENGTH_SHORT
                     ).show()
-
+                    // Restart server when certificate password changes
+                    restartStreamingServer()
                     // Returning false prevents EditTextPreference from saving the plaintext
                     false
                 }
@@ -348,6 +398,14 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
             super.onActivityResult(requestCode, resultCode, data)
+        }
+
+        private fun restartStreamingServer() {
+            val intent = Intent(requireContext(), StreamingService::class.java).apply {
+                action = StreamingService.ACTION_RESTART_SERVER
+            }
+            requireContext().startService(intent)
+            Toast.makeText(requireContext(), "Server restarting...", Toast.LENGTH_SHORT).show()
         }
     }
 }

@@ -85,6 +85,19 @@ class StreamingServerHelper(
 
     fun getClients(): List<Client> = clients.toList()
 
+    fun stopServer() {
+        serverJob?.cancel()
+        serverSocket?.close()
+        clients.forEach { client ->
+            try {
+                client.socket.close()
+            } catch (e: Exception) {
+                // Ignore close errors
+            }
+        }
+        clients.clear()
+    }
+
     private fun isRateLimited(clientIp: String): Boolean {
         val now = System.currentTimeMillis()
         val attempt = failedAttempts.getOrPut(clientIp) { FailedAttempt() }
@@ -229,68 +242,123 @@ class StreamingServerHelper(
 
                   val bindAddress = InetAddress.getByName("0.0.0.0")
 
-                  serverSocket = try {
-                      // Determine which certificate file to use
-                      val certFile = if (certificatePath != null) {
-                          // Custom certificate - copy from URI to local file
-                          val uri = certificatePath.toUri()
-                          val privateFile = File(context.filesDir, "certificate.p12")
-                          if (privateFile.exists()) privateFile.delete()
-                          context.contentResolver.openInputStream(uri)?.use { input ->
-                              privateFile.outputStream().use { output ->
-                                  input.copyTo(output)
-                              }
-                          } ?: throw IOException("Failed to open certificate file")
-                          privateFile
-                      } else {
-                          // Personal certificate
-                          File(finalCertificatePath!!)
-                      }
+                  // Get TLS version preference
+                  val tlsVersionPref = prefs.getString("tls_version", "1.3") ?: "1.3"
+                  val useTLS = tlsVersionPref != "disabled"
 
-                      certFile.inputStream().use { inputStream ->
-                          try {
-                              val keyStore = KeyStore.getInstance("PKCS12")
-                              keyStore.load(inputStream, finalCertificatePassword)
-                              val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-                              keyManagerFactory.init(keyStore, finalCertificatePassword)
-                              val sslContext = SSLContext.getInstance("TLSv1.3")
-                              sslContext.init(keyManagerFactory.keyManagers, null, null)
-                              val sslServerSocketFactory = sslContext.serverSocketFactory
-                              (sslServerSocketFactory.createServerSocket(streamPort, 50, bindAddress) as SSLServerSocket).apply {
+                  serverSocket = if (useTLS) {
+                      try {
+                          // Determine which certificate file to use
+                          val certFile = if (certificatePath != null) {
+                              // Custom certificate - copy from URI to local file
+                              val uri = certificatePath.toUri()
+                              val privateFile = File(context.filesDir, "certificate.p12")
+                              if (privateFile.exists()) privateFile.delete()
+                              context.contentResolver.openInputStream(uri)?.use { input ->
+                                  privateFile.outputStream().use { output ->
+                                      input.copyTo(output)
+                                  }
+                              } ?: throw IOException("Failed to open certificate file")
+                              privateFile
+                          } else {
+                              // Personal certificate
+                              File(finalCertificatePath!!)
+                          }
+
+                          // Try TLS versions with fallback
+                          val tlsVersionsToTry = when (tlsVersionPref) {
+                              "1.3" -> listOf("TLSv1.3", "TLSv1.2")
+                              "1.2" -> listOf("TLSv1.2")
+                              else -> listOf("TLSv1.3", "TLSv1.2")
+                          }
+
+                          var sslServerSocket: SSLServerSocket? = null
+                          var lastError: Exception? = null
+                          var actualTlsVersionUsed: String? = null
+
+                          for (tlsVersion in tlsVersionsToTry) {
+                              try {
+                                  certFile.inputStream().use { inputStream ->
+                                      val keyStore = KeyStore.getInstance("PKCS12")
+                                      keyStore.load(inputStream, finalCertificatePassword)
+                                      val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+                                      keyManagerFactory.init(keyStore, finalCertificatePassword)
+
+                                      val sslContext = try {
+                                          SSLContext.getInstance(tlsVersion)
+                                      } catch (e: Exception) {
+                                          // TLS version not supported, try next
+                                          lastError = e
+                                          continue
+                                      }
+
+                                      sslContext.init(keyManagerFactory.keyManagers, null, null)
+                                      val sslServerSocketFactory = sslContext.serverSocketFactory
+                                      sslServerSocket = (sslServerSocketFactory.createServerSocket(streamPort, 50, bindAddress) as SSLServerSocket).apply {
+                                          reuseAddress = true
+                                          enabledProtocols = arrayOf(tlsVersion)
+                                          // Don't restrict cipher suites - let the system negotiate
+                                          soTimeout = 30000
+                                      }
+                                      actualTlsVersionUsed = tlsVersion
+                                      onLog("Server started with TLS $tlsVersion")
+                                      break
+                                  }
+                              } catch (keystoreException: Exception) {
+                                  lastError = keystoreException
+                                  continue
+                              }
+                          }
+
+                          if (sslServerSocket == null) {
+                              // Both TLS versions failed, disable TLS
+                              prefs.edit().putString("tls_version", "disabled").apply()
+                              throw lastError ?: IOException("Failed to create SSL server socket with any TLS version")
+                          }
+
+                          // Update preference if we fell back to a different version
+                          if (actualTlsVersionUsed != null && tlsVersionPref != actualTlsVersionUsed) {
+                              val newPrefValue = when (actualTlsVersionUsed) {
+                                  "TLSv1.3" -> "1.3"
+                                  "TLSv1.2" -> "1.2"
+                                  else -> "disabled"
+                              }
+                              prefs.edit().putString("tls_version", newPrefValue).apply()
+                              onLog("Updated TLS version preference to $actualTlsVersionUsed (fallback)")
+                          }
+
+                          sslServerSocket
+                      } catch (keystoreException: Exception) {
+                          Handler(Looper.getMainLooper()).post {
+                              onLog("Certificate loading failed: ${keystoreException.message}")
+                              val errorMsg = when {
+                                  keystoreException.message?.contains("password") == true ->
+                                      "Certificate password is incorrect, check Settings > Advanced Security"
+                                  keystoreException.message?.contains("keystore") == true ->
+                                      "Certificate file is corrupted or invalid, regenerate with setup.bat"
+                                  else ->
+                                      "Certificate error: ${keystoreException.message}"
+                              }
+                              Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
+                          }
+                          return@launch
+                      }
+                  } else {
+                      // Use HTTP (no TLS)
+                      try {
+                          ServerSocket(streamPort, 50, bindAddress).apply {
                                   reuseAddress = true
-                                  enabledProtocols = arrayOf("TLSv1.3", "TLSv1.2")
-                                  enabledCipherSuites = arrayOf(
-                                      "TLS_AES_256_GCM_SHA384",
-                                      "TLS_AES_128_GCM_SHA256",
-                                      "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-                                      "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-                                  )
                                   soTimeout = 30000
                               }
-                          } catch (keystoreException: Exception) {
-                              Handler(Looper.getMainLooper()).post {
-                                  onLog("Certificate loading failed: ${keystoreException.message}")
-                                  val errorMsg = when {
-                                      keystoreException.message?.contains("password") == true ->
-                                          "Certificate password is incorrect, check Settings > Advanced Security"
-                                      keystoreException.message?.contains("keystore") == true ->
-                                          "Certificate file is corrupted or invalid, regenerate with setup.bat"
-                                      else ->
-                                          "Certificate error: ${keystoreException.message}"
-                                  }
-                                  Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
-                              }
-                              return@launch
+                      } catch (e: Exception) {
+                          Handler(Looper.getMainLooper()).post {
+                              onLog("CRITICAL: Failed to create HTTP server: ${e.message}")
+                              Toast.makeText(context, "Failed to start HTTP server: ${e.message}", Toast.LENGTH_LONG).show()
                           }
+                          return@launch
                       }
-                  } catch (e: Exception) {
-                      Handler(Looper.getMainLooper()).post {
-                          onLog("CRITICAL: Failed to create HTTPS server: ${e.message}")
-                          Toast.makeText(context, "Failed to start secure HTTPS server: ${e.message}", Toast.LENGTH_LONG).show()
-                      }
-                      return@launch
                   }
-                  onLog("Server started on port $streamPort (${if (certificatePath != null) "HTTPS" else "HTTP"})")
+                  onLog("Server started on port $streamPort (${if (useTLS) "HTTPS" else "HTTP"})")
                   // Clear the starting flag now that server is running
                   synchronized(this@StreamingServerHelper) {
                       isStarting = false
@@ -358,23 +426,36 @@ class StreamingServerHelper(
             val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
             val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: ""
 
-            // SECURITY: Authentication is now MANDATORY for all connections
-            // Validate stored credentials - require both username and password
-            val username = InputValidator.validateAndSanitizeUsername(rawUsername)
-            val password = InputValidator.validateAndSanitizePassword(rawPassword)
+            // Check if authentication is enabled
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val enableAuth = prefs.getBoolean("enable_auth", true)
 
-            if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
-                // CRITICAL: No valid credentials configured - reject all connections
-                recordFailedAttempt(clientIp)
-                writer.print("HTTP/1.1 403 Forbidden\r\n")
-                writer.print("Content-Type: text/plain\r\n")
-                writer.print("Connection: close\r\n\r\n")
-                writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
-                writer.print("Configure username and password in app settings.\r\n")
-                writer.flush()
-                socket.close()
-                onLog("SECURITY: Connection rejected - authentication credentials not configured")
-                return
+            // Validate stored credentials if auth is enabled
+            val username = if (enableAuth) {
+                InputValidator.validateAndSanitizeUsername(rawUsername)
+            } else {
+                null
+            }
+            val password = if (enableAuth) {
+                InputValidator.validateAndSanitizePassword(rawPassword)
+            } else {
+                null
+            }
+
+            if (enableAuth) {
+                if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
+                    // CRITICAL: No valid credentials configured - reject all connections
+                    recordFailedAttempt(clientIp)
+                    writer.print("HTTP/1.1 403 Forbidden\r\n")
+                    writer.print("Content-Type: text/plain\r\n")
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
+                    writer.print("Configure username and password in app settings.\r\n")
+                    writer.flush()
+                    socket.close()
+                    onLog("SECURITY: Connection rejected - authentication credentials not configured")
+                    return
+                }
             }
 
             // Read HTTP headers
@@ -385,7 +466,7 @@ class StreamingServerHelper(
                 headers.add(line!!)
             }
 
-            // SECURITY: Require Basic Authentication header for all requests
+            // SECURITY: Require Basic Authentication header for all requests (when auth is enabled)
             // Parse headers in a robust, case-insensitive way (RFC 7230: header field names are case-insensitive)
             val authHeaderPair = headers.mapNotNull { hdr ->
                 val idx = hdr.indexOf(":")
@@ -397,75 +478,77 @@ class StreamingServerHelper(
                 name.equals("Authorization", ignoreCase = true) && value.startsWith("Basic ", ignoreCase = true)
             }
 
-            if (authHeaderPair == null) {
-                // Rate limiting ONLY applies to unauthenticated requests
-                if (isRateLimited(clientIp)) {
-                    writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                    writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
+            if (enableAuth) {
+                if (authHeaderPair == null) {
+                    // Rate limiting ONLY applies to unauthenticated requests
+                    if (isRateLimited(clientIp)) {
+                        writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                        writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
+                        writer.print("Connection: close\r\n\r\n")
+                        writer.flush()
+                        socket.close()
+                        onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
+                        Thread.sleep(100)
+                        return
+                    }
+                    recordFailedAttempt(clientIp)
+                    writer.print("HTTP/1.1 401 Unauthorized\r\n")
+                    writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
                     writer.print("Connection: close\r\n\r\n")
+                    writer.print("Unauthorized. Check username and password in the app settings.\r\n")
                     writer.flush()
                     socket.close()
-                    onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
-                    Thread.sleep(100)
                     return
                 }
-                recordFailedAttempt(clientIp)
-                writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
-                writer.print("Connection: close\r\n\r\n")
-                writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                writer.flush()
-                socket.close()
-                return
-            }
 
-            val authValue = authHeaderPair.second
-            val providedAuthEncoded = authValue.substringAfter("Basic ", "")
-            val providedAuth = try {
-                val decoded = Base64.decode(providedAuthEncoded, Base64.DEFAULT)
-                String(decoded)
-            } catch (e: IllegalArgumentException) {
-                // Malformed base64
-                if (isRateLimited(clientIp)) {
-                    writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                    writer.print("Retry-After: 30\r\n")
+                val authValue = authHeaderPair.second
+                val providedAuthEncoded = authValue.substringAfter("Basic ", "")
+                val providedAuth = try {
+                    val decoded = Base64.decode(providedAuthEncoded, Base64.DEFAULT)
+                    String(decoded)
+                } catch (e: IllegalArgumentException) {
+                    // Malformed base64
+                    if (isRateLimited(clientIp)) {
+                        writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                        writer.print("Retry-After: 30\r\n")
+                        writer.print("Connection: close\r\n\r\n")
+                        writer.flush()
+                        socket.close()
+                        onLog("SECURITY: Rate limited malformed auth attempt from $clientIp")
+                        Thread.sleep(100)
+                        return
+                    }
+                    recordFailedAttempt(clientIp)
+                    writer.print("HTTP/1.1 401 Unauthorized\r\n")
                     writer.print("Connection: close\r\n\r\n")
+                    writer.print("Unauthorized. Check username and password in the app settings.\r\n")
                     writer.flush()
                     socket.close()
-                    onLog("SECURITY: Rate limited malformed auth attempt from $clientIp")
-                    Thread.sleep(100)
+                    onLog("SECURITY: Failed authentication attempt from $clientIp (malformed base64)")
                     return
                 }
-                recordFailedAttempt(clientIp)
-                writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                writer.print("Connection: close\r\n\r\n")
-                writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                writer.flush()
-                socket.close()
-                onLog("SECURITY: Failed authentication attempt from $clientIp (malformed base64)")
-                return
-            }
 
-            if (providedAuth != "$username:$password") {
-                // Rate limiting ONLY applies to failed authentication attempts
-                if (isRateLimited(clientIp)) {
-                    writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                    writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for failed auth
+                if (providedAuth != "$username:$password") {
+                    // Rate limiting ONLY applies to failed authentication attempts
+                    if (isRateLimited(clientIp)) {
+                        writer.print("HTTP/1.1 429 Too Many Requests\r\n")
+                        writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for failed auth
+                        writer.print("Connection: close\r\n\r\n")
+                        writer.flush()
+                        socket.close()
+                        onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
+                        Thread.sleep(100)
+                        return
+                    }
+                    recordFailedAttempt(clientIp)
+                    writer.print("HTTP/1.1 401 Unauthorized\r\n")
                     writer.print("Connection: close\r\n\r\n")
+                    writer.print("Unauthorized. Check username and password in the app settings.\r\n")
                     writer.flush()
                     socket.close()
-                    onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
-                    Thread.sleep(100)
+                    onLog("SECURITY: Failed authentication attempt from $clientIp")
                     return
                 }
-                recordFailedAttempt(clientIp)
-                writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                writer.print("Connection: close\r\n\r\n")
-                writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                writer.flush()
-                socket.close()
-                onLog("SECURITY: Failed authentication attempt from $clientIp")
-                return
             }
 
             // Handle Control UI and Commands
@@ -479,6 +562,7 @@ class StreamingServerHelper(
                 val curContrast = prefs.getString("camera_contrast", "0") ?: "0"
                 val curDelay = prefs.getString("stream_delay", "33") ?: "33"
                 val curTorch = prefs.getString("camera_torch", "off") ?: "off"
+                val curAudioGain = prefs.getString("audio_gain", "1.0") ?: "1.0"
 
                 val htmlTemplate = try {
                     context.assets.open("index.html").bufferedReader().use { it.readText() }
@@ -495,6 +579,7 @@ class StreamingServerHelper(
                     .replace("{{CUR_SCALE}}", curScale)
                     .replace("{{CUR_EXPOSURE}}", curExposure)
                     .replace("{{CUR_CONTRAST}}", curContrast)
+                    .replace("{{CUR_AUDIO_GAIN}}", curAudioGain)
                     .replace("{{CUR_DELAY}}", curDelay)
                     .replace("{{CUR_TORCH}}", curTorch)
 
@@ -566,11 +651,23 @@ class StreamingServerHelper(
 
                     audioRecord.startRecording()
                     val pcmBuffer = ByteArray(bufferSize)
+                    val audioPrefs = PreferenceManager.getDefaultSharedPreferences(context)
                     try {
                         while (socket.isConnected && !socket.isClosed && appInForeground) {
                             val read = audioRecord.read(pcmBuffer, 0, pcmBuffer.size)
                             if (read <= 0) continue
-                            writeChunk(outputStream, pcmBuffer, read)
+
+                            // Read audio gain dynamically to allow real-time changes
+                            val audioGain = audioPrefs.getString("audio_gain", "1.0")?.toFloatOrNull() ?: 1.0f
+
+                            // Apply audio gain if not 1.0
+                            val processedBuffer = if (audioGain != 1.0f) {
+                                applyAudioGain(pcmBuffer, read, audioGain)
+                            } else {
+                                pcmBuffer
+                            }
+
+                            writeChunk(outputStream, processedBuffer, read)
                         }
                     } finally {
                         try {
@@ -612,8 +709,8 @@ class StreamingServerHelper(
             }
 
             if (uri.startsWith("/stream")) {
-                // AUTHENTICATED CONNECTION - No rate limiting, higher connection limits
-                if (handleMaxClients(socket, isAuthenticated = true)) return
+                // AUTHENTICATED CONNECTION if auth is enabled - No rate limiting, higher connection limits
+                if (handleMaxClients(socket, isAuthenticated = enableAuth)) return
 
                 // Send HTTP response headers for MJPEG stream
                 // Use HTTP/1.1 with keep-alive for better streaming performance
@@ -626,7 +723,7 @@ class StreamingServerHelper(
                 writer.flush()
 
                 // Add client to list - frames will be sent from MainActivity.processImage()
-                clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = true))
+                clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = enableAuth))
                 onClientConnected()
 
                 // Keep connection alive - frames will be sent from MainActivity.processImage()
@@ -703,6 +800,22 @@ class StreamingServerHelper(
         outputStream.write(data, 0, length)
         outputStream.write("\r\n".toByteArray())
         outputStream.flush()
+    }
+
+    private fun applyAudioGain(buffer: ByteArray, length: Int, gain: Float): ByteArray {
+        // Process 16-bit PCM samples (2 bytes per sample, little-endian)
+        val result = ByteArray(length)
+        for (i in 0 until length step 2) {
+            if (i + 1 >= length) break
+            // Convert little-endian bytes to short
+            val sample = ((buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort()
+            // Apply gain and clamp to prevent overflow
+            val amplified = (sample * gain).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            // Convert back to little-endian bytes
+            result[i] = (amplified and 0xFF).toByte()
+            result[i + 1] = ((amplified shr 8) and 0xFF).toByte()
+        }
+        return result
     }
 
     fun handleMaxClients(socket: Socket, isAuthenticated: Boolean = false): Boolean {
