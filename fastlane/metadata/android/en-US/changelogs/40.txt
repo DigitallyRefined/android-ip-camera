@@ -1,0 +1,7 @@
+## What's Changed
+* Add Audio Gain/volume control
+* Add TLS version select (1.3/1.2/disabled HTTP only - default: 1.3)
+* Add authentication control (default: enabled)
+
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.3.1...v0.4.0
