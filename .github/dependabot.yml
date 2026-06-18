@@ -7,3 +7,5 @@ updates:
       day: saturday
       time: '01:32'
       timezone: Europe/London
+    cooldown:
+      default-days: 5
