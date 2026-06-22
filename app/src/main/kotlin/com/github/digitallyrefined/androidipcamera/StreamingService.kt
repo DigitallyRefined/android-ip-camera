@@ -285,9 +285,9 @@ class StreamingService : LifecycleService() {
 
     private fun startCameraIfNeeded() { if (!captureRunning) startCamera() }
 
-    private fun startCamera() {
+    private fun startCamera(force: Boolean = false) {
         if (!allPermissionsGranted()) return
-        if (streamingServerHelper?.getH264Clients().isNullOrEmpty()) return   // only run for live viewers
+        if (!force && streamingServerHelper?.getH264Clients().isNullOrEmpty()) return   // else: only for live viewers
         stopCamera()
         try {
             if (chooseApi() == "camera1") {
@@ -357,33 +357,44 @@ class StreamingService : LifecycleService() {
     // ---------------- snapshot (full resolution) ----------------
 
     /**
-     * Full-resolution JPEG into RAM:
-     *  - requested camera == the live one → video snapshot (takePicture during preview, no interruption).
-     *  - other camera, or idle → pause the live stream, one-shot capture, resume (single HAL).
+     * Full-resolution JPEG into RAM. [cameraId] is a Camera2 id ("0","1",…) or "front"/"back".
+     *  - already live on that camera → video snapshot (takePicture during the stream, no interruption).
+     *  - other camera, or camera off → start it (even with no live viewers), capture, then restore the
+     *    original stream / stop (single HAL: one camera open at a time).
      */
     fun snapshot(cameraId: String): ByteArray? {
         synchronized(snapLock) {
-            val want = when {
-                cameraId.equals("front", true) -> "front"
-                cameraId.equals("back", true) -> "back"
-                else -> camId()
-            }
-            // Live camera → full-res still concurrent with the stream (no interruption).
-            if (want == camId()) backend?.let { return captureFrom(it, want) ?: snapCache[want] }
-
-            // Other camera (single HAL): switch CameraX to it, capture, switch back to the original.
-            val orig = frontFacing
+            val targetFront = resolveFrontFacing(cameraId) ?: frontFacing
+            val key = if (targetFront) "front" else "back"
             val hadViewers = streamingServerHelper?.getH264Clients()?.isNotEmpty() == true
-            frontFacing = (want == "front")
-            switchAndWait()
-            val jpeg = backend?.let { captureFrom(it, want) }
+
+            val live = backend
+            if (live != null && targetFront == frontFacing) return captureFrom(live, key) ?: snapCache[key]
+
+            val orig = frontFacing
+            frontFacing = targetFront
+            switchAndWait(force = true)                 // starts the camera even with no live viewers
+            val jpeg = backend?.let { captureFrom(it, key) }
             frontFacing = orig
             launchMain { if (hadViewers) startCamera() else stopCamera() }
-            return jpeg ?: snapCache[want]
+            return jpeg ?: snapCache[key]
         }
     }
 
-    /** Take one still from [b] (blocks the caller on a latch; capture runs on the main thread). */
+    /** camera= argument → front-facing. Accepts "front"/"back"/"toggle" or a Camera2 id ("0","1",…). */
+    private fun resolveFrontFacing(value: String): Boolean? = when {
+        value.equals("front", true) -> true
+        value.equals("back", true) -> false
+        value.equals("toggle", true) -> !frontFacing
+        else -> try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            if (cm.cameraIdList.contains(value))
+                cm.getCameraCharacteristics(value).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+            else null
+        } catch (_: Exception) { null }
+    }
+
+    /** Take one still from [b] (the backend autofocuses internally). Blocks the caller on a latch. */
     private fun captureFrom(b: CaptureBackend, key: String): ByteArray? {
         val latch = CountDownLatch(1); val out = arrayOfNulls<ByteArray>(1)
         launchMain { b.captureStill { out[0] = it; latch.countDown() } }
@@ -392,9 +403,9 @@ class StreamingService : LifecycleService() {
         return out[0]
     }
 
-    /** Restart the camera on the new facing and wait until CameraX is bound + the 3A has a moment. */
-    private fun switchAndWait() {
-        val l = CountDownLatch(1); launchMain { startCamera(); l.countDown() }
+    /** Restart the camera on the new facing and wait until the backend is bound + the 3A has a moment. */
+    private fun switchAndWait(force: Boolean) {
+        val l = CountDownLatch(1); launchMain { startCamera(force); l.countDown() }
         try { l.await(3, TimeUnit.SECONDS) } catch (_: Exception) {}
         var n = 0; while (n < 40 && backend?.ready != true) { try { Thread.sleep(100) } catch (_: Exception) {}; n++ }
         try { Thread.sleep(500) } catch (_: Exception) {}   // let auto-exposure settle on the new camera
@@ -405,7 +416,7 @@ class StreamingService : LifecycleService() {
     /**
      * GET /?<key>=<value> (proxied as /api/video/control):
      *   torch=on|off|toggle   focus=1   exposure=<ev>   zoom=<ratio>
-     *   camera=front|back|toggle   resolution=WxH   api=auto|camerax|camera1
+     *   camera=<id>|front|back|toggle   resolution=WxH   api=auto|camerax|camera1
      */
     private fun handleRemoteControl(key: String, value: String) {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -432,12 +443,7 @@ class StreamingService : LifecycleService() {
             }
             "focus" -> launchMain { backend?.triggerAutoFocus() }
             "camera" -> {
-                frontFacing = when {
-                    value.equals("front", true) -> true
-                    value.equals("back", true) -> false
-                    value.equals("toggle", true) -> !frontFacing
-                    else -> return
-                }
+                frontFacing = resolveFrontFacing(value) ?: return
                 prefs.edit().putString(PREF_LAST_CAMERA_FACING, if (frontFacing) "front" else "back").apply()
                 launchMain { if (captureRunning) startCamera() }
             }

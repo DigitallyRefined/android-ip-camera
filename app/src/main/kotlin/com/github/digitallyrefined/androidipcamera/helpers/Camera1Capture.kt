@@ -2,7 +2,10 @@ package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.graphics.SurfaceTexture
 import android.hardware.Camera
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
 /**
@@ -50,18 +53,32 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         Log.i(TAG, "Camera1[$cameraId] preview ${chosenW}x$chosenH recHint focus=${p.focusMode}")
     }
 
-    /** Full-res JPEG while streaming (video snapshot). [onJpeg] fires on the camera's looper thread. */
+    /**
+     * Autofocus, then a full-res JPEG the instant focus locks (video snapshot) — fast AND sharp, vs a
+     * fixed focus delay. Falls back to capturing anyway if the AF callback never fires. [onJpeg] on the
+     * camera looper thread.
+     */
     override fun captureStill(onJpeg: (ByteArray?) -> Unit) {
-        try {
-            camera.takePicture(null, null, Camera.PictureCallback { data, cam ->
-                try { cam.startPreview() } catch (_: Exception) {}   // resume the GL feed if the HAL paused it
-                onJpeg(data)
-            })
-        } catch (e: Exception) {
-            Log.e(TAG, "takePicture: ${e.message}")
-            try { camera.startPreview() } catch (_: Exception) {}
-            onJpeg(null)
+        val fired = AtomicBoolean(false)
+        val shoot = {
+            if (fired.compareAndSet(false, true)) {
+                try {
+                    camera.takePicture(null, null, Camera.PictureCallback { data, cam ->
+                        try { cam.startPreview() } catch (_: Exception) {}   // resume the GL feed if the HAL paused it
+                        onJpeg(data)
+                    })
+                } catch (e: Exception) {
+                    Log.e(TAG, "takePicture: ${e.message}")
+                    try { camera.startPreview() } catch (_: Exception) {}
+                    onJpeg(null)
+                }
+            }
         }
+        try {
+            camera.cancelAutoFocus()
+            camera.autoFocus { _, _ -> shoot() }                              // capture the instant AF locks
+            Handler(Looper.getMainLooper()).postDelayed({ shoot() }, 1200)    // fallback if AF never calls back
+        } catch (e: Exception) { shoot() }
     }
 
     override fun setTorch(on: Boolean) = live { p ->
