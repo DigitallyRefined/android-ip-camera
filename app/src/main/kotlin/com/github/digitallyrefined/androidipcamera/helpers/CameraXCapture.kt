@@ -70,11 +70,12 @@ class CameraXCapture(
                     .setResolutionSelector(sel)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-                // Without this the HAL's auto-exposure drops the frame rate to gather light (~8fps in a
-                // dim room). Lock the highest constant rate the camera advertises, like Camera1 does.
-                bestFpsRange()?.let {
+                // Some legacy HALs (e.g. this phone's rear cam) stall the analysis stream unless an AE
+                // target FPS range is set. Use the WIDEST advertised range, not a fixed lock — AE stays
+                // fully auto (drops low for light in the dark, up to 30 in good light).
+                aeFpsRange()?.let {
                     Camera2Interop.Extender(aBuilder).setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
-                    Log.i(TAG, "AE fps range $it")
+                    Log.i(TAG, "AE fps range $it (auto within range)")
                 }
                 val analysis = aBuilder.build()
                     .also { a -> a.setAnalyzer(analysisExec) { img -> width = img.width; height = img.height; onFrame(img) } }
@@ -117,15 +118,16 @@ class CameraXCapture(
         } catch (e: Exception) { Log.e(TAG, "AF: ${e.message}") }
     }
 
-    /** Highest constant AE frame-rate the camera advertises (prefer upper==lower, e.g. [30,30]). */
-    private fun bestFpsRange(): Range<Int>? = try {
+    /** The camera's WIDEST advertised AE FPS range — leaves auto-exposure fully free while giving legacy
+     *  HALs the explicit range they need to not stall the analysis stream. Not a fixed-fps lock. */
+    private fun aeFpsRange(): Range<Int>? = try {
         val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val want = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
         val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
             ?: cm.cameraIdList.first()
         cm.getCameraCharacteristics(id).get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.maxWithOrNull(compareBy({ it.upper }, { it.lower }))
-    } catch (e: Exception) { Log.e(TAG, "fpsRange: ${e.message}"); null }
+            ?.maxWithOrNull(compareBy({ it.upper - it.lower }, { it.upper }))
+    } catch (e: Exception) { Log.e(TAG, "aeRange: ${e.message}"); null }
 
     override fun stop() {
         ready = false

@@ -69,30 +69,21 @@ class H264Encoder(
     }
 
     private var yuv: ByteArray? = null
-    private var fc = 0; private var fNoBuf = 0; private var ft0 = 0L; private var fConvNs = 0L
 
     /** Convert one analyzer frame to the encoder's YUV layout and feed it. Drops the frame if no input buffer is free. */
     fun feed(image: ImageProxy, ptsUs: Long) {
         if (!running || useSurface) return
         try {
             val idx = codec.dequeueInputBuffer(2000)
-            if (idx < 0) { fNoBuf++; return }
+            if (idx < 0) return
             val buf = codec.getInputBuffer(idx)
             if (buf == null) { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0); return }
             val size = width * height * 3 / 2
             var arr = yuv
             if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
-            val t = System.nanoTime()
             toYuv420(image, arr)
-            fConvNs += System.nanoTime() - t
             buf.clear(); buf.put(arr, 0, size)
             codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
-            fc++
-            val now = System.currentTimeMillis(); if (ft0 == 0L) ft0 = now
-            else if (now - ft0 >= 3000) {
-                Log.i(TAG, "feed ${fc * 1000 / (now - ft0)}fps conv ${fConvNs / 1_000_000 / maxOf(fc, 1)}ms/f nobuf=$fNoBuf")
-                fc = 0; fNoBuf = 0; fConvNs = 0; ft0 = now
-            }
         } catch (e: Exception) {
             if (running) Log.e(TAG, "feed: ${e.message}")
         }
