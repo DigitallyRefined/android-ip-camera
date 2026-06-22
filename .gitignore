@@ -13,3 +13,6 @@ signing.properties
 app/signing-key.jks
 certificates
 .venv
+
+# local build helpers (machine-specific paths)
+_wsl_*.sh
