@@ -14,8 +14,8 @@ import androidx.camera.core.ImageProxy
  * Hardware H.264 encoder. Two input modes:
  *  - surface mode (useSurface=true): camera renders directly into [inputSurface] (zero CPU copy ->
  *    real 30fps, supports 1080p). Used for H.264-only viewers.
- *  - byte-buffer mode: fed NV12 from ImageAnalysis frames via [feed] (CPU-bound ~9fps; used as the
- *    fallback when MJPEG is also active so both share one ImageAnalysis).
+ *  - byte-buffer mode: fed YUV from CameraX ImageAnalysis frames via [feed] (CPU-bound; the color
+ *    layout, NV12 or I420, is chosen from the codec's caps for cross-device compatibility).
  * Emits Annex-B NAL units via [onNal] (bytes, isKeyframe); SPS/PPS prepended to keyframes.
  */
 class H264Encoder(
@@ -31,10 +31,11 @@ class H264Encoder(
         private set
     @Volatile private var running = true
     private var thread: Thread? = null
+    private var semiPlanar = true   // byte-buffer layout: NV12 (interleaved UV) vs I420 (planar U then V)
 
     init {
         val colorFormat = if (useSurface) MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
-                          else MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar // NV12
+                          else pickYuvFormat()   // sets semiPlanar; NV12 if the HW takes it, else I420
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
@@ -56,52 +57,91 @@ class H264Encoder(
         try { codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) }) } catch (_: Exception) {}
     }
 
-    private var nv12: ByteArray? = null
+    /** ponytail: NV12 vs I420 is the classic cross-device MediaCodec gotcha — ask the codec which it takes. */
+    private fun pickYuvFormat(): Int {
+        val supported = try { codec.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).colorFormats.toSet() }
+                        catch (_: Exception) { emptySet<Int>() }
+        return when {
+            supported.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) && !supported.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) ->
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar.also { semiPlanar = false }   // I420-only HW
+            else -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar.also { semiPlanar = true } // NV12 (the common case)
+        }
+    }
 
-    /** Convert one analyzer frame to NV12 and feed the encoder. Drops the frame if no input buffer is free. */
+    private var yuv: ByteArray? = null
+    private var fc = 0; private var fNoBuf = 0; private var ft0 = 0L; private var fConvNs = 0L
+
+    /** Convert one analyzer frame to the encoder's YUV layout and feed it. Drops the frame if no input buffer is free. */
     fun feed(image: ImageProxy, ptsUs: Long) {
         if (!running || useSurface) return
         try {
             val idx = codec.dequeueInputBuffer(2000)
-            if (idx < 0) return
+            if (idx < 0) { fNoBuf++; return }
             val buf = codec.getInputBuffer(idx)
             if (buf == null) { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0); return }
             val size = width * height * 3 / 2
-            var arr = nv12
-            if (arr == null || arr.size != size) { arr = ByteArray(size); nv12 = arr }
-            toNV12(image, arr)
+            var arr = yuv
+            if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
+            val t = System.nanoTime()
+            toYuv420(image, arr)
+            fConvNs += System.nanoTime() - t
             buf.clear(); buf.put(arr, 0, size)
             codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
+            fc++
+            val now = System.currentTimeMillis(); if (ft0 == 0L) ft0 = now
+            else if (now - ft0 >= 3000) {
+                Log.i(TAG, "feed ${fc * 1000 / (now - ft0)}fps conv ${fConvNs / 1_000_000 / maxOf(fc, 1)}ms/f nobuf=$fNoBuf")
+                fc = 0; fNoBuf = 0; fConvNs = 0; ft0 = now
+            }
         } catch (e: Exception) {
             if (running) Log.e(TAG, "feed: ${e.message}")
         }
     }
 
-    /** YUV_420_888 (any plane stride) -> NV12 (Y plane, then interleaved U,V). */
-    private fun toNV12(image: ImageProxy, out: ByteArray) {
+    private var yRowBuf: ByteArray? = null
+    private var uRowBuf: ByteArray? = null
+    private var vRowBuf: ByteArray? = null
+
+    /**
+     * YUV_420_888 (any plane stride) -> Y plane, then NV12 interleaved UV or I420 planar U,V per [semiPlanar].
+     * Reads each source row in ONE bulk ByteBuffer.get into a reused array, then strides in the array —
+     * per-pixel ByteBuffer.get() is the throughput killer (bounds-checked native read per byte).
+     */
+    private fun toYuv420(image: ImageProxy, out: ByteArray) {
         val yP = image.planes[0]; val uP = image.planes[1]; val vP = image.planes[2]
         val yB = yP.buffer; val uB = uP.buffer; val vB = vP.buffer
         val yRow = yP.rowStride; val yPix = yP.pixelStride
         var o = 0
         if (yPix == 1 && yRow == width) {
-            yB.position(0); yB.get(out, 0, width * height); o = width * height
+            yB.position(0); yB.get(out, 0, width * height); o = width * height       // contiguous: one copy
         } else {
-            val row = ByteArray(width)
+            var rb = yRowBuf; if (rb == null || rb.size < yRow) { rb = ByteArray(yRow); yRowBuf = rb }
             for (r in 0 until height) {
-                if (yPix == 1) { yB.position(r * yRow); yB.get(row, 0, width) }
-                else { val base = r * yRow; for (c in 0 until width) row[c] = yB.get(base + c * yPix) }
-                System.arraycopy(row, 0, out, o, width); o += width
+                yB.position(r * yRow); yB.get(rb, 0, minOf(yRow, yB.remaining()))
+                if (yPix == 1) System.arraycopy(rb, 0, out, o, width)
+                else for (c in 0 until width) out[o + c] = rb[c * yPix]
+                o += width
             }
         }
         val uRow = uP.rowStride; val uPix = uP.pixelStride
         val vRow = vP.rowStride; val vPix = vP.pixelStride
         val cw = width / 2; val ch = height / 2
-        o = width * height
-        for (r in 0 until ch) {
-            val ub = r * uRow; val vb = r * vRow
-            for (c in 0 until cw) {
-                out[o++] = uB.get(ub + c * uPix)
-                out[o++] = vB.get(vb + c * vPix)
+        var ub = uRowBuf; if (ub == null || ub.size < uRow) { ub = ByteArray(uRow); uRowBuf = ub }
+        var vb = vRowBuf; if (vb == null || vb.size < vRow) { vb = ByteArray(vRow); vRowBuf = vb }
+        if (semiPlanar) {                                  // NV12: U,V interleaved
+            o = width * height
+            for (r in 0 until ch) {
+                uB.position(r * uRow); uB.get(ub, 0, minOf(uRow, uB.remaining()))
+                vB.position(r * vRow); vB.get(vb, 0, minOf(vRow, vB.remaining()))
+                for (c in 0 until cw) { out[o++] = ub[c * uPix]; out[o++] = vb[c * vPix] }
+            }
+        } else {                                           // I420: full U plane, then full V plane
+            var uo = width * height; var vo = width * height + cw * ch
+            for (r in 0 until ch) {
+                uB.position(r * uRow); uB.get(ub, 0, minOf(uRow, uB.remaining()))
+                vB.position(r * vRow); vB.get(vb, 0, minOf(vRow, vB.remaining()))
+                for (c in 0 until cw) out[uo++] = ub[c * uPix]
+                for (c in 0 until cw) out[vo++] = vb[c * vPix]
             }
         }
     }

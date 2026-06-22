@@ -1,8 +1,14 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.util.Log
+import android.util.Range
 import android.util.Size
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
@@ -21,11 +27,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * The single camera backend: CameraX. The live stream is fed from **ImageAnalysis** (YUV frames →
- * the H.264 encoder) — unlike Preview, ImageAnalysis honours the requested resolution and is NOT
- * capped to the device's screen size, so it streams the real 720p/1080p the user picks and works
- * headless. **ImageCapture** takes full-resolution stills concurrently. CameraX handles per-device
- * quirks, rotation, lifecycle, focus and resolution uniformly across phones.
+ * Global/modern backend (CameraX). The live stream is fed from ImageAnalysis (YUV → encoder) — it
+ * reliably honours the requested resolution (Preview-to-a-custom-Surface picks tiny sizes on some
+ * legacy HALs, and Preview is screen-capped anyway). ImageCapture gives full-resolution stills.
+ * On a strong CPU this runs at the camera's frame rate; on weak/legacy chips the YUV→NV12 copy is
+ * the bottleneck (~12fps) — which is why the service auto-prefers Camera1 on LEGACY hardware.
  *
  * [onFrame] is called for every analysis frame and MUST close the ImageProxy.
  */
@@ -46,24 +52,31 @@ class CameraXCapture(
     private val main = ContextCompat.getMainExecutor(ctx)
     private val analysisExec = Executors.newSingleThreadExecutor()
 
+    @OptIn(ExperimentalCamera2Interop::class)
     fun start() {
         val future = ProcessCameraProvider.getInstance(ctx)
         future.addListener({
             try {
                 val p = future.get(); provider = p
-                // ImageAnalysis defaults to 640x480; a ResolutionStrategy alone is overridden unless a
-                // MATCHING AspectRatioStrategy is set too. PREFER_HIGHER_RESOLUTION lifts the analysis cap.
+                // ImageAnalysis ignores a lone ResolutionStrategy unless a matching AspectRatioStrategy
+                // is set too; PREFER_HIGHER lifts the analysis cap above the 640x480 default.
                 val ratio = if (desired.width.toDouble() / desired.height >= 1.5) AspectRatio.RATIO_16_9 else AspectRatio.RATIO_4_3
-                val selExec = ResolutionSelector.Builder()
+                val sel = ResolutionSelector.Builder()
                     .setAspectRatioStrategy(AspectRatioStrategy(ratio, AspectRatioStrategy.FALLBACK_RULE_AUTO))
                     .setResolutionStrategy(ResolutionStrategy(desired, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
                     .setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
                     .build()
-                val analysis = ImageAnalysis.Builder()
-                    .setResolutionSelector(selExec)
+                val aBuilder = ImageAnalysis.Builder()
+                    .setResolutionSelector(sel)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-                    .build()
+                // Without this the HAL's auto-exposure drops the frame rate to gather light (~8fps in a
+                // dim room). Lock the highest constant rate the camera advertises, like Camera1 does.
+                bestFpsRange()?.let {
+                    Camera2Interop.Extender(aBuilder).setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
+                    Log.i(TAG, "AE fps range $it")
+                }
+                val analysis = aBuilder.build()
                     .also { a -> a.setAnalyzer(analysisExec) { img -> width = img.width; height = img.height; onFrame(img) } }
                 imageCapture = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)   // full-res stills
@@ -103,6 +116,16 @@ class CameraXCapture(
                     .setAutoCancelDuration(3, TimeUnit.SECONDS).build())
         } catch (e: Exception) { Log.e(TAG, "AF: ${e.message}") }
     }
+
+    /** Highest constant AE frame-rate the camera advertises (prefer upper==lower, e.g. [30,30]). */
+    private fun bestFpsRange(): Range<Int>? = try {
+        val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val want = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+        val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
+            ?: cm.cameraIdList.first()
+        cm.getCameraCharacteristics(id).get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.maxWithOrNull(compareBy({ it.upper }, { it.lower }))
+    } catch (e: Exception) { Log.e(TAG, "fpsRange: ${e.message}"); null }
 
     override fun stop() {
         ready = false

@@ -273,11 +273,11 @@ class StreamingService : LifecycleService() {
             else -> if (isLegacy()) "camera1" else "camerax"
         }
 
-    /** Desired stream size from the resolution pref ("WxH"), capped to the HW encoder. */
+    /** Desired stream size from the resolution pref; "auto" → 1080p target (the device gives its best ≤ that). */
     private fun desiredSize(): Size {
         val caps = H264Encoder.caps()
         val m = Regex("(\\d+)x(\\d+)").find(
-            PreferenceManager.getDefaultSharedPreferences(this).getString("stream_res", "1920x1080") ?: "1920x1080")
+            PreferenceManager.getDefaultSharedPreferences(this).getString("stream_res", "auto") ?: "auto")
         val w = m?.groupValues?.get(1)?.toIntOrNull() ?: 1920
         val h = m?.groupValues?.get(2)?.toIntOrNull() ?: 1080
         return Size(minOf(w, caps.maxW), minOf(h, caps.maxH))
@@ -299,7 +299,7 @@ class StreamingService : LifecycleService() {
                 backend = cap
                 Log.i(TAG, "stream ${camId()} api=camera1 ${cap.chosenW}x${cap.chosenH}")
             } else {
-                // CameraX → ImageAnalysis YUV → byte-buffer encoder (built lazily on the first frame).
+                // CameraX → ImageAnalysis YUV → byte-buffer encoder (reliable resolution) + ImageCapture stills.
                 backend = CameraXCapture(this, this, frontFacing, desiredSize()) { img -> feedH264(img) }.also { it.start() }
                 Log.i(TAG, "stream ${camId()} api=camerax")
             }
@@ -315,7 +315,7 @@ class StreamingService : LifecycleService() {
         captureRunning = false
     }
 
-    /** Surface-mode encoder + GL pipe for the Camera1 backend. */
+    /** Surface-mode encoder + GL pipe, shared by both backends (CameraX Preview / Camera1 preview). */
     private fun newPipe(sz: Size): CameraGlPipe {
         val enc = H264Encoder(sz.width, sz.height, 30, H264Encoder.bitrateFor(sz.width, sz.height), true) { d, k -> broadcastH264(d, k) }
         h264Encoder = enc
@@ -323,7 +323,7 @@ class StreamingService : LifecycleService() {
         return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height).also { it.start(); glPipe = it }
     }
 
-    /** Feed one CameraX analysis frame (YUV) to the H.264 encoder. Closes the frame. */
+    /** CameraX path: feed one analysis frame (YUV) to a byte-buffer encoder. Closes the frame. */
     private fun feedH264(image: ImageProxy) {
         try {
             var enc = h264Encoder
@@ -442,8 +442,8 @@ class StreamingService : LifecycleService() {
                 launchMain { if (captureRunning) startCamera() }
             }
             "resolution" -> {
-                if (Regex("\\d+x\\d+").matches(value)) {
-                    prefs.edit().putString("stream_res", value).apply()
+                if (value == "auto" || value == "max" || Regex("\\d+x\\d+").matches(value)) {
+                    prefs.edit().putString("stream_res", if (value == "max") "auto" else value).apply()
                     launchMain { if (captureRunning) startCamera() }
                 }
             }
