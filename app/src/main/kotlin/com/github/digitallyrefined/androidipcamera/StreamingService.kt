@@ -403,12 +403,14 @@ class StreamingService : LifecycleService() {
         return out[0]
     }
 
-    /** Restart the camera on the new facing and wait until the backend is bound + the 3A has a moment. */
+    /** Restart the camera on the new facing and wait until the backend is bound + 3A converges. */
     private fun switchAndWait(force: Boolean) {
         val l = CountDownLatch(1); launchMain { startCamera(force); l.countDown() }
         try { l.await(3, TimeUnit.SECONDS) } catch (_: Exception) {}
         var n = 0; while (n < 40 && backend?.ready != true) { try { Thread.sleep(100) } catch (_: Exception) {}; n++ }
-        try { Thread.sleep(500) } catch (_: Exception) {}   // let auto-exposure settle on the new camera
+        // Let auto AE/AWB converge on the fresh camera. The front sensor is far slower in low light
+        // (under-converged = blue/dark), so give it longer; the back locks quickly.
+        try { Thread.sleep(if (frontFacing) 2500 else 700) } catch (_: Exception) {}
     }
 
     // ---------------- controls ----------------
