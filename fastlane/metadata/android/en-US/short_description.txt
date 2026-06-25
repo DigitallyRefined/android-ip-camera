@@ -1,1 +1,1 @@
-An Android MJPEG IP Camera app
+An Android MJPEG / H.264 IP Camera app

@@ -1,0 +1,11 @@
+## Breaking Changes
+* MJPEG stream URL has been moved from `/stream` to `/video/m.jpeg`
+
+## What's Changed
+* Added battery% & WiFi strength widget & API (fixes #23)
+* Add Hardware H.264 streaming `/video/h264` endpoint via CameraX + Camera1 fallback, Legacy Android Support by @HamzaYslmn in #29 (fixes #28)
+* Bump dependencies by @dependabot[bot] in #24 #25 #26 #27
+
+## New Contributors
+* @HamzaYslmn made their first contribution in #29
+* @dependabot[bot] made their first contribution in
