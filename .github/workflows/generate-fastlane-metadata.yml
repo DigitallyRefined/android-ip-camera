@@ -27,11 +27,14 @@ jobs:
         id: rel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          BODY="${{ github.event.release.body }}"
+          TAG="$RELEASE_TAG"
+          BODY="$RELEASE_BODY"
           if [ -z "$TAG" ]; then
-            TAG="${{ inputs.tag }}"
+            TAG="$INPUT_TAG"
           fi
 
           if [ -z "$BODY" ] && [ -n "$TAG" ]; then
