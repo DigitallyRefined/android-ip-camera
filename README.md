@@ -33,15 +33,23 @@ alt="Get it on F-Droid" align="center" height="80" /></a>
 * 🛂 Username and password protection
 * 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS
 
+## ⚠️ Warning
+
+If you are planning to run this 24/7, please make sure that your phone does not stay at 100% charge. Doing so may damage the battery and cause it to swell up, which could cause it to explode.
+
+Some models include an option to only charge to 80%, make sure this is enabled where possible.
+
+Note: running at a higher image quality may cause some phones to over heat, which can also damage the battery.
+
 ## Server URL Paths & Remote Control API
 
-When the streaming server is running (default port `4444`, via `http://` or `https://` depending on TLS configuration), you can access the following endpoints:
+When the streaming server is running (default port `4444`, via `https://` or `http://` depending on TLS configuration), you can access the following endpoints:
 
 ### 📺 Streams and Interfaces
 
-* **Web Control Panel (`/` or empty)**
-  * **Usage:** Open `http://[ip_address]:[port]/` (or `https://...`) in any web browser.
-  * **Description:** Serves the built-in control panel (`index.html`) which plays video streams, allows muting/unmuting audio, toggling the flashlight, and altering settings remotely.
+* **Web Control Panel (`/`)**
+  * **Usage:** Open `https://[ip_address]:[port]/` (or `http://...`) in any web browser.
+  * **Description:** Serves the built-in control panel, which plays the rear or front camera video stream and allows muting/unmuting audio. Remote controls include: camera section, image rotation, flash light toggle, resolution, zoom, exposure and contrast.
 * **Motion JPEG Video Stream (`/video/m.jpeg`)**
   * **Usage:** Open directly in a web browser or configure in external home automation tools (e.g. Home Assistant MJPEG IP Camera).
   * **Format:** `multipart/x-mixed-replace; boundary=frame`
@@ -78,14 +86,6 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `focus=1`: Triggers camera autofocus.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
 
-## ⚠️ Warning
-
-If you are planning to run this 24/7, please make sure that your phone does not stay at 100% charge. Doing so may damage the battery and cause it to swell up, which could cause it to explode.
-
-Some models include an option to only charge to 80%, make sure this is enabled where possible.
-
-Note: running at a higher image quality may cause some phones to over heat, which can also damage the battery.
-
 ## HTTPS/TLS certificates
 
 To protect the stream and the password from being sent in plain-text over HTTP, a certificate can be used to start the stream over HTTPS.
@@ -103,9 +103,7 @@ The app uses the following permissions to function:
 * **Notifications (`android.permission.POST_NOTIFICATIONS`):** Required on Android 13+ to post a persistent foreground service notification, keeping the background streaming server running reliably.
 * **Network (`android.permission.INTERNET`, `android.permission.ACCESS_NETWORK_STATE`):** Required to host the server and stream data to your browser/connected clients.
 * **Storage (`android.permission.READ_EXTERNAL_STORAGE`):** Required on older Android versions to load custom TLS/HTTPS certificates from file storage.
-* **Wi-Fi & Location (`android.permission.ACCESS_WIFI_STATE`, `android.permission.ACCESS_FINE_LOCATION`, `android.permission.NEARBY_WIFI_DEVICES`):**
-  * **Usage:** Used optionally to read the current Wi-Fi network's connection signal strength (RSSI) so it can be displayed in the web control panel overlay.
-  * **No Startup Prompts:** These are not requested on startup. If you wish to see the Wi-Fi signal strength in the web overlay, you can manually grant Location/Nearby Devices permission in the app's settings on your phone. If not granted, the Wi-Fi icon will be hidden.
+* **Wi-Fi & Location (`android.permission.ACCESS_WIFI_STATE`, `android.permission.ACCESS_FINE_LOCATION`, `android.permission.NEARBY_WIFI_DEVICES`):** Used optionally to read the current Wi-Fi network's connection signal strength so it can be displayed in the web control panel overlay. If not granted, the Wi-Fi icon will be hidden.
 
 <details>
 <summary>Reproducible builds</summary>
