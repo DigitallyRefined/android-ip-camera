@@ -58,8 +58,8 @@ When the streaming server is running (default port `4444`, via `http://` or `htt
   * **Format:** `image/jpeg`
   * **Query Parameter:** `?camera=<id|front|back|toggle>` to query a specific camera sensor.
     * *Example:* `https://[ip_address]:[port]/video/snapshot?camera=back`
-* **Camera Capabilities JSON (`/video/h264-cameras`)**
-  * **Usage:** Query available camera sensors, their directions, and supported H.264 resolutions.
+* **Device Info and Capabilities JSON (`/info.json`)**
+  * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, and Wi-Fi signal strength.
   * **Format:** `application/json`
 
 ### 🎛️ Remote Control Commands
@@ -93,6 +93,19 @@ To protect the stream and the password from being sent in plain-text over HTTP, 
 The app will automatically generate a self-signed certificate on first launch, but if you have your own domain you can use [Let's Encrypt](https://letsencrypt.org) to generate a trusted certificate and skip the self-signed security warning message, by changing the TLS certificate in the settings.
 
 To generate a new self-signed certificate, clear the app settings and restart or clone this repo and run `./scripts/generate-certificate.sh` then use the certificate `personal_certificate.p12` file it generates.
+
+## Permissions
+
+The app uses the following permissions to function:
+
+* **Camera (`android.permission.CAMERA`):** Required to capture and stream the video feed.
+* **Microphone (`android.permission.RECORD_AUDIO`):** Required to record and stream audio. (Requested optionally at runtime; streaming works without audio if denied).
+* **Notifications (`android.permission.POST_NOTIFICATIONS`):** Required on Android 13+ to post a persistent foreground service notification, keeping the background streaming server running reliably.
+* **Network (`android.permission.INTERNET`, `android.permission.ACCESS_NETWORK_STATE`):** Required to host the server and stream data to your browser/connected clients.
+* **Storage (`android.permission.READ_EXTERNAL_STORAGE`):** Required on older Android versions to load custom TLS/HTTPS certificates from file storage.
+* **Wi-Fi & Location (`android.permission.ACCESS_WIFI_STATE`, `android.permission.ACCESS_FINE_LOCATION`, `android.permission.NEARBY_WIFI_DEVICES`):**
+  * **Usage:** Used optionally to read the current Wi-Fi network's connection signal strength (RSSI) so it can be displayed in the web control panel overlay.
+  * **No Startup Prompts:** These are not requested on startup. If you wish to see the Wi-Fi signal strength in the web overlay, you can manually grant Location/Nearby Devices permission in the app's settings on your phone. If not granted, the Wi-Fi icon will be hidden.
 
 <details>
 <summary>Reproducible builds</summary>

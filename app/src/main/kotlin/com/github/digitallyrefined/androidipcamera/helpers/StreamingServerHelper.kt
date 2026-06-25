@@ -737,13 +737,13 @@ class StreamingServerHelper(
                 return
             }
 
-            if (path == "/video/h264-cameras") {
+            if (path == "/info.json") {
                 // One list, all properties: each camera with its OWN supported live sizes
                 // (sizes/formats differ per camera). Capped to the device's queried HW encoder ceiling.
                 val encCaps = H264HardwareEncoder.caps()
                 val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
                 val idle = clients.isEmpty() && h264Clients.isEmpty()
-                val sb = StringBuilder("[")
+                val sb = StringBuilder("{\"cameras\":[")
                 try {
                     cm.cameraIdList.forEachIndexed { i, id ->
                         val ch = cm.getCameraCharacteristics(id)
@@ -773,6 +773,44 @@ class StreamingServerHelper(
                     }
                 } catch (_: Exception) {}
                 sb.append("]")
+
+                // Get battery percent safely
+                val batteryPercent = try {
+                    val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+                    bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+                } catch (_: Exception) {
+                    -1
+                }
+
+                // Get wifi strength safely
+                val wifiStrength = try {
+                    val hasWifiPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.NEARBY_WIFI_DEVICES) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    } else {
+                        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    }
+
+                    if (hasWifiPermission) {
+                        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                        val rssi = wifiManager?.connectionInfo?.rssi ?: -127
+                        when {
+                            rssi == -127 -> -1
+                            rssi <= -100 -> 0
+                            rssi >= -50 -> 100
+                            else -> (rssi + 100) * 2
+                        }
+                    } else {
+                        -1
+                    }
+                } catch (_: Exception) {
+                    -1
+                }
+
+                sb.append(",\"batteryPercent\":$batteryPercent")
+                sb.append(",\"wifiStrength\":$wifiStrength")
+                sb.append("}")
+
                 writer.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
                 writer.print(sb.toString()); writer.flush()
                 try { socket.close() } catch (_: Exception) {}
