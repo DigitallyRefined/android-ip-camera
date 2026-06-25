@@ -18,7 +18,7 @@ import androidx.camera.core.ImageProxy
  *    layout, NV12 or I420, is chosen from the codec's caps for cross-device compatibility).
  * Emits Annex-B NAL units via [onNal] (bytes, isKeyframe); SPS/PPS prepended to keyframes.
  */
-class H264Encoder(
+class H264HardwareEncoder(
     val width: Int,
     val height: Int,
     frameRate: Int,
@@ -50,7 +50,7 @@ class H264Encoder(
         if (useSurface) inputSurface = codec.createInputSurface()
         codec.start()
         thread = Thread { drainLoop() }.apply { isDaemon = true; start() }
-        Log.i(TAG, "H264Encoder started ${width}x$height @${frameRate}fps ${bitRate / 1000}kbps surface=$useSurface")
+        Log.i(TAG, "H264HardwareEncoder started ${width}x$height @${frameRate}fps ${bitRate / 1000}kbps surface=$useSurface")
     }
 
     fun requestKeyFrame() {
@@ -166,7 +166,7 @@ class H264Encoder(
     }
 
     companion object {
-        private const val TAG = "H264Encoder"
+        private const val TAG = "H264HardwareEncoder"
 
         /** Cached AVC encoder capabilities, queried once. Makes sizing/bitrate device-agnostic. */
         data class Caps(val maxW: Int, val maxH: Int, val minBitrate: Int, val maxBitrate: Int)

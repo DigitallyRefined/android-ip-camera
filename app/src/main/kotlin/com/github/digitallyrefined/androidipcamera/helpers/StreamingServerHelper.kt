@@ -739,7 +739,7 @@ class StreamingServerHelper(
             if (uri.startsWith("/cameras")) {
                 // One list, all properties: each camera with its OWN supported live sizes
                 // (sizes/formats differ per camera). Capped to the device's queried HW encoder ceiling.
-                val encCaps = H264Encoder.caps()
+                val encCaps = H264HardwareEncoder.caps()
                 val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
                 val idle = clients.isEmpty() && h264Clients.isEmpty()
                 val sb = StringBuilder("[")

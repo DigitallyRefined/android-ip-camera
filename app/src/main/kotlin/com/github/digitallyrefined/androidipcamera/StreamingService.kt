@@ -52,7 +52,12 @@ class StreamingService : LifecycleService() {
     private val binder = LocalBinder()
     var streamingServerHelper: StreamingServerHelper? = null
 
-    private var h264Encoder: H264Encoder? = null
+    // Streaming encoders (initialized when server is created)
+    private var h264StreamingEncoder: H264StreamingEncoder? = null
+    private var mjpegStreamingEncoder: MjpegStreamingEncoder? = null
+    private val encoders: List<StreamingEncoder>
+        get() = listOfNotNull(h264StreamingEncoder, mjpegStreamingEncoder)
+
     @Volatile private var glPipe: CameraGlPipe? = null
     @Volatile private var backend: CaptureBackend? = null   // CameraXCapture (default) or Camera1Capture (legacy)
     @Volatile private var captureRunning = false
@@ -230,12 +235,15 @@ class StreamingService : LifecycleService() {
                 onLog = { Log.i(TAG, "Server: $it"); onLog?.invoke(it) },
                 onClientConnected = { launchMain { onClientConnected?.invoke(); startCameraIfNeeded() } },
                 onClientDisconnected = {
-                    if (streamingServerHelper?.getH264Clients()?.isEmpty() == true)
+                    if (!encoders.any { it.hasClients() })
                         launchMain { stopCamera(); onClientDisconnected?.invoke() }
                 },
                 onControlCommand = { key, value -> handleRemoteControl(key, value) },
                 onSnapshot = { id -> snapshot(id) }
             )
+            // Initialize encoders with the streaming server helper
+            h264StreamingEncoder = H264StreamingEncoder(this, streamingServerHelper!!) { Log.i(TAG, "H264: $it"); onLog?.invoke(it) }
+            mjpegStreamingEncoder = MjpegStreamingEncoder(this, streamingServerHelper!!) { Log.i(TAG, "MJPEG: $it"); onLog?.invoke(it) }
         }
         streamingServerHelper?.startStreamingServer()
     }
@@ -275,7 +283,7 @@ class StreamingService : LifecycleService() {
 
     /** Desired stream size from the resolution pref; "auto" → 1080p target (the device gives its best ≤ that). */
     private fun desiredSize(): Size {
-        val caps = H264Encoder.caps()
+        val caps = H264HardwareEncoder.caps()
         val m = Regex("(\\d+)x(\\d+)").find(
             PreferenceManager.getDefaultSharedPreferences(this).getString("stream_res", "auto") ?: "auto")
         val w = m?.groupValues?.get(1)?.toIntOrNull() ?: 1920
@@ -287,7 +295,7 @@ class StreamingService : LifecycleService() {
 
     private fun startCamera(force: Boolean = false) {
         if (!allPermissionsGranted()) return
-        if (!force && streamingServerHelper?.getH264Clients().isNullOrEmpty()) return   // else: only for live viewers
+        if (!force && !encoders.any { it.hasClients() }) return   // else: only for live viewers
         stopCamera()
         try {
             if (chooseApi() == "camera1") {
@@ -300,10 +308,26 @@ class StreamingService : LifecycleService() {
                 Log.i(TAG, "stream ${camId()} api=camera1 ${cap.chosenW}x${cap.chosenH}")
             } else {
                 // CameraX → ImageAnalysis YUV → byte-buffer encoder (reliable resolution) + ImageCapture stills.
-                backend = CameraXCapture(this, this, frontFacing, desiredSize()) { img -> feedH264(img) }.also { it.start() }
+                backend = CameraXCapture(this, this, frontFacing, desiredSize()) { img ->
+                    // Process frame through all active encoders
+                    val activeEncoders = encoders.filter { it.hasClients() }
+                    if (activeEncoders.isEmpty()) {
+                        img.close()
+                        return@CameraXCapture
+                    }
+
+                    // Feed to encoders in reverse order so last one closes the image
+                    activeEncoders.reversed().forEach { encoder ->
+                        if (encoder.processFrame(img)) {
+                            // Encoder consumed and closed the image
+                            return@forEach
+                        }
+                    }
+                }.also { it.start() }
                 Log.i(TAG, "stream ${camId()} api=camerax")
             }
             captureRunning = true
+            encoders.forEach { it.start() }
             backend?.let { applyStored(it) }
         } catch (e: Exception) { Log.e(TAG, "startCamera: ${e.message}"); stopCamera() }
     }
@@ -311,40 +335,16 @@ class StreamingService : LifecycleService() {
     private fun stopCamera() {
         backend?.stop(); backend = null
         glPipe?.stop(); glPipe = null
-        h264Encoder?.stop(); h264Encoder = null
+        encoders.forEach { it.stop() }
         captureRunning = false
     }
 
     /** Surface-mode encoder + GL pipe, shared by both backends (CameraX Preview / Camera1 preview). */
     private fun newPipe(sz: Size): CameraGlPipe {
-        val enc = H264Encoder(sz.width, sz.height, 30, H264Encoder.bitrateFor(sz.width, sz.height), true) { d, k -> broadcastH264(d, k) }
-        h264Encoder = enc
+        val enc = H264HardwareEncoder(sz.width, sz.height, 30, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k -> h264StreamingEncoder?.broadcastH264(d, k) }
+        h264StreamingEncoder?.setEncoder(enc)
         streamingServerHelper?.resetH264Wait()
         return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height).also { it.start(); glPipe = it }
-    }
-
-    /** CameraX path: feed one analysis frame (YUV) to a byte-buffer encoder. Closes the frame. */
-    private fun feedH264(image: ImageProxy) {
-        try {
-            var enc = h264Encoder
-            if (enc == null || enc.width != image.width || enc.height != image.height) {
-                enc?.stop()
-                enc = H264Encoder(image.width, image.height, 30, H264Encoder.bitrateFor(image.width, image.height), false) { d, k -> broadcastH264(d, k) }
-                h264Encoder = enc; enc.requestKeyFrame(); streamingServerHelper?.resetH264Wait()
-            }
-            enc.feed(image, image.imageInfo.timestamp / 1000)
-        } catch (e: Exception) { Log.e(TAG, "feed: ${e.message}") }
-        finally { image.close() }
-    }
-
-    private fun broadcastH264(data: ByteArray, isKey: Boolean) {
-        val list = streamingServerHelper?.getH264Clients() ?: return
-        for (c in list) {
-            try {
-                if (c.waitingKey) { if (!isKey) continue; c.waitingKey = false }
-                c.outputStream.write(data); c.outputStream.flush()
-            } catch (e: Exception) { streamingServerHelper?.removeH264Client(c) }
-        }
     }
 
     private fun applyStored(b: CaptureBackend) {
@@ -462,7 +462,15 @@ class StreamingService : LifecycleService() {
                 }
             }
         }
+
+        // Delegate to encoders for codec-specific controls
+        encoders.forEach { encoder ->
+            if (encoder.handleRemoteControl(key, value)) {
+                return // Command was handled by an encoder
+            }
+        }
     }
+
 
     private fun generateRandomPassword(): String {
         val r = SecureRandom()
