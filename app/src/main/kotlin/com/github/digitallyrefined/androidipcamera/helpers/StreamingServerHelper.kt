@@ -441,7 +441,7 @@ class StreamingServerHelper(
 
             // Check if authentication is enabled
             val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-            var enableAuth = prefs.getBoolean("enable_auth", false) // fork default: off (LAN + proxy); toggle in settings
+            val enableAuth = prefs.getBoolean("enable_auth", true)
 
             // Validate stored credentials if auth is enabled
             val username = if (enableAuth) {
@@ -455,11 +455,20 @@ class StreamingServerHelper(
                 null
             }
 
-            // Fork: if auth is enabled but credentials aren't configured, fall back to OPEN rather than
-            // locking everyone out with 403 (LAN device behind the FastAPI proxy). Prevents auth-bricking.
-            if (enableAuth && (username.isNullOrEmpty() || password.isNullOrEmpty())) {
-                enableAuth = false
-                onLog("auth enabled but no credentials -> serving open")
+            if (enableAuth) {
+                if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
+                    // CRITICAL: No valid credentials configured - reject all connections
+                    recordFailedAttempt(clientIp)
+                    writer.print("HTTP/1.1 403 Forbidden\r\n")
+                    writer.print("Content-Type: text/plain\r\n")
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
+                    writer.print("Configure username and password in app settings.\r\n")
+                    writer.flush()
+                    socket.close()
+                    onLog("SECURITY: Connection rejected - authentication credentials not configured")
+                    return
+                }
             }
 
             // Read HTTP headers
