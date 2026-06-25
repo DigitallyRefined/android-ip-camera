@@ -25,7 +25,7 @@ alt="Get it on F-Droid" align="center" height="80" /></a>
 
 ## Features
 
-* 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/stream`)
+* 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/video/m.jpeg`)
 * 📴 Option to turn the display off while streaming
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast

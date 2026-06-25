@@ -434,6 +434,7 @@ class StreamingServerHelper(
             val requestParts = requestLine.split(" ")
             if (requestParts.size < 2) return
             val uri = requestParts[1]
+            val path = uri.substringBefore('?')
 
             val secureStorage = SecureStorage(context)
             val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
@@ -605,7 +606,7 @@ class StreamingServerHelper(
                 return
             }
 
-            if (uri.startsWith("/snapshot")) {
+            if (path == "/video/snapshot") {
                 // One JPEG captured into RAM (no disk). ?camera=<id>. For polling / dual-camera views.
                 val id = if (uri.contains("?")) uri.substringAfter("camera=", "").substringBefore("&") else ""
                 val jpeg = onSnapshot(id)
@@ -634,7 +635,7 @@ class StreamingServerHelper(
                 return
             }
 
-            if (uri.startsWith("/audio")) {
+            if (path == "/audio") {
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                     writer.print("HTTP/1.1 403 Forbidden\r\n")
                     writer.print("Content-Type: text/plain\r\n")
@@ -736,7 +737,7 @@ class StreamingServerHelper(
                 return
             }
 
-            if (uri.startsWith("/cameras")) {
+            if (path == "/video/h264-cameras") {
                 // One list, all properties: each camera with its OWN supported live sizes
                 // (sizes/formats differ per camera). Capped to the device's queried HW encoder ceiling.
                 val encCaps = H264HardwareEncoder.caps()
@@ -778,7 +779,7 @@ class StreamingServerHelper(
                 return
             }
 
-            if (uri.startsWith("/h264")) {
+            if (path == "/video/h264") {
                 // Raw Annex-B H.264 elementary stream (hardware-encoded). Browser plays via jMuxer.
                 if (handleMaxClients(socket, isAuthenticated = enableAuth)) return
                 writer.print("HTTP/1.1 200 OK\r\n")
@@ -803,7 +804,7 @@ class StreamingServerHelper(
                 return
             }
 
-            if (uri.startsWith("/stream")) {
+            if (path == "/video/m.jpeg") {
                 // AUTHENTICATED CONNECTION if auth is enabled - No rate limiting, higher connection limits
                 if (handleMaxClients(socket, isAuthenticated = enableAuth)) return
 
