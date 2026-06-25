@@ -20,6 +20,10 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
     var chosenH = targetH; private set
     override val width get() = chosenW
     override val height get() = chosenH
+    val previewRotation: Int get() = jpegRotation(cameraId)
+
+    private var previewBuffers: Array<ByteArray>? = null
+    private var onPreviewFrame: ((ByteArray) -> Unit)? = null
 
     init {
         camera.parameters.supportedPreviewSizes?.let { sizes ->
@@ -51,6 +55,23 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         camera.setPreviewTexture(st)
         camera.startPreview()
         Log.i(TAG, "Camera1[$cameraId] preview ${chosenW}x$chosenH recHint focus=${p.focusMode}")
+    }
+
+    /** NV21 preview frames for MJPEG when the GL pipe feeds H.264 only. */
+    fun setPreviewFrameCallback(callback: ((ByteArray) -> Unit)?) {
+        onPreviewFrame = callback
+        if (callback == null) {
+            try { camera.setPreviewCallbackWithBuffer(null) } catch (_: Exception) {}
+            previewBuffers = null
+            return
+        }
+        val bufferSize = chosenW * chosenH * 3 / 2
+        previewBuffers = Array(3) { ByteArray(bufferSize) }
+        camera.setPreviewCallbackWithBuffer { data, cam ->
+            onPreviewFrame?.invoke(data)
+            cam.addCallbackBuffer(data)
+        }
+        previewBuffers?.forEach { camera.addCallbackBuffer(it) }
     }
 
     /**
@@ -118,6 +139,7 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
     }
 
     override fun stop() {
+        setPreviewFrameCallback(null)
         try { camera.stopPreview() } catch (_: Exception) {}
         try { camera.release() } catch (_: Exception) {}
     }

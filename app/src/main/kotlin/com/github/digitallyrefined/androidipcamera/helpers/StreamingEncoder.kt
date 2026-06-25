@@ -9,10 +9,9 @@ import androidx.camera.core.ImageProxy
 interface StreamingEncoder {
     /**
      * Process a camera frame for this encoder.
-     * @param image The camera frame to process
-     * @return true if the image was consumed and should be closed, false otherwise
+     * @param image The camera frame to process (caller closes after all encoders run)
      */
-    fun processFrame(image: ImageProxy): Boolean
+    fun processFrame(image: ImageProxy)
 
     /**
      * Handle an encoder-specific remote control command.

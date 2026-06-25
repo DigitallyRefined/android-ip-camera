@@ -26,16 +26,12 @@ class MjpegStreamingEncoder(
     private var lastFrameTime = 0L
     private var captureRunning = false
 
-    override fun processFrame(image: ImageProxy): Boolean {
+    override fun processFrame(image: ImageProxy) {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
         val delay = prefs.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
         val currentTime = System.currentTimeMillis()
 
-        // Frame rate control
-        if (currentTime - lastFrameTime < delay) {
-            image.close()
-            return true
-        }
+        if (currentTime - lastFrameTime < delay) return
         lastFrameTime = currentTime
 
         val autoRotation = image.imageInfo.rotationDegrees
@@ -44,38 +40,54 @@ class MjpegStreamingEncoder(
         val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
         val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
 
-        // Convert YUV_420_888 to NV21
         val nv21 = convertYUV420toNV21(image)
-
-        // Convert NV21 to JPEG
         var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height)
-
-        // Apply transformations if needed (Rotation, Scaling, Contrast)
         if (totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0) {
             jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue)
         }
+        broadcastJpeg(jpegBytes)
+    }
 
-        // Send to MJPEG clients
-        val helper = streamingServerHelper
-        helper?.getClients()?.let { clients ->
-            val toRemove = mutableListOf<StreamingServerHelper.Client>()
-            clients.forEach { client ->
-                try {
-                    client.writer.print("--frame\r\n")
-                    client.writer.print("Content-Type: image/jpeg\r\n")
-                    client.writer.print("Content-Length: ${jpegBytes.size}\r\n\r\n")
-                    client.writer.flush()
-                    client.outputStream.write(jpegBytes)
-                    client.outputStream.flush()
-                } catch (e: IOException) {
-                    try { client.socket.close() } catch (_: Exception) {}
-                    toRemove.add(client)
-                }
-            }
-            toRemove.forEach { helper.removeClient(it) }
+    /** Camera1 preview callback path (NV21 bytes, no ImageProxy). */
+    fun processNv21Frame(nv21: ByteArray, width: Int, height: Int, rotationDegrees: Int) {
+        if (!hasClients()) return
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val delay = prefs.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastFrameTime < delay) return
+        lastFrameTime = currentTime
+
+        val manualRotation = prefs.getInt("camera_manual_rotate", 0)
+        val totalRotation = (rotationDegrees + manualRotation) % 360
+        val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
+        val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
+
+        var jpegBytes = convertNV21toJPEG(nv21, width, height)
+        if (totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0) {
+            jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue)
         }
+        broadcastJpeg(jpegBytes)
+    }
 
-        return true // Image is closed by processImage
+    private fun broadcastJpeg(jpegBytes: ByteArray) {
+        val helper = streamingServerHelper ?: return
+        val clients = helper.getClients()
+        if (clients.isEmpty()) return
+        val toRemove = mutableListOf<StreamingServerHelper.Client>()
+        clients.forEach { client ->
+            try {
+                client.writer.print("--frame\r\n")
+                client.writer.print("Content-Type: image/jpeg\r\n")
+                client.writer.print("Content-Length: ${jpegBytes.size}\r\n\r\n")
+                client.writer.flush()
+                client.outputStream.write(jpegBytes)
+                client.outputStream.flush()
+            } catch (e: IOException) {
+                try { client.socket.close() } catch (_: Exception) {}
+                toRemove.add(client)
+            }
+        }
+        toRemove.forEach { helper.removeClient(it) }
     }
 
     override fun handleRemoteControl(key: String, value: String): Boolean {

@@ -16,6 +16,7 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -40,6 +41,7 @@ class CameraXCapture(
     private val owner: LifecycleOwner,
     private val front: Boolean,
     private val desired: Size,
+    private val previewSurfaceProvider: Preview.SurfaceProvider? = null,
     private val onFrame: (ImageProxy) -> Unit
 ) : CaptureBackend {
     @Volatile override var width = desired.width; private set
@@ -82,9 +84,15 @@ class CameraXCapture(
                 imageCapture = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)   // full-res stills
                     .build()
+                val useCases = mutableListOf<androidx.camera.core.UseCase>(analysis, imageCapture!!)
+                previewSurfaceProvider?.let { provider ->
+                    val preview = Preview.Builder().build()
+                    preview.setSurfaceProvider(provider)
+                    useCases.add(0, preview)
+                }
                 val selector = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
                 p.unbindAll()
-                camera = p.bindToLifecycle(owner, selector, analysis, imageCapture)
+                camera = p.bindToLifecycle(owner, selector, *useCases.toTypedArray())
                 ready = true
                 Log.i(TAG, "bound desired ${desired.width}x${desired.height} front=$front")
             } catch (e: Exception) { Log.e(TAG, "start: ${e.message}") }

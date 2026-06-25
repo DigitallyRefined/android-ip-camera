@@ -22,6 +22,7 @@ import android.util.Log
 import android.util.Size
 import android.widget.Toast
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
@@ -63,6 +64,8 @@ class StreamingService : LifecycleService() {
     @Volatile private var captureRunning = false
 
     @Volatile private var frontFacing = false             // false = back camera (read across threads)
+
+    private var currentSurfaceProvider: Preview.SurfaceProvider? = null
 
     private val snapCache = ConcurrentHashMap<String, ByteArray>()  // latest JPEG per camera (RAM)
     private val snapLock = Any()
@@ -178,8 +181,11 @@ class StreamingService : LifecycleService() {
         else startForeground(NOTIFICATION_ID, notification)
     }
 
-    // MainActivity calls these; headless server is driven by client connections only.
-    fun setPreviewSurface(@Suppress("UNUSED_PARAMETER") surfaceProvider: Any?) {}
+    // MainActivity attaches PreviewView here; camera restarts when a surface is set while streaming.
+    fun setPreviewSurface(surfaceProvider: Preview.SurfaceProvider?) {
+        currentSurfaceProvider = surfaceProvider
+        if (encoders.any { it.hasClients() } && chooseApi() == "camerax") launchMain { startCamera() }
+    }
     fun isCameraRunning() = captureRunning
     fun switchCamera() {
         frontFacing = !frontFacing
@@ -284,8 +290,19 @@ class StreamingService : LifecycleService() {
     /** Desired stream size from the resolution pref; "auto" → 1080p target (the device gives its best ≤ that). */
     private fun desiredSize(): Size {
         val caps = H264HardwareEncoder.caps()
-        val m = Regex("(\\d+)x(\\d+)").find(
-            PreferenceManager.getDefaultSharedPreferences(this).getString("stream_res", "auto") ?: "auto")
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val streamRes = prefs.getString("stream_res", "auto") ?: "auto"
+        if (streamRes == "auto") {
+            val quality = prefs.getString("camera_resolution", "low") ?: "low"
+            val target = when (quality) {
+                "high" -> Size(1280, 720)
+                "medium" -> Size(960, 720)
+                "low" -> Size(800, 600)
+                else -> Size(800, 600)
+            }
+            return Size(minOf(target.width, caps.maxW), minOf(target.height, caps.maxH))
+        }
+        val m = Regex("(\\d+)x(\\d+)").find(streamRes)
         val w = m?.groupValues?.get(1)?.toIntOrNull() ?: 1920
         val h = m?.groupValues?.get(2)?.toIntOrNull() ?: 1080
         return Size(minOf(w, caps.maxW), minOf(h, caps.maxH))
@@ -304,24 +321,24 @@ class StreamingService : LifecycleService() {
                 val cap = Camera1Capture(camera1IndexForFacing(frontFacing), want.width, want.height)
                 val pipe = newPipe(Size(cap.chosenW, cap.chosenH))
                 cap.start(pipe.surfaceTexture)
+                mjpegStreamingEncoder?.takeIf { it.hasClients() }?.let { mjpeg ->
+                    cap.setPreviewFrameCallback { nv21 ->
+                        mjpeg.processNv21Frame(nv21, cap.chosenW, cap.chosenH, cap.previewRotation)
+                    }
+                }
                 backend = cap
                 Log.i(TAG, "stream ${camId()} api=camera1 ${cap.chosenW}x${cap.chosenH}")
             } else {
-                // CameraX → ImageAnalysis YUV → byte-buffer encoder (reliable resolution) + ImageCapture stills.
-                backend = CameraXCapture(this, this, frontFacing, desiredSize()) { img ->
-                    // Process frame through all active encoders
-                    val activeEncoders = encoders.filter { it.hasClients() }
-                    if (activeEncoders.isEmpty()) {
+                // CameraX → ImageAnalysis YUV → encoders + optional Preview on the phone.
+                backend = CameraXCapture(
+                    this, this, frontFacing, desiredSize(), currentSurfaceProvider
+                ) { img ->
+                    try {
+                        val activeEncoders = encoders.filter { it.hasClients() }
+                        if (activeEncoders.isEmpty()) return@CameraXCapture
+                        activeEncoders.forEach { it.processFrame(img) }
+                    } finally {
                         img.close()
-                        return@CameraXCapture
-                    }
-
-                    // Feed to encoders in reverse order so last one closes the image
-                    activeEncoders.reversed().forEach { encoder ->
-                        if (encoder.processFrame(img)) {
-                            // Encoder consumed and closed the image
-                            return@forEach
-                        }
                     }
                 }.also { it.start() }
                 Log.i(TAG, "stream ${camId()} api=camerax")
@@ -450,7 +467,10 @@ class StreamingService : LifecycleService() {
                 launchMain { if (captureRunning) startCamera() }
             }
             "resolution" -> {
-                if (value == "auto" || value == "max" || Regex("\\d+x\\d+").matches(value)) {
+                if (value in listOf("low", "medium", "high")) {
+                    prefs.edit().putString("camera_resolution", value).apply()
+                    launchMain { if (captureRunning) startCamera() }
+                } else if (value == "auto" || value == "max" || Regex("\\d+x\\d+").matches(value)) {
                     prefs.edit().putString("stream_res", if (value == "max") "auto" else value).apply()
                     launchMain { if (captureRunning) startCamera() }
                 }

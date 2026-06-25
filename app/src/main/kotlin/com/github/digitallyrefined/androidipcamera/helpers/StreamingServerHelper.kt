@@ -429,7 +429,7 @@ class StreamingServerHelper(
 
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
 
-            // Read the request line (e.g., GET /stream HTTP/1.1)
+            // Read the request line (e.g., GET /video/m.jpeg HTTP/1.1)
             val requestLine = reader.readLine() ?: return
             val requestParts = requestLine.split(" ")
             if (requestParts.size < 2) return

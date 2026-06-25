@@ -26,7 +26,7 @@ class H264StreamingEncoder(
     private var backend: CaptureBackend? = null
     private var captureRunning = false
 
-    override fun processFrame(image: ImageProxy): Boolean {
+    override fun processFrame(image: ImageProxy) {
         try {
             var enc = h264HardwareEncoder
             if (enc == null || enc.width != image.width || enc.height != image.height) {
@@ -46,7 +46,6 @@ class H264StreamingEncoder(
         } catch (e: Exception) {
             Log.e(TAG, "feed: ${e.message}")
         }
-        return true // Always close the image after feeding to H.264
     }
 
     override fun handleRemoteControl(key: String, value: String): Boolean {

@@ -1,5 +1,6 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
+import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
@@ -76,6 +77,17 @@ class H264HardwareEncoder(
         try {
             val idx = codec.dequeueInputBuffer(2000)
             if (idx < 0) return
+
+            // Modern and safe path: use getInputImage(idx) which respects hardware strides/padding
+            val dstImage = codec.getInputImage(idx)
+            if (dstImage != null) {
+                copyYuv(image, dstImage)
+                val size = width * height * 3 / 2
+                codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
+                return
+            }
+
+            // Fallback for legacy / safety
             val buf = codec.getInputBuffer(idx)
             if (buf == null) { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0); return }
             val size = width * height * 3 / 2
@@ -86,6 +98,56 @@ class H264HardwareEncoder(
             codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
         } catch (e: Exception) {
             if (running) Log.e(TAG, "feed: ${e.message}")
+        }
+    }
+
+    private fun copyYuv(src: ImageProxy, dst: Image) {
+        val srcPlanes = src.planes
+        val dstPlanes = dst.planes
+
+        // Y plane
+        copyPlane(srcPlanes[0], dstPlanes[0], src.width, src.height)
+
+        // U and V planes
+        val uvW = src.width / 2
+        val uvH = src.height / 2
+        copyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
+        copyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
+    }
+
+    private fun copyPlane(
+        src: ImageProxy.PlaneProxy,
+        dst: Image.Plane,
+        w: Int,
+        h: Int
+    ) {
+        val sBuf = src.buffer
+        val dBuf = dst.buffer
+        val sRow = src.rowStride
+        val dRow = dst.rowStride
+        val sPix = src.pixelStride
+        val dPix = dst.pixelStride
+
+        val rowBuf = ByteArray(sRow)
+        for (row in 0 until h) {
+            sBuf.position(row * sRow)
+            val bytesToRead = minOf(sRow, sBuf.remaining())
+            sBuf.get(rowBuf, 0, bytesToRead)
+
+            dBuf.position(row * dRow)
+            if (sPix == 1 && dPix == 1) {
+                val bytesToWrite = minOf(w, dBuf.remaining())
+                dBuf.put(rowBuf, 0, bytesToWrite)
+            } else {
+                val rowOffset = row * dRow
+                for (col in 0 until w) {
+                    val dstIdx = rowOffset + col * dPix
+                    val srcIdx = col * sPix
+                    if (dstIdx < dBuf.capacity() && srcIdx < rowBuf.size) {
+                        dBuf.put(dstIdx, rowBuf[srcIdx])
+                    }
+                }
+            }
         }
     }
 
