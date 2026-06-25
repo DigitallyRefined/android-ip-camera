@@ -3,6 +3,9 @@ package com.github.digitallyrefined.androidipcamera.helpers
 import android.content.Context
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -47,14 +50,16 @@ class StreamingServerHelper(
     private val onLog: (String) -> Unit = {},
     private val onClientConnected: () -> Unit = {},
     private val onClientDisconnected: () -> Unit = {},
-    private val onControlCommand: (String, String) -> Unit = { _, _ -> }
+    private val onControlCommand: (String, String) -> Unit = { _, _ -> },
+    private val onSnapshot: (String) -> ByteArray? = { null }
 ) {
     data class Client(
         val socket: Socket,
         val outputStream: OutputStream,
         val writer: PrintWriter,
         val connectedAt: Long = System.currentTimeMillis(),
-        val isAuthenticated: Boolean = false
+        val isAuthenticated: Boolean = false,
+        @Volatile var waitingKey: Boolean = true // H.264: skip frames until first keyframe
     )
 
     private data class FailedAttempt(
@@ -68,6 +73,7 @@ class StreamingServerHelper(
     @Volatile
     private var isStarting = false
     private val clients = CopyOnWriteArrayList<Client>()
+    private val h264Clients = CopyOnWriteArrayList<Client>()  // raw H.264 (/h264) viewers
     private val failedAttempts = ConcurrentHashMap<String, FailedAttempt>()
     @Volatile
     private var appInForeground: Boolean = true
@@ -84,6 +90,13 @@ class StreamingServerHelper(
     private val SOCKET_TIMEOUT_MS = 60 * 1000 // 60 seconds socket timeout
 
     fun getClients(): List<Client> = clients.toList()
+    fun getH264Clients(): List<Client> = h264Clients.toList()
+    fun resetH264Wait() { h264Clients.forEach { it.waitingKey = true } }  // resync viewers at next keyframe
+    fun removeH264Client(client: Client) {
+        h264Clients.remove(client)
+        try { client.socket.close() } catch (_: Exception) {}
+        onClientDisconnected()
+    }
 
     fun stopServer() {
         serverJob?.cancel()
@@ -416,11 +429,12 @@ class StreamingServerHelper(
 
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
 
-            // Read the request line (e.g., GET /stream HTTP/1.1)
+            // Read the request line (e.g., GET /video/m.jpeg HTTP/1.1)
             val requestLine = reader.readLine() ?: return
             val requestParts = requestLine.split(" ")
             if (requestParts.size < 2) return
             val uri = requestParts[1]
+            val path = uri.substringBefore('?')
 
             val secureStorage = SecureStorage(context)
             val rawUsername = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
@@ -592,6 +606,21 @@ class StreamingServerHelper(
                 return
             }
 
+            if (path == "/video/snapshot") {
+                // One JPEG captured into RAM (no disk). ?camera=<id>. For polling / dual-camera views.
+                val id = if (uri.contains("?")) uri.substringAfter("camera=", "").substringBefore("&") else ""
+                val jpeg = onSnapshot(id)
+                if (jpeg != null) {
+                    writer.print("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n")
+                    writer.print("Content-Length: ${jpeg.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")
+                    writer.flush(); outputStream.write(jpeg); outputStream.flush()
+                } else {
+                    writer.print("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\nno frame"); writer.flush()
+                }
+                try { socket.close() } catch (_: Exception) {}
+                return
+            }
+
             if (uri.contains("?")) {
                 val query = uri.substringAfter("?")
                 query.split("&").forEach { param ->
@@ -606,7 +635,7 @@ class StreamingServerHelper(
                 return
             }
 
-            if (uri.startsWith("/audio")) {
+            if (path == "/audio") {
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                     writer.print("HTTP/1.1 403 Forbidden\r\n")
                     writer.print("Content-Type: text/plain\r\n")
@@ -708,7 +737,74 @@ class StreamingServerHelper(
                 return
             }
 
-            if (uri.startsWith("/stream")) {
+            if (path == "/video/h264-cameras") {
+                // One list, all properties: each camera with its OWN supported live sizes
+                // (sizes/formats differ per camera). Capped to the device's queried HW encoder ceiling.
+                val encCaps = H264HardwareEncoder.caps()
+                val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                val idle = clients.isEmpty() && h264Clients.isEmpty()
+                val sb = StringBuilder("[")
+                try {
+                    cm.cameraIdList.forEachIndexed { i, id ->
+                        val ch = cm.getCameraCharacteristics(id)
+                        val facing = when (ch.get(CameraCharacteristics.LENS_FACING)) {
+                            CameraCharacteristics.LENS_FACING_FRONT -> "front"
+                            CameraCharacteristics.LENS_FACING_BACK -> "back"
+                            else -> "external"
+                        }
+                        val set = LinkedHashSet<Pair<Int, Int>>()
+                        try {
+                            val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                            map?.getOutputSizes(SurfaceTexture::class.java)?.forEach { set.add(it.width to it.height) }
+                            map?.getOutputSizes(android.media.MediaCodec::class.java)?.forEach { set.add(it.width to it.height) }
+                        } catch (_: Exception) {}
+                        if (idle) {  // Camera1 preview sizes expose 16:9 that LEGACY Camera2 omits
+                            try {
+                                @Suppress("DEPRECATION") val c1 = android.hardware.Camera.open(id.toIntOrNull() ?: i)
+                                @Suppress("DEPRECATION") c1.parameters.supportedPreviewSizes?.forEach { set.add(it.width to it.height) }
+                                @Suppress("DEPRECATION") c1.release()
+                            } catch (_: Exception) {}
+                        }
+                        val sizes = set.filter { it.first <= encCaps.maxW && it.second <= encCaps.maxH }.sortedByDescending { it.first * it.second }
+                        if (i > 0) sb.append(",")
+                        sb.append("{\"id\":\"$id\",\"facing\":\"$facing\",\"sizes\":[")
+                        sizes.forEachIndexed { j, s -> if (j > 0) sb.append(","); sb.append("{\"w\":${s.first},\"h\":${s.second}}") }
+                        sb.append("]}")
+                    }
+                } catch (_: Exception) {}
+                sb.append("]")
+                writer.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
+                writer.print(sb.toString()); writer.flush()
+                try { socket.close() } catch (_: Exception) {}
+                return
+            }
+
+            if (path == "/video/h264") {
+                // Raw Annex-B H.264 elementary stream (hardware-encoded). Browser plays via jMuxer.
+                if (handleMaxClients(socket, isAuthenticated = enableAuth)) return
+                writer.print("HTTP/1.1 200 OK\r\n")
+                writer.print("Connection: keep-alive\r\n")
+                writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
+                writer.print("Content-Type: video/h264\r\n\r\n")
+                writer.flush()
+                val client = Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = enableAuth)
+                h264Clients.add(client)
+                onClientConnected()  // starts camera + encoder
+                try {
+                    while (socket.isConnected && !socket.isClosed) {
+                        if (reader.ready()) { if (reader.readLine() == null) break }
+                        Thread.sleep(1000)
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    h264Clients.remove(client)
+                    try { socket.close() } catch (_: Exception) {}
+                    onClientDisconnected()
+                }
+                return
+            }
+
+            if (path == "/video/m.jpeg") {
                 // AUTHENTICATED CONNECTION if auth is enabled - No rate limiting, higher connection limits
                 if (handleMaxClients(socket, isAuthenticated = enableAuth)) return
 
