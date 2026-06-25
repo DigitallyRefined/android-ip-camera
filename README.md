@@ -33,6 +33,51 @@ alt="Get it on F-Droid" align="center" height="80" /></a>
 * 🛂 Username and password protection
 * 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS
 
+## Server URL Paths & Remote Control API
+
+When the streaming server is running (default port `4444`, via `http://` or `https://` depending on TLS configuration), you can access the following endpoints:
+
+### 📺 Streams and Interfaces
+
+* **Web Control Panel (`/` or empty)**
+  * **Usage:** Open `http://[ip_address]:[port]/` (or `https://...`) in any web browser.
+  * **Description:** Serves the built-in control panel (`index.html`) which plays video streams, allows muting/unmuting audio, toggling the flashlight, and altering settings remotely.
+* **Motion JPEG Video Stream (`/video/m.jpeg`)**
+  * **Usage:** Open directly in a web browser or configure in external home automation tools (e.g. Home Assistant MJPEG IP Camera).
+  * **Format:** `multipart/x-mixed-replace; boundary=frame`
+* **Raw H.264 Video Stream (`/video/h264`)**
+  * **Usage:** Play in media players that support raw Annex-B H.264 stream demuxing.
+    * **VLC:** Run `vlc https://[ip_address]:[port]/video/h264` (may require ignoring TLS validation if self-signed).
+    * **MPV:** Run `mpv https://[ip_address]:[port]/video/h264 --demuxer-lavf-format=h264`
+* **Live Audio Stream (`/audio`)**
+  * **Usage:** Listen to the live microphone audio.
+  * **Format:** `audio/wav` chunked transfer-encoding (WAV container, 16-bit PCM mono, 44.1kHz).
+    * **VLC/MPV:** Run `vlc https://[ip_address]:[port]/audio` or `mpv https://[ip_address]:[port]/audio`.
+* **Still Snapshot (`/video/snapshot`)**
+  * **Usage:** Fetch a single high-resolution image.
+  * **Format:** `image/jpeg`
+  * **Query Parameter:** `?camera=<id|front|back|toggle>` to query a specific camera sensor.
+    * *Example:* `https://[ip_address]:[port]/video/snapshot?camera=back`
+* **Camera Capabilities JSON (`/video/h264-cameras`)**
+  * **Usage:** Query available camera sensors, their directions, and supported H.264 resolutions.
+  * **Format:** `application/json`
+
+### 🎛️ Remote Control Commands
+
+Settings can be changed dynamically by passing query parameters in HTTP GET requests (e.g., to the root path `/` or any control endpoint).
+
+* **Parameters:**
+  * `camera=<id|front|back|toggle>`: Switches the active camera sensor.
+  * `camera_resolution=<low|medium|high>`: Changes camera capture resolution.
+  * `zoom=<value>`: Adjusts digital zoom (e.g., `1.0`, `2.5`).
+  * `scale=<value>`: Adjusts preview scale (e.g., `0.5`, `1.0`).
+  * `exposure=<value>`: Adjusts exposure value.
+  * `contrast=<value>`: Adjusts contrast value.
+  * `torch=<on|off|toggle>`: Controls the flashlight.
+  * `audio_gain=<value>`: Changes microphone gain multiplier (e.g., `1.0`, `2.0`).
+  * `focus=1`: Triggers camera autofocus.
+* **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
+
 ## ⚠️ Warning
 
 If you are planning to run this 24/7, please make sure that your phone does not stay at 100% charge. Doing so may damage the battery and cause it to swell up, which could cause it to explode.
