@@ -93,8 +93,7 @@ class StreamingService : LifecycleService() {
         private const val STREAM_PORT = 4444
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "streaming_service_channel"
-        private const val PREF_LAST_CAMERA_FACING = "last_camera_facing"
-        private const val PREF_LAST_CAMERA_ID = "last_camera_id"
+        private const val PREF_CAMERA_ID = "camera_id"
         const val ACTION_STOP_SERVICE = "com.github.digitallyrefined.androidipcamera.STOP_SERVICE"
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
@@ -130,9 +129,21 @@ class StreamingService : LifecycleService() {
         super.onCreate()
         startForegroundService()
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        frontFacing = prefs.getString(PREF_LAST_CAMERA_FACING, "back") == "front"
-        selectedCameraId = prefs.getString(PREF_LAST_CAMERA_ID, null)
-            ?.takeIf { cameraIdMatchesFacing(it, frontFacing) == true }
+        val savedCameraId = prefs.getString(PREF_CAMERA_ID, null)
+        if (savedCameraId != null) {
+            // resolveCamera maps "1:3" → the openable camera ID (e.g. "3") and correct facing
+            val resolved = resolveCamera(savedCameraId)
+            if (resolved != null) {
+                frontFacing = resolved.first
+                selectedCameraId = resolved.second
+            } else {
+                frontFacing = cameraIdMatchesFacing(savedCameraId, true) == true
+                selectedCameraId = savedCameraId.takeIf { cameraIdMatchesFacing(it, frontFacing) == true }
+            }
+        } else {
+            frontFacing = false
+            selectedCameraId = null
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             registerReceiver(notificationChannelReceiver,
                 IntentFilter(NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED))
@@ -194,8 +205,7 @@ class StreamingService : LifecycleService() {
     fun switchCamera() {
         selectCamera(!frontFacing, null)
         PreferenceManager.getDefaultSharedPreferences(this).edit()
-            .putString(PREF_LAST_CAMERA_FACING, if (frontFacing) "front" else "back")
-            .putString(PREF_LAST_CAMERA_ID, selectedCameraId)
+            .putString(PREF_CAMERA_ID, selectedCameraId)
             .apply()
         if (captureRunning) launchMain { startCamera() }
     }
@@ -448,7 +458,6 @@ class StreamingService : LifecycleService() {
 
     private fun applyStored(b: CaptureBackend) {
         val p = PreferenceManager.getDefaultSharedPreferences(this); val id = camId()
-        b.setTorch(p.getString("torch_$id", "off") == "on")
         p.getString("exposure_$id", null)?.toIntOrNull()?.let { b.setExposure(it) }
         p.getString("zoom_$id", null)?.toFloatOrNull()?.let { b.setZoom(it) }
     }
@@ -523,8 +532,8 @@ class StreamingService : LifecycleService() {
                 if (actualPhysicalId != null && !ch.physicalCameraIds.contains(actualPhysicalId)) {
                     null
                 } else {
-                    // On older devices, if the physical ID is itself a valid camera ID,
-                    // use it directly instead of combining with logical ID
+                    // On older devices, the physical camera is also a top-level camera ID;
+                    // use it directly so CameraX can open it without physical-camera routing.
                     val finalCameraId = if (actualPhysicalId != null && cm.cameraIdList.contains(actualPhysicalId)) {
                         actualPhysicalId
                     } else if (actualPhysicalId != null) {
@@ -575,13 +584,14 @@ class StreamingService : LifecycleService() {
         val id = camId()
         when (key) {
             "torch" -> {
+                val current = backend?.getTorch() ?: false
                 val next = when (value.lowercase()) {
-                    "on" -> "on"; "off" -> "off"
-                    "toggle" -> if (prefs.getString("torch_$id", "off") == "on") "off" else "on"
+                    "on" -> true
+                    "off" -> false
+                    "toggle" -> !current
                     else -> return
                 }
-                prefs.edit().putString("torch_$id", next).apply()
-                launchMain { backend?.setTorch(next == "on") }
+                launchMain { backend?.setTorch(next) }
             }
             "exposure" -> {
                 val ev = value.toIntOrNull() ?: return
@@ -595,13 +605,20 @@ class StreamingService : LifecycleService() {
             }
             "focus" -> launchMain { backend?.triggerAutoFocus() }
             "camera" -> {
+                val keepTorchOn = backend?.getTorch() == true
                 val target = resolveCamera(value) ?: return
                 selectCamera(target.first, target.second)
+                // Save the original value (e.g. "1:3") so the dropdown can match it;
+                // selectedCameraId may be the bare physical ID (e.g. "3") used by CameraX.
                 prefs.edit()
-                    .putString(PREF_LAST_CAMERA_FACING, if (frontFacing) "front" else "back")
-                    .putString(PREF_LAST_CAMERA_ID, selectedCameraId)
+                    .putString(PREF_CAMERA_ID, value)
                     .apply()
-                launchMain { if (captureRunning) startCamera() }
+                launchMain {
+                    if (captureRunning) {
+                        startCamera()
+                        if (keepTorchOn) backend?.setTorch(true)
+                    }
+                }
             }
             "resolution" -> {
                 if (value in listOf("low", "medium", "high")) {

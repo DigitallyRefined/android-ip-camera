@@ -12,6 +12,7 @@ interface CaptureBackend {
     val ready: Boolean get() = true        // CameraX overrides (async bind); Camera1 is ready after start()
     /** Full-resolution JPEG; concurrent with the live stream where the hardware allows. */
     fun captureStill(onJpeg: (ByteArray?) -> Unit)
+    fun getTorch(): Boolean
     fun setTorch(on: Boolean)
     fun setExposure(ev: Int)
     fun setZoom(ratio: Float)

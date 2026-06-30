@@ -971,7 +971,7 @@ class StreamingServerHelper(
 
     private data class InfoSize(val w: Int, val h: Int)
 
-    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>)
+    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean)
 
     private data class CameraInfoSource(
         val id: String,
@@ -984,7 +984,6 @@ class StreamingServerHelper(
     )
 
     private data class StreamSettings(
-        val camera: String,
         val cameraId: String?,
         val resolution: String,
         val zoom: String,
@@ -1009,6 +1008,7 @@ class StreamingServerHelper(
                         put("id", camera.id)
                         put("facing", camera.facing)
                         put("label", camera.label)
+                        put("hasFlash", camera.hasFlash)
                         put("sizes", JSONArray().apply {
                             camera.sizes.forEach { size ->
                                 put(JSONObject().apply {
@@ -1023,8 +1023,7 @@ class StreamingServerHelper(
             put("batteryPercent", batteryPercent)
             put("wifiStrength", wifiStrength)
             put("settings", JSONObject().apply {
-                put("camera", settings.camera)
-                settings.cameraId?.let { put("cameraId", it) }
+                put("cameraId", settings.cameraId)
                 put("resolution", settings.resolution)
                 put("zoom", settings.zoom)
                 put("scale", settings.scale)
@@ -1039,19 +1038,20 @@ class StreamingServerHelper(
 
     private fun buildDeviceInfo(): DeviceInfo {
         val idle = clients.isEmpty() && h264Clients.isEmpty()
+        val cameraList = buildCameraInfoList(idle)
         return DeviceInfo(
-            cameras = buildCameraInfoList(idle),
+            cameras = cameraList,
             batteryPercent = getBatteryPercent(),
             wifiStrength = getWifiStrength(),
-            settings = getStreamSettings(),
+            settings = getStreamSettings(cameraList),
         )
     }
 
-    private fun getStreamSettings(): StreamSettings {
+    private fun getStreamSettings(cameraList: List<InfoCamera> = emptyList()): StreamSettings {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
         return StreamSettings(
-            camera = prefs.getString("last_camera_facing", "back") ?: "back",
-            cameraId = prefs.getString("last_camera_id", null),
+            cameraId = prefs.getString("camera_id", null)
+            ?: cameraList.firstOrNull()?.id,
             resolution = prefs.getString("camera_resolution", "low") ?: "low",
             zoom = prefs.getString("camera_zoom", "1.0") ?: "1.0",
             scale = prefs.getString("stream_scale", "1.0") ?: "1.0",
@@ -1087,7 +1087,11 @@ class StreamingServerHelper(
                     .filter { it.first <= encCaps.maxW && it.second <= encCaps.maxH }
                     .sortedByDescending { it.first * it.second }
                     .map { InfoSize(it.first, it.second) }
-                InfoCamera(source.id, source.facing, label, sizes)
+                // Check both physical and logical characteristics for flash availability
+                // Some devices report flash on logical camera, others on physical
+                val hasFlash = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true ||
+                    source.characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                InfoCamera(source.id, source.facing, label, sizes, hasFlash)
             }
         } catch (_: Exception) {
             emptyList()

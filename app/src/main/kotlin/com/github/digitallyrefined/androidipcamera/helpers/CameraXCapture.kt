@@ -53,6 +53,7 @@ class CameraXCapture(
     private var provider: ProcessCameraProvider? = null
     private var camera: androidx.camera.core.Camera? = null
     private var imageCapture: ImageCapture? = null
+    @Volatile private var torchEnabled = false
     private val main = ContextCompat.getMainExecutor(ctx)
     private val analysisExec = Executors.newSingleThreadExecutor()
 
@@ -111,6 +112,10 @@ class CameraXCapture(
                 } ?: if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
                 p.unbindAll()
                 camera = p.bindToLifecycle(owner, selector, *useCases.toTypedArray())
+                // setTorch() may be called before bind completes; re-apply cached state now that control exists.
+                if (torchEnabled) {
+                    try { camera?.cameraControl?.enableTorch(true) } catch (_: Exception) {}
+                }
                 ready = true
                 Log.i(TAG, "bound desired ${desired.width}x${desired.height} front=$front cameraId=${cameraId ?: "default"}")
             } catch (e: Exception) { Log.e(TAG, "start: ${e.message}") }
@@ -131,7 +136,8 @@ class CameraXCapture(
         })
     }
 
-    override fun setTorch(on: Boolean) { try { camera?.cameraControl?.enableTorch(on) } catch (_: Exception) {} }
+    override fun getTorch(): Boolean = torchEnabled
+    override fun setTorch(on: Boolean) { torchEnabled = on; try { camera?.cameraControl?.enableTorch(on) } catch (_: Exception) {} }
     override fun setExposure(ev: Int) { try { camera?.cameraControl?.setExposureCompensationIndex(ev) } catch (_: Exception) {} }
     override fun setZoom(ratio: Float) { try { camera?.cameraControl?.setZoomRatio(ratio) } catch (_: Exception) {} }
     override fun triggerAutoFocus() {

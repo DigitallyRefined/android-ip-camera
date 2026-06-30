@@ -24,6 +24,7 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
 
     private var previewBuffers: Array<ByteArray>? = null
     private var onPreviewFrame: ((ByteArray) -> Unit)? = null
+    @Volatile private var torchEnabled = false
 
     init {
         camera.parameters.supportedPreviewSizes?.let { sizes ->
@@ -102,7 +103,9 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         } catch (e: Exception) { shoot() }
     }
 
+    override fun getTorch(): Boolean = torchEnabled
     override fun setTorch(on: Boolean) = live { p ->
+        torchEnabled = on
         val m = if (on) Camera.Parameters.FLASH_MODE_TORCH else Camera.Parameters.FLASH_MODE_OFF
         if (p.supportedFlashModes?.contains(m) == true) p.flashMode = m
     }

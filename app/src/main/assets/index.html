@@ -235,8 +235,8 @@
   <div class='main'>
     <div class='stream-container' id='streamContainer'>
       <div id="statusOverlay" class="status-overlay" style="display: none;">
-        <span id="batteryStatus" title="Battery Status">🔋 --%</span>
         <span id="wifiStatus" title="WiFi Strength">🛜 --%</span>
+        <span id="batteryStatus" title="Battery Status">🔋 --%</span>
       </div>
       <canvas id='streamCanvas'></canvas>
       <audio id="audioEl" preload="none" muted></audio>
@@ -309,7 +309,7 @@
   <script>
     const getElById = (id) => document.getElementById(id);
 
-    let currentCamera = 'back';
+    let currentCamera = '';
     const audioEl = getElById('audioEl');
     const muteBtn = getElById('muteBtn');
     const audioControls = getElById('audioControls');
@@ -362,11 +362,21 @@
     }
 
     const flashBtn = getElById('flashBtn');
+    function setTorchState(state) {
+      torchState = state;
+      updateFlashButton();
+    }
+
     function updateFlashButton() {
       if (!flashBtn) return;
-      flashBtn.textContent = (torchState === 'on')
-        ? '⚡ Flash Off'
-        : '💡 Flash On';
+      const currentCameraInfo = cameraList.find(camera => camera.id === currentCamera);
+      const hasFlash = currentCameraInfo?.hasFlash || false;
+      flashBtn.style.display = hasFlash ? 'inline-block' : 'none';
+      if (hasFlash) {
+        flashBtn.textContent = (torchState === 'on')
+          ? '⚡ Flash Off'
+          : '💡 Flash On';
+      }
     }
 
     if (flashBtn) {
@@ -375,8 +385,7 @@
         try {
           fetch('/?torch=' + next).catch(() => { });
         } catch (_) { }
-        torchState = next;
-        updateFlashButton();
+        setTorchState(next);
       });
       updateFlashButton();
     }
@@ -574,10 +583,6 @@
       }
     });
 
-    function updateCameraToggleBtn() {
-      updateCameraSelectValue();
-    }
-
     function camerasForFacing(facing) {
       return cameraList.filter(camera => camera && camera.facing === facing);
     }
@@ -632,8 +637,18 @@
 
     function setCamera(camera) {
       fetch("/?camera=" + encodeURIComponent(camera));
+      const newCameraInfo = cameraList.find(c => c.id === camera);
       currentCamera = camera;
       updateCameraSelectValue();
+      // If the next camera has no flash, reflect the forced-off state immediately.
+      if (torchState === 'on' && newCameraInfo && !newCameraInfo.hasFlash) {
+        try {
+          fetch('/?torch=off').catch(() => { });
+        } catch (_) { }
+        setTorchState('off');
+        return;
+      }
+      updateFlashButton();
     }
 
     function setView(mode) {
@@ -654,9 +669,9 @@
 
     function applyStreamSettings(settings) {
       if (!settings) return;
-      if (settings.cameraId || settings.camera) {
-        currentCamera = settings.cameraId || settings.camera;
-        updateCameraToggleBtn();
+      if (settings.cameraId) {
+        currentCamera = settings.cameraId;
+        updateCameraSelectValue();
       }
       const resolutionSelect = getElById('resolutionSelect');
       if (resolutionSelect && settings.resolution) {
@@ -695,10 +710,6 @@
       if (audioGain && settings.audioGain) {
         audioGain.value = settings.audioGain;
         if (audioGainVal) audioGainVal.textContent = settings.audioGain;
-      }
-      if (settings.torch === 'on' || settings.torch === 'off') {
-        torchState = settings.torch;
-        updateFlashButton();
       }
     }
 
@@ -752,6 +763,7 @@
         .finally(() => {
           if (applySettings) {
             getElById('controlsPanel')?.classList.remove('loading');
+            updateFlashButton();
           }
         });
     }
