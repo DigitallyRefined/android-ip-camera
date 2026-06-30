@@ -1,5 +1,32 @@
 version: 2
 updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+      day: saturday
+      time: '01:32'
+      timezone: Europe/London
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 5
+    groups:
+      android-gradle:
+        patterns:
+          - com.android.tools.build:gradle
+          - com.android.application
+      kotlin:
+        patterns:
+          - org.jetbrains.kotlin:*
+          - org.jetbrains.kotlin.*
+          - org.jetbrains.kotlinx:*
+      camera-x:
+        patterns:
+          - androidx.camera:*
+      androidx:
+        patterns:
+          - androidx.*
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
