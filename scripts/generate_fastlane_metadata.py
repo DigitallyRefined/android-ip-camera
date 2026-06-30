@@ -63,8 +63,8 @@ def bullets_to_html(lines):
             items.append(s[2:].strip())
     if not items:
         return ""
-    inner = "".join(f"<li>{i}</li>" for i in items)
-    return f"<ul>{inner}</ul>"
+    inner = "".join(f"\t<li>{i}</li>\n" for i in items)
+    return f"<ul>\n{inner}</ul>\n\n"
 
 def paragraphs_to_html(lines):
     result = []
@@ -72,12 +72,12 @@ def paragraphs_to_html(lines):
     for line in lines:
         if not line.strip():
             if buf:
-                result.append("<p>" + " ".join(buf).strip() + "</p>")
+                result.append("<p>" + " ".join(buf).strip() + "</p>\n\n")
                 buf = []
         else:
             buf.append(line.strip())
     if buf:
-        result.append("<p>" + " ".join(buf).strip() + "</p>")
+        result.append("<p>" + " ".join(buf).strip() + "</p>\n\n")
     return "".join(result)
 
 def extract_full_description(readme):
@@ -85,12 +85,13 @@ def extract_full_description(readme):
     warnings = section_lines(readme, "Warning")
     html = ""
     if features:
-        html += "<h3>Features</h3>"
+        html += "<h3>Features</h3>\n\n"
         html += bullets_to_html(features)
     if warnings:
-        html += "<h3>Warning</h3>"
+        html += "<h3>Warning</h3>\n\n"
         html += paragraphs_to_html(warnings)
-    return html or ""
+    html += '<p>For more details/usage see: https://github.com/DigitallyRefined/android-ip-camera</p>'
+    return html.strip() or ""
 
 def extract_version_name_as_code(build_gradle_path):
     text = read_file(build_gradle_path)
