@@ -8,6 +8,7 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.CameraSelector
@@ -40,6 +41,7 @@ class CameraXCapture(
     private val ctx: Context,
     private val owner: LifecycleOwner,
     private val front: Boolean,
+    private val cameraId: String?,
     private val desired: Size,
     private val previewSurfaceProvider: Preview.SurfaceProvider? = null,
     private val onFrame: (ImageProxy) -> Unit
@@ -53,6 +55,11 @@ class CameraXCapture(
     private var imageCapture: ImageCapture? = null
     private val main = ContextCompat.getMainExecutor(ctx)
     private val analysisExec = Executors.newSingleThreadExecutor()
+
+    private val logicalCameraId: String? = cameraId?.substringBefore(':')
+    private val physicalCameraId: String? = cameraId
+        ?.substringAfter(':', "")
+        ?.takeIf { it.isNotBlank() }
 
     @OptIn(ExperimentalCamera2Interop::class)
     fun start() {
@@ -72,29 +79,40 @@ class CameraXCapture(
                     .setResolutionSelector(sel)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                val analysisInterop = Camera2Interop.Extender(aBuilder)
+                physicalCameraId?.let { analysisInterop.setPhysicalCameraId(it) }
                 // Some legacy HALs (e.g. this phone's rear cam) stall the analysis stream unless an AE
                 // target FPS range is set. Use the WIDEST advertised range, not a fixed lock — AE stays
                 // fully auto (drops low for light in the dark, up to 30 in good light).
                 aeFpsRange()?.let {
-                    Camera2Interop.Extender(aBuilder).setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
+                    analysisInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
                     Log.i(TAG, "AE fps range $it (auto within range)")
                 }
                 val analysis = aBuilder.build()
                     .also { a -> a.setAnalyzer(analysisExec) { img -> width = img.width; height = img.height; onFrame(img) } }
-                imageCapture = ImageCapture.Builder()
+                val imageCaptureBuilder = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)   // full-res stills
-                    .build()
+                physicalCameraId?.let { Camera2Interop.Extender(imageCaptureBuilder).setPhysicalCameraId(it) }
+                imageCapture = imageCaptureBuilder.build()
                 val useCases = mutableListOf<androidx.camera.core.UseCase>(analysis, imageCapture!!)
                 previewSurfaceProvider?.let { provider ->
-                    val preview = Preview.Builder().build()
+                    val previewBuilder = Preview.Builder()
+                    physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
+                    val preview = previewBuilder.build()
                     preview.setSurfaceProvider(provider)
                     useCases.add(0, preview)
                 }
-                val selector = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+                val selector = logicalCameraId?.let { requestedId ->
+                    CameraSelector.Builder()
+                        .addCameraFilter { cameraInfos ->
+                            cameraInfos.filter { Camera2CameraInfo.from(it).cameraId == requestedId }
+                        }
+                        .build()
+                } ?: if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
                 p.unbindAll()
                 camera = p.bindToLifecycle(owner, selector, *useCases.toTypedArray())
                 ready = true
-                Log.i(TAG, "bound desired ${desired.width}x${desired.height} front=$front")
+                Log.i(TAG, "bound desired ${desired.width}x${desired.height} front=$front cameraId=${cameraId ?: "default"}")
             } catch (e: Exception) { Log.e(TAG, "start: ${e.message}") }
         }, main)
     }
@@ -131,7 +149,8 @@ class CameraXCapture(
     private fun aeFpsRange(): Range<Int>? = try {
         val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val want = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
-        val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
+        val id = logicalCameraId?.takeIf { it in cm.cameraIdList }
+            ?: cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
             ?: cm.cameraIdList.first()
         cm.getCameraCharacteristics(id).get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             ?.maxWithOrNull(compareBy({ it.upper - it.lower }, { it.upper }))

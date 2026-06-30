@@ -64,6 +64,7 @@ class StreamingService : LifecycleService() {
     @Volatile private var captureRunning = false
 
     @Volatile private var frontFacing = false             // false = back camera (read across threads)
+    @Volatile private var selectedCameraId: String? = null
 
     private var currentSurfaceProvider: Preview.SurfaceProvider? = null
 
@@ -93,6 +94,7 @@ class StreamingService : LifecycleService() {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "streaming_service_channel"
         private const val PREF_LAST_CAMERA_FACING = "last_camera_facing"
+        private const val PREF_LAST_CAMERA_ID = "last_camera_id"
         const val ACTION_STOP_SERVICE = "com.github.digitallyrefined.androidipcamera.STOP_SERVICE"
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
@@ -127,8 +129,10 @@ class StreamingService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         startForegroundService()
-        frontFacing = PreferenceManager.getDefaultSharedPreferences(this)
-            .getString(PREF_LAST_CAMERA_FACING, "back") == "front"
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        frontFacing = prefs.getString(PREF_LAST_CAMERA_FACING, "back") == "front"
+        selectedCameraId = prefs.getString(PREF_LAST_CAMERA_ID, null)
+            ?.takeIf { cameraIdMatchesFacing(it, frontFacing) == true }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             registerReceiver(notificationChannelReceiver,
                 IntentFilter(NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED))
@@ -188,9 +192,11 @@ class StreamingService : LifecycleService() {
     }
     fun isCameraRunning() = captureRunning
     fun switchCamera() {
-        frontFacing = !frontFacing
+        selectCamera(!frontFacing, null)
         PreferenceManager.getDefaultSharedPreferences(this).edit()
-            .putString(PREF_LAST_CAMERA_FACING, if (frontFacing) "front" else "back").apply()
+            .putString(PREF_LAST_CAMERA_FACING, if (frontFacing) "front" else "back")
+            .putString(PREF_LAST_CAMERA_ID, selectedCameraId)
+            .apply()
         if (captureRunning) launchMain { startCamera() }
     }
 
@@ -261,7 +267,71 @@ class StreamingService : LifecycleService() {
     private fun allPermissionsGranted() =
         ContextCompat.checkSelfPermission(baseContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
-    private fun camId(): String = if (frontFacing) "front" else "back"   // camera identity = facing
+    private fun camId(): String = selectedCameraId ?: if (frontFacing) "front" else "back"
+
+    private data class CameraToken(val logicalId: String, val physicalId: String?)
+
+    private fun parseCameraToken(cameraId: String): CameraToken {
+        val logicalId = cameraId.substringBefore(':')
+        val physicalId = cameraId.substringAfter(':', "").takeIf { it.isNotBlank() }
+        return CameraToken(logicalId, physicalId)
+    }
+
+    private fun cameraIdMatchesFacing(cameraId: String, front: Boolean): Boolean? = try {
+        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val token = parseCameraToken(cameraId)
+
+        // If the logical ID is not in the camera list, it might be a physical ID
+        // Try to find which logical camera it belongs to
+        val actualLogicalId = if (cm.cameraIdList.contains(token.logicalId)) {
+            token.logicalId
+        } else {
+            // Search for the logical camera that has this physical ID
+            cm.cameraIdList.firstOrNull { logicalId ->
+                try {
+                    cm.getCameraCharacteristics(logicalId).physicalCameraIds.contains(token.logicalId)
+                } catch (_: Exception) { false }
+            } ?: token.logicalId
+        }
+
+        if (!cm.cameraIdList.contains(actualLogicalId)) {
+            null
+        } else {
+            val want = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+            val ch = cm.getCameraCharacteristics(actualLogicalId)
+            val actualPhysicalId = if (token.physicalId != null) {
+                token.physicalId
+            } else if (actualLogicalId != token.logicalId) {
+                // The original value was a physical ID, use it as the physical ID
+                token.logicalId
+            } else {
+                null
+            }
+            // On older devices, physical IDs might be valid camera IDs themselves
+            val physicalMatches = actualPhysicalId == null ||
+                ch.physicalCameraIds.contains(actualPhysicalId) ||
+                cm.cameraIdList.contains(actualPhysicalId)
+            physicalMatches && ch.get(CameraCharacteristics.LENS_FACING) == want
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun firstCameraIdForFacing(front: Boolean): String? = try {
+        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val want = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+        cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun selectCamera(front: Boolean, cameraId: String?) {
+        frontFacing = front
+        selectedCameraId = cameraId
+            ?.takeIf { cameraIdMatchesFacing(it, front) == true }
+            ?: selectedCameraId?.takeIf { cameraIdMatchesFacing(it, front) == true }
+            ?: firstCameraIdForFacing(front)
+    }
 
     private fun camera1IndexForFacing(front: Boolean): Int {
         val want = if (front) Camera.CameraInfo.CAMERA_FACING_FRONT else Camera.CameraInfo.CAMERA_FACING_BACK
@@ -270,11 +340,23 @@ class StreamingService : LifecycleService() {
         return 0
     }
 
+    private fun camera1IndexForSelectedOrFacing(front: Boolean): Int {
+        val selected = selectedCameraId?.toIntOrNull()
+        return if (selected != null && selected in 0 until Camera.getNumberOfCameras()) {
+            selected
+        } else {
+            camera1IndexForFacing(front)
+        }
+    }
+
     /** Is the current camera a LEGACY Camera2 HAL? (CameraX caps low there → use Camera1 for 1080p.) */
     private fun isLegacy(): Boolean = try {
         val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val want = if (frontFacing) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
-        val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
+        val id = selectedCameraId
+            ?.let { parseCameraToken(it).logicalId }
+            ?.takeIf { it in cm.cameraIdList }
+            ?: cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
             ?: cm.cameraIdList.first()
         cm.getCameraCharacteristics(id).get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) ==
             CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
@@ -318,7 +400,7 @@ class StreamingService : LifecycleService() {
             if (chooseApi() == "camera1") {
                 // Camera1 → GL pipe → surface encoder (true 1920×1080 on legacy HALs).
                 val want = desiredSize()
-                val cap = Camera1Capture(camera1IndexForFacing(frontFacing), want.width, want.height)
+                val cap = Camera1Capture(camera1IndexForSelectedOrFacing(frontFacing), want.width, want.height)
                 val pipe = newPipe(Size(cap.chosenW, cap.chosenH))
                 cap.start(pipe.surfaceTexture)
                 mjpegStreamingEncoder?.takeIf { it.hasClients() }?.let { mjpeg ->
@@ -331,7 +413,7 @@ class StreamingService : LifecycleService() {
             } else {
                 // CameraX → ImageAnalysis YUV → encoders + optional Preview on the phone.
                 backend = CameraXCapture(
-                    this, this, frontFacing, desiredSize(), currentSurfaceProvider
+                    this, this, frontFacing, selectedCameraId, desiredSize(), currentSurfaceProvider
                 ) { img ->
                     try {
                         val activeEncoders = encoders.filter { it.hasClients() }
@@ -381,33 +463,84 @@ class StreamingService : LifecycleService() {
      */
     fun snapshot(cameraId: String): ByteArray? {
         synchronized(snapLock) {
-            val targetFront = resolveFrontFacing(cameraId) ?: frontFacing
+            val target = resolveCamera(cameraId) ?: (frontFacing to selectedCameraId)
+            val targetFront = target.first
+            val targetCameraId = target.second
             val key = if (targetFront) "front" else "back"
             val hadViewers = streamingServerHelper?.getH264Clients()?.isNotEmpty() == true
 
             val live = backend
-            if (live != null && targetFront == frontFacing) return captureFrom(live, key) ?: snapCache[key]
+            if (live != null && targetFront == frontFacing && targetCameraId == selectedCameraId) return captureFrom(live, key) ?: snapCache[key]
 
             val orig = frontFacing
-            frontFacing = targetFront
+            val origCameraId = selectedCameraId
+            selectCamera(targetFront, targetCameraId)
             switchAndWait(force = true)                 // starts the camera even with no live viewers
             val jpeg = backend?.let { captureFrom(it, key) }
             frontFacing = orig
+            selectedCameraId = origCameraId
             launchMain { if (hadViewers) startCamera() else stopCamera() }
             return jpeg ?: snapCache[key]
         }
     }
 
-    /** camera= argument → front-facing. Accepts "front"/"back"/"toggle" or a Camera2 id ("0","1",…). */
-    private fun resolveFrontFacing(value: String): Boolean? = when {
-        value.equals("front", true) -> true
-        value.equals("back", true) -> false
-        value.equals("toggle", true) -> !frontFacing
+    /** camera= argument. Accepts "front"/"back"/"toggle" or a Camera2 id ("0","1",…). */
+    private fun resolveCamera(value: String): Pair<Boolean, String?>? = when {
+        value.equals("front", true) -> true to firstCameraIdForFacing(true)
+        value.equals("back", true) -> false to firstCameraIdForFacing(false)
+        value.equals("toggle", true) -> {
+            val front = !frontFacing
+            front to firstCameraIdForFacing(front)
+        }
         else -> try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            if (cm.cameraIdList.contains(value))
-                cm.getCameraCharacteristics(value).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-            else null
+            val token = parseCameraToken(value)
+
+            // If the logical ID is not in the camera list, it might be a physical ID
+            // Try to find which logical camera it belongs to
+            val actualLogicalId = if (cm.cameraIdList.contains(token.logicalId)) {
+                token.logicalId
+            } else {
+                // Search for the logical camera that has this physical ID
+                cm.cameraIdList.firstOrNull { logicalId ->
+                    try {
+                        cm.getCameraCharacteristics(logicalId).physicalCameraIds.contains(token.logicalId)
+                    } catch (_: Exception) { false }
+                } ?: token.logicalId
+            }
+
+            if (cm.cameraIdList.contains(actualLogicalId)) {
+                val ch = cm.getCameraCharacteristics(actualLogicalId)
+                val actualPhysicalId = if (token.physicalId != null) {
+                    token.physicalId
+                } else if (actualLogicalId != token.logicalId) {
+                    // The original value was a physical ID, use it as the physical ID
+                    token.logicalId
+                } else {
+                    null
+                }
+
+                if (actualPhysicalId != null && !ch.physicalCameraIds.contains(actualPhysicalId)) {
+                    null
+                } else {
+                    // On older devices, if the physical ID is itself a valid camera ID,
+                    // use it directly instead of combining with logical ID
+                    val finalCameraId = if (actualPhysicalId != null && cm.cameraIdList.contains(actualPhysicalId)) {
+                        actualPhysicalId
+                    } else if (actualPhysicalId != null) {
+                        "$actualLogicalId:$actualPhysicalId"
+                    } else {
+                        actualLogicalId
+                    }
+                    when (ch.get(CameraCharacteristics.LENS_FACING)) {
+                        CameraCharacteristics.LENS_FACING_FRONT -> true to finalCameraId
+                        CameraCharacteristics.LENS_FACING_BACK -> false to finalCameraId
+                        else -> null
+                    }
+                }
+            } else {
+                null
+            }
         } catch (_: Exception) { null }
     }
 
@@ -462,8 +595,12 @@ class StreamingService : LifecycleService() {
             }
             "focus" -> launchMain { backend?.triggerAutoFocus() }
             "camera" -> {
-                frontFacing = resolveFrontFacing(value) ?: return
-                prefs.edit().putString(PREF_LAST_CAMERA_FACING, if (frontFacing) "front" else "back").apply()
+                val target = resolveCamera(value) ?: return
+                selectCamera(target.first, target.second)
+                prefs.edit()
+                    .putString(PREF_LAST_CAMERA_FACING, if (frontFacing) "front" else "back")
+                    .putString(PREF_LAST_CAMERA_ID, selectedCameraId)
+                    .apply()
                 launchMain { if (captureRunning) startCamera() }
             }
             "resolution" -> {

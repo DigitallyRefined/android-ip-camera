@@ -75,6 +75,45 @@
       padding: 20px;
       border-left: 1px solid #333;
       overflow-y: auto;
+      position: relative;
+    }
+
+    .controls-panel-loading {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: #1e1e1e;
+      z-index: 5;
+      color: #888;
+      font-size: 14px;
+    }
+
+    .controls-panel.loading .controls-panel-loading {
+      display: flex;
+    }
+
+    .controls-panel.loading .controls-content {
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid #333;
+      border-top-color: #007AFF;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     .btn {
@@ -103,6 +142,17 @@
       background: #444;
       border-color: #666;
       font-weight: bold;
+    }
+
+    .camera-controls {
+      margin-bottom: 15px;
+    }
+
+    .camera-select {
+      margin-top: 0;
+      margin-bottom: 0;
+      min-height: 42px;
+      font-size: 15px;
     }
 
     .setting-group {
@@ -192,14 +242,18 @@
       <audio id="audioEl" preload="none" muted></audio>
     </div>
 
-    <div class='controls-panel'>
+    <div class='controls-panel loading' id='controlsPanel'>
+      <div class='controls-panel-loading' aria-live='polite'>
+        <div class='spinner'></div>
+        <span>Loading settings…</span>
+      </div>
 
+      <div class='controls-content'>
       <div class='setting-group'>
         <h3>Settings</h3>
-        <label>Camera</label>
-        <div style="margin-bottom: 15px">
-          <button id='backBtn' class='btn active' style='width: 49%;' onclick='setCamera("back")'>Back</button>
-          <button id='frontBtn' class='btn' style='width: 49%;' onclick='setCamera("front")'>Front</button>
+        <label for="cameraSelect">Camera</label>
+        <div class="camera-controls">
+          <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
         </div>
 
         <button class='btn btn-action' onclick='fetch("/?rotate=90")'>Rotate 90&deg;</button>
@@ -213,52 +267,55 @@
           <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.0s</span></label>
           <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
 
-          <label for="audioGain">Audio Gain <span class='val-badge' id='audioGainVal'>{{CUR_AUDIO_GAIN}}</span></label>
-          <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='{{CUR_AUDIO_GAIN}}'
-            oninput='document.getElementById("audioGainVal").innerText=this.value;fetch("/?audio_gain="+this.value)'>
+          <label for="audioGain">Audio Gain <span class='val-badge' id='audioGainVal'>1.0</span></label>
+          <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='1.0'
+            oninput='getElById("audioGainVal").innerText=this.value;fetch("/?audio_gain="+this.value)'>
         </div>
 
         <label for="resolutionSelect">Resolution</label>
         <select id="resolutionSelect" style="margin-bottom: 20px" onchange='fetch("/?resolution="+this.value)'>
-          <option value='low' {{RES_LOW_SELECTED}}>Low (Fastest)</option>
-          <option value='medium' {{RES_MEDIUM_SELECTED}}>Medium</option>
-          <option value='high' {{RES_HIGH_SELECTED}}>High (Sharpest)</option>
+          <option value='low'>Low (Fastest)</option>
+          <option value='medium'>Medium</option>
+          <option value='high'>High (Sharpest)</option>
         </select>
 
-        <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>{{CUR_ZOOM}}x</span></label>
-        <input id="zoom" type='range' min='1' max='8' step='0.1' value='{{CUR_ZOOM}}'
-          oninput='document.getElementById("zoomVal").innerText=this.value+"x";fetch("/?zoom="+this.value)'>
+        <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
+        <input id="zoom" type='range' min='1' max='8' step='0.1' value='1.0'
+          oninput='getElById("zoomVal").innerText=this.value+"x";fetch("/?zoom="+this.value)'>
 
-        <label for="scale">Scale <span class='val-badge' id='scaleVal'>{{CUR_SCALE}}x</span></label>
-        <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='{{CUR_SCALE}}'
-          oninput='setView("original"); document.getElementById("scaleVal").innerText=this.value+"x";fetch("/?scale="+this.value)'>
+        <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
+        <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='1.0'
+          oninput='setView("original"); getElById("scaleVal").innerText=this.value+"x";fetch("/?scale="+this.value)'>
 
-        <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>{{CUR_EXPOSURE}}</span></label>
-        <input id="exposure" type='range' min='-10' max='10' step='1' value='{{CUR_EXPOSURE}}'
-          oninput='document.getElementById("exposureVal").innerText=this.value;fetch("/?exposure="+this.value)'>
+        <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
+        <input id="exposure" type='range' min='-10' max='10' step='1' value='0'
+          oninput='getElById("exposureVal").innerText=this.value;fetch("/?exposure="+this.value)'>
 
-        <label for="contrast">Contrast <span class='val-badge' id='contVal'>{{CUR_CONTRAST}}</span></label>
-        <input id="contrast" type='range' min='-50' max='50' step='10' value='{{CUR_CONTRAST}}'
-          oninput='document.getElementById("contVal").innerText=this.value;fetch("/?contrast="+this.value)'>
+        <label for="contrast">Contrast <span class='val-badge' id='contVal'>0</span></label>
+        <input id="contrast" type='range' min='-50' max='50' step='10' value='0'
+          oninput='getElById("contVal").innerText=this.value;fetch("/?contrast="+this.value)'>
 
 
         <label for="delay">Frame Delay (ms)</label>
-        <input id="delay" type='number' min='10' max='1000' value='{{CUR_DELAY}}'
+        <input id="delay" type='number' min='10' max='1000' value='33'
           onchange='fetch("/?delay="+this.value)'>
       </div>
 
       <p class="notice">Some changes will momentarily restart the camera.</p>
+      </div>
     </div>
   </div>
 
   <script>
-    let currentCamera = '{{CUR_CAMERA}}';
-    const audioEl = document.getElementById('audioEl');
-    const muteBtn = document.getElementById('muteBtn');
-    const audioControls = document.getElementById('audioControls');
-    const streamContainer = document.getElementById('streamContainer');
-    const avDelay = document.getElementById('avDelay');
-    const avDelayVal = document.getElementById('avDelayVal');
+    const getElById = (id) => document.getElementById(id);
+
+    let currentCamera = 'back';
+    const audioEl = getElById('audioEl');
+    const muteBtn = getElById('muteBtn');
+    const audioControls = getElById('audioControls');
+    const streamContainer = getElById('streamContainer');
+    const avDelay = getElById('avDelay');
+    const avDelayVal = getElById('avDelayVal');
     const STREAM_SRC = '/video/m.jpeg';
     let videoDelayMs = 2500;
     let mjpegAbort = null;
@@ -267,7 +324,8 @@
     let lastDrawn = null;
     let drawing = false;
     let viewMode = 'fit';
-    let torchState = ('{{CUR_TORCH}}' === 'on') ? 'on' : 'off';
+    let torchState = 'off';
+    let cameraList = [];
 
     function targetCanvasSize(frame) {
       if (viewMode === 'fit') {
@@ -303,7 +361,7 @@
         : 'block';
     }
 
-    const flashBtn = document.getElementById('flashBtn');
+    const flashBtn = getElById('flashBtn');
     function updateFlashButton() {
       if (!flashBtn) return;
       flashBtn.textContent = (torchState === 'on')
@@ -486,7 +544,9 @@
         })
         .catch(() => { mjpegRunning = false; });
     }
-    startMjpegStream();
+
+    loadDeviceInfo(true).finally(() => startMjpegStream());
+    setInterval(() => loadDeviceInfo(false), 60000);
 
     function stopMjpegStream() {
       if (mjpegAbort) {
@@ -515,28 +575,70 @@
     });
 
     function updateCameraToggleBtn() {
-      const backBtn = document.getElementById('backBtn');
-      const frontBtn = document.getElementById('frontBtn');
-      if (currentCamera === 'front') {
-        backBtn.className = 'btn';
-        frontBtn.className = 'btn active';
-      } else {
-        backBtn.className = 'btn active';
-        frontBtn.className = 'btn';
+      updateCameraSelectValue();
+    }
+
+    function camerasForFacing(facing) {
+      return cameraList.filter(camera => camera && camera.facing === facing);
+    }
+
+    function currentCameraFacing() {
+      const selected = cameraList.find(camera => camera.id === currentCamera);
+      return selected ? selected.facing : currentCamera;
+    }
+
+    function lensLabel(camera, index) {
+      return camera.label || `${camera.facing === 'front' ? 'Front' : 'Back'} ${camera.id || index + 1}`;
+    }
+
+    function cameraOptionLabel(camera, index) {
+      const label = lensLabel(camera, index);
+      return label.replace(/^(Back|Front)\s+/i, '');
+    }
+
+    function appendCameraGroup(select, facing, label) {
+      const cameras = camerasForFacing(facing);
+      if (!cameras.length) return;
+      const group = document.createElement('optgroup');
+      group.label = label;
+      cameras.forEach((camera, index) => {
+        const option = document.createElement('option');
+        option.value = camera.id;
+        option.textContent = cameraOptionLabel(camera, index);
+        group.appendChild(option);
+      });
+      select.appendChild(group);
+    }
+
+    function updateCameraSelectValue() {
+      const select = getElById('cameraSelect');
+      if (!select) return;
+      const selected = cameraList.find(camera => camera.id === currentCamera);
+      const facing = currentCameraFacing();
+      const fallback = selected || camerasForFacing(facing)[0] || cameraList[0];
+      if (fallback) {
+        select.value = fallback.id;
       }
     }
 
-    function setCamera(camera) {
-      fetch("/?camera=" + camera);
-      currentCamera = camera;
-      updateCameraToggleBtn();
+    function renderCameraControls() {
+      const select = getElById('cameraSelect');
+      if (!select) return;
+      select.innerHTML = '';
+      appendCameraGroup(select, 'back', 'Back');
+      appendCameraGroup(select, 'front', 'Front');
+      updateCameraSelectValue();
     }
 
-    updateCameraToggleBtn();
+    function setCamera(camera) {
+      fetch("/?camera=" + encodeURIComponent(camera));
+      currentCamera = camera;
+      updateCameraSelectValue();
+    }
 
     function setView(mode) {
-      const f = document.getElementById('fitBtn');
-      const o = document.getElementById('origBtn');
+      const f = getElById('fitBtn');
+      const o = getElById('origBtn');
 
       if (mode === 'fit') {
         f.className = 'btn active';
@@ -550,50 +652,109 @@
       applyCanvasSize(targetCanvasSize(lastDrawn));
     }
 
-    function updateDeviceStatus() {
-      fetch('/info.json')
-        .then(res => res.json())
-        .then(data => {
-          const batteryEl = document.getElementById('batteryStatus');
-          const wifiEl = document.getElementById('wifiStatus');
-          const overlay = document.getElementById('statusOverlay');
-
-          if (batteryEl && typeof data.batteryPercent === 'number') {
-            if (data.batteryPercent < 0) {
-              batteryEl.style.display = 'none';
-            } else {
-              batteryEl.style.display = 'flex';
-              let batteryEmoji = '🔋';
-              if (data.batteryPercent < 15) {
-                batteryEmoji = '🪫';
-              }
-              batteryEl.innerHTML = `${batteryEmoji} ${data.batteryPercent}%`;
-            }
-          }
-
-          if (wifiEl && typeof data.wifiStrength === 'number') {
-            if (data.wifiStrength < 0) {
-              wifiEl.style.display = 'none';
-            } else {
-              wifiEl.style.display = 'flex';
-              let wifiEmoji = '🛜';
-              wifiEl.innerHTML = `${wifiEmoji} ${data.wifiStrength}%`;
-            }
-          }
-
-          if (overlay) {
-            const hasStatus = (batteryEl && batteryEl.style.display !== 'none') || 
-                              (wifiEl && wifiEl.style.display !== 'none');
-            overlay.style.display = hasStatus ? 'flex' : 'none';
-          }
-        })
-        .catch(err => {
-          console.error('Failed to fetch device status:', err);
-        });
+    function applyStreamSettings(settings) {
+      if (!settings) return;
+      if (settings.cameraId || settings.camera) {
+        currentCamera = settings.cameraId || settings.camera;
+        updateCameraToggleBtn();
+      }
+      const resolutionSelect = getElById('resolutionSelect');
+      if (resolutionSelect && settings.resolution) {
+        resolutionSelect.value = settings.resolution;
+      }
+      const zoom = getElById('zoom');
+      const zoomVal = getElById('zoomVal');
+      if (zoom && settings.zoom) {
+        zoom.value = settings.zoom;
+        if (zoomVal) zoomVal.textContent = `${settings.zoom}x`;
+      }
+      const scale = getElById('scale');
+      const scaleVal = getElById('scaleVal');
+      if (scale && settings.scale) {
+        scale.value = settings.scale;
+        if (scaleVal) scaleVal.textContent = `${settings.scale}x`;
+      }
+      const exposure = getElById('exposure');
+      const exposureVal = getElById('exposureVal');
+      if (exposure && settings.exposure != null) {
+        exposure.value = settings.exposure;
+        if (exposureVal) exposureVal.textContent = settings.exposure;
+      }
+      const contrast = getElById('contrast');
+      const contVal = getElById('contVal');
+      if (contrast && settings.contrast != null) {
+        contrast.value = settings.contrast;
+        if (contVal) contVal.textContent = settings.contrast;
+      }
+      const delay = getElById('delay');
+      if (delay && settings.delay) {
+        delay.value = settings.delay;
+      }
+      const audioGain = getElById('audioGain');
+      const audioGainVal = getElById('audioGainVal');
+      if (audioGain && settings.audioGain) {
+        audioGain.value = settings.audioGain;
+        if (audioGainVal) audioGainVal.textContent = settings.audioGain;
+      }
+      if (settings.torch === 'on' || settings.torch === 'off') {
+        torchState = settings.torch;
+        updateFlashButton();
+      }
     }
 
-    updateDeviceStatus();
-    setInterval(updateDeviceStatus, 60000);
+    function updateStatusOverlay(data) {
+      const batteryEl = getElById('batteryStatus');
+      const wifiEl = getElById('wifiStatus');
+      const overlay = getElById('statusOverlay');
+
+      if (batteryEl && typeof data.batteryPercent === 'number') {
+        if (data.batteryPercent < 0) {
+          batteryEl.style.display = 'none';
+        } else {
+          batteryEl.style.display = 'flex';
+          let batteryEmoji = '🔋';
+          if (data.batteryPercent < 15) {
+            batteryEmoji = '🪫';
+          }
+          batteryEl.innerHTML = `${batteryEmoji} ${data.batteryPercent}%`;
+        }
+      }
+
+      if (wifiEl && typeof data.wifiStrength === 'number') {
+        if (data.wifiStrength < 0) {
+          wifiEl.style.display = 'none';
+        } else {
+          wifiEl.style.display = 'flex';
+          let wifiEmoji = '🛜';
+          wifiEl.innerHTML = `${wifiEmoji} ${data.wifiStrength}%`;
+        }
+      }
+
+      if (overlay) {
+        const hasStatus = (batteryEl && batteryEl.style.display !== 'none') ||
+                          (wifiEl && wifiEl.style.display !== 'none');
+        overlay.style.display = hasStatus ? 'flex' : 'none';
+      }
+    }
+
+    function loadDeviceInfo(applySettings) {
+      return fetch('/info.json')
+        .then(res => res.json())
+        .then(data => {
+          cameraList = Array.isArray(data.cameras) ? data.cameras : [];
+          renderCameraControls();
+          if (applySettings) applyStreamSettings(data.settings);
+          updateStatusOverlay(data);
+        })
+        .catch(err => {
+          console.error('Failed to fetch device info:', err);
+        })
+        .finally(() => {
+          if (applySettings) {
+            getElById('controlsPanel')?.classList.remove('loading');
+          }
+        });
+    }
   </script>
 </body>
 

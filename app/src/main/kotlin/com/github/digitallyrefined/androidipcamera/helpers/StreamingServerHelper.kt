@@ -33,11 +33,15 @@ import java.io.PrintWriter
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import org.json.JSONArray
+import org.json.JSONObject
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
@@ -97,6 +101,28 @@ class StreamingServerHelper(
         try { client.socket.close() } catch (_: Exception) {}
         onClientDisconnected()
     }
+
+    private fun parseQueryParams(uri: String): Map<String, String> {
+        val query = uri.substringAfter("?", missingDelimiterValue = "")
+        if (query.isBlank()) return emptyMap()
+        return query.split("&")
+            .mapNotNull { param ->
+                val parts = param.split("=", limit = 2)
+                if (parts.size != 2) {
+                    null
+                } else {
+                    decodeQueryValue(parts[0]) to decodeQueryValue(parts[1])
+                }
+            }
+            .toMap()
+    }
+
+    private fun decodeQueryValue(value: String): String =
+        try {
+            URLDecoder.decode(value, StandardCharsets.UTF_8.name())
+        } catch (_: Exception) {
+            value
+        }
 
     fun stopServer() {
         serverJob?.cancel()
@@ -567,35 +593,11 @@ class StreamingServerHelper(
 
             // Handle Control UI and Commands
             if (uri == "/" || uri == "") {
-                val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-                val curCamera = prefs.getString("last_camera_facing", "back") ?: "back"
-                val curResolution = prefs.getString("camera_resolution", "low") ?: "low"
-                val curZoom = prefs.getString("camera_zoom", "1.0") ?: "1.0"
-                val curScale = prefs.getString("stream_scale", "1.0") ?: "1.0"
-                val curExposure = prefs.getString("camera_exposure", "0") ?: "0"
-                val curContrast = prefs.getString("camera_contrast", "0") ?: "0"
-                val curDelay = prefs.getString("stream_delay", "33") ?: "33"
-                val curTorch = prefs.getString("camera_torch", "off") ?: "off"
-                val curAudioGain = prefs.getString("audio_gain", "1.0") ?: "1.0"
-
-                val htmlTemplate = try {
+                val htmlResponse = try {
                     context.assets.open("index.html").bufferedReader().use { it.readText() }
                 } catch (e: Exception) {
                     "<html><body>Error loading interface.</body></html>"
                 }
-
-                val htmlResponse = htmlTemplate
-                    .replace("{{CUR_CAMERA}}", curCamera)
-                    .replace("{{RES_LOW_SELECTED}}", if (curResolution == "low") "selected" else "")
-                    .replace("{{RES_MEDIUM_SELECTED}}", if (curResolution == "medium") "selected" else "")
-                    .replace("{{RES_HIGH_SELECTED}}", if (curResolution == "high") "selected" else "")
-                    .replace("{{CUR_ZOOM}}", curZoom)
-                    .replace("{{CUR_SCALE}}", curScale)
-                    .replace("{{CUR_EXPOSURE}}", curExposure)
-                    .replace("{{CUR_CONTRAST}}", curContrast)
-                    .replace("{{CUR_AUDIO_GAIN}}", curAudioGain)
-                    .replace("{{CUR_DELAY}}", curDelay)
-                    .replace("{{CUR_TORCH}}", curTorch)
 
                 writer.print("HTTP/1.1 200 OK\r\n")
                 writer.print("Content-Type: text/html\r\n")
@@ -608,7 +610,7 @@ class StreamingServerHelper(
 
             if (path == "/video/snapshot") {
                 // One JPEG captured into RAM (no disk). ?camera=<id>. For polling / dual-camera views.
-                val id = if (uri.contains("?")) uri.substringAfter("camera=", "").substringBefore("&") else ""
+                val id = parseQueryParams(uri)["camera"] ?: ""
                 val jpeg = onSnapshot(id)
                 if (jpeg != null) {
                     writer.print("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n")
@@ -622,12 +624,8 @@ class StreamingServerHelper(
             }
 
             if (uri.contains("?")) {
-                val query = uri.substringAfter("?")
-                query.split("&").forEach { param ->
-                    val keyValue = param.split("=")
-                    if (keyValue.size == 2) {
-                        onControlCommand(keyValue[0], keyValue[1])
-                    }
+                parseQueryParams(uri).forEach { (key, value) ->
+                    onControlCommand(key, value)
                 }
                 writer.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK")
                 writer.flush()
@@ -738,81 +736,9 @@ class StreamingServerHelper(
             }
 
             if (path == "/info.json") {
-                // One list, all properties: each camera with its OWN supported live sizes
-                // (sizes/formats differ per camera). Capped to the device's queried HW encoder ceiling.
-                val encCaps = H264HardwareEncoder.caps()
-                val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-                val idle = clients.isEmpty() && h264Clients.isEmpty()
-                val sb = StringBuilder("{\"cameras\":[")
-                try {
-                    cm.cameraIdList.forEachIndexed { i, id ->
-                        val ch = cm.getCameraCharacteristics(id)
-                        val facing = when (ch.get(CameraCharacteristics.LENS_FACING)) {
-                            CameraCharacteristics.LENS_FACING_FRONT -> "front"
-                            CameraCharacteristics.LENS_FACING_BACK -> "back"
-                            else -> "external"
-                        }
-                        val set = LinkedHashSet<Pair<Int, Int>>()
-                        try {
-                            val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                            map?.getOutputSizes(SurfaceTexture::class.java)?.forEach { set.add(it.width to it.height) }
-                            map?.getOutputSizes(android.media.MediaCodec::class.java)?.forEach { set.add(it.width to it.height) }
-                        } catch (_: Exception) {}
-                        if (idle) {  // Camera1 preview sizes expose 16:9 that LEGACY Camera2 omits
-                            try {
-                                @Suppress("DEPRECATION") val c1 = android.hardware.Camera.open(id.toIntOrNull() ?: i)
-                                @Suppress("DEPRECATION") c1.parameters.supportedPreviewSizes?.forEach { set.add(it.width to it.height) }
-                                @Suppress("DEPRECATION") c1.release()
-                            } catch (_: Exception) {}
-                        }
-                        val sizes = set.filter { it.first <= encCaps.maxW && it.second <= encCaps.maxH }.sortedByDescending { it.first * it.second }
-                        if (i > 0) sb.append(",")
-                        sb.append("{\"id\":\"$id\",\"facing\":\"$facing\",\"sizes\":[")
-                        sizes.forEachIndexed { j, s -> if (j > 0) sb.append(","); sb.append("{\"w\":${s.first},\"h\":${s.second}}") }
-                        sb.append("]}")
-                    }
-                } catch (_: Exception) {}
-                sb.append("]")
-
-                // Get battery percent safely
-                val batteryPercent = try {
-                    val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
-                    bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
-                } catch (_: Exception) {
-                    -1
-                }
-
-                // Get wifi strength safely
-                val wifiStrength = try {
-                    val hasWifiPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.NEARBY_WIFI_DEVICES) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
-                        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                    } else {
-                        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                    }
-
-                    if (hasWifiPermission) {
-                        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
-                        val rssi = wifiManager?.connectionInfo?.rssi ?: -127
-                        when {
-                            rssi == -127 -> -1
-                            rssi <= -100 -> 0
-                            rssi >= -50 -> 100
-                            else -> (rssi + 100) * 2
-                        }
-                    } else {
-                        -1
-                    }
-                } catch (_: Exception) {
-                    -1
-                }
-
-                sb.append(",\"batteryPercent\":$batteryPercent")
-                sb.append(",\"wifiStrength\":$wifiStrength")
-                sb.append("}")
-
+                val info = buildDeviceInfo()
                 writer.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
-                writer.print(sb.toString()); writer.flush()
+                writer.print(info.toJsonString()); writer.flush()
                 try { socket.close() } catch (_: Exception) {}
                 return
             }
@@ -1041,6 +967,212 @@ class StreamingServerHelper(
             onLog("Error closing client socket: ${e.message}")
         }
         onClientDisconnected()
+    }
+
+    private data class InfoSize(val w: Int, val h: Int)
+
+    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>)
+
+    private data class CameraInfoSource(
+        val id: String,
+        val logicalId: String,
+        val physicalId: String?,
+        val facing: String,
+        val characteristics: CameraCharacteristics,
+        val sizesCharacteristics: CameraCharacteristics,
+        val fallbackIndex: Int,
+    )
+
+    private data class StreamSettings(
+        val camera: String,
+        val cameraId: String?,
+        val resolution: String,
+        val zoom: String,
+        val scale: String,
+        val exposure: String,
+        val contrast: String,
+        val delay: String,
+        val torch: String,
+        val audioGain: String,
+    )
+
+    private data class DeviceInfo(
+        val cameras: List<InfoCamera>,
+        val batteryPercent: Int,
+        val wifiStrength: Int,
+        val settings: StreamSettings,
+    ) {
+        fun toJsonString(): String = JSONObject().apply {
+            put("cameras", JSONArray().apply {
+                cameras.forEach { camera ->
+                    put(JSONObject().apply {
+                        put("id", camera.id)
+                        put("facing", camera.facing)
+                        put("label", camera.label)
+                        put("sizes", JSONArray().apply {
+                            camera.sizes.forEach { size ->
+                                put(JSONObject().apply {
+                                    put("w", size.w)
+                                    put("h", size.h)
+                                })
+                            }
+                        })
+                    })
+                }
+            })
+            put("batteryPercent", batteryPercent)
+            put("wifiStrength", wifiStrength)
+            put("settings", JSONObject().apply {
+                put("camera", settings.camera)
+                settings.cameraId?.let { put("cameraId", it) }
+                put("resolution", settings.resolution)
+                put("zoom", settings.zoom)
+                put("scale", settings.scale)
+                put("exposure", settings.exposure)
+                put("contrast", settings.contrast)
+                put("delay", settings.delay)
+                put("torch", settings.torch)
+                put("audioGain", settings.audioGain)
+            })
+        }.toString()
+    }
+
+    private fun buildDeviceInfo(): DeviceInfo {
+        val idle = clients.isEmpty() && h264Clients.isEmpty()
+        return DeviceInfo(
+            cameras = buildCameraInfoList(idle),
+            batteryPercent = getBatteryPercent(),
+            wifiStrength = getWifiStrength(),
+            settings = getStreamSettings(),
+        )
+    }
+
+    private fun getStreamSettings(): StreamSettings {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        return StreamSettings(
+            camera = prefs.getString("last_camera_facing", "back") ?: "back",
+            cameraId = prefs.getString("last_camera_id", null),
+            resolution = prefs.getString("camera_resolution", "low") ?: "low",
+            zoom = prefs.getString("camera_zoom", "1.0") ?: "1.0",
+            scale = prefs.getString("stream_scale", "1.0") ?: "1.0",
+            exposure = prefs.getString("camera_exposure", "0") ?: "0",
+            contrast = prefs.getString("camera_contrast", "0") ?: "0",
+            delay = prefs.getString("stream_delay", "33") ?: "33",
+            torch = prefs.getString("camera_torch", "off") ?: "off",
+            audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
+        )
+    }
+
+    private fun buildCameraInfoList(idle: Boolean): List<InfoCamera> {
+        val encCaps = H264HardwareEncoder.caps()
+        val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        return try {
+            cameraInfoSources(cm).map { source ->
+                val ch = source.sizesCharacteristics
+                val label = cameraLabel(source)
+                val set = LinkedHashSet<Pair<Int, Int>>()
+                try {
+                    val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                    map?.getOutputSizes(SurfaceTexture::class.java)?.forEach { set.add(it.width to it.height) }
+                    map?.getOutputSizes(android.media.MediaCodec::class.java)?.forEach { set.add(it.width to it.height) }
+                } catch (_: Exception) {}
+                if (idle) {  // Camera1 preview sizes expose 16:9 that LEGACY Camera2 omits
+                    try {
+                        @Suppress("DEPRECATION") val c1 = android.hardware.Camera.open(source.physicalId?.toIntOrNull() ?: source.logicalId.toIntOrNull() ?: source.fallbackIndex)
+                        @Suppress("DEPRECATION") c1.parameters.supportedPreviewSizes?.forEach { set.add(it.width to it.height) }
+                        @Suppress("DEPRECATION") c1.release()
+                    } catch (_: Exception) {}
+                }
+                val sizes = set
+                    .filter { it.first <= encCaps.maxW && it.second <= encCaps.maxH }
+                    .sortedByDescending { it.first * it.second }
+                    .map { InfoSize(it.first, it.second) }
+                InfoCamera(source.id, source.facing, label, sizes)
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun cameraInfoSources(cm: CameraManager): List<CameraInfoSource> {
+        val sources = mutableListOf<CameraInfoSource>()
+        val allPhysicalIds = cm.cameraIdList.flatMap { logicalId ->
+            try {
+                cm.getCameraCharacteristics(logicalId).physicalCameraIds
+            } catch (_: Exception) {
+                emptySet()
+            }
+        }.toSet()
+        cm.cameraIdList.forEachIndexed { i, logicalId ->
+            if (logicalId in allPhysicalIds) return@forEachIndexed
+            val logical = cm.getCameraCharacteristics(logicalId)
+            val facing = when (logical.get(CameraCharacteristics.LENS_FACING)) {
+                CameraCharacteristics.LENS_FACING_FRONT -> "front"
+                CameraCharacteristics.LENS_FACING_BACK -> "back"
+                else -> "external"
+            }
+            val physicalIds = logical.physicalCameraIds
+                .filter { it != logicalId }
+                .sorted()
+
+            if (physicalIds.isNotEmpty()) {
+                physicalIds.forEach { physicalId ->
+                    val physical = try {
+                        cm.getCameraCharacteristics(physicalId)
+                    } catch (_: Exception) {
+                        logical
+                    }
+                    sources.add(CameraInfoSource("$logicalId:$physicalId", logicalId, physicalId, facing, logical, physical, i))
+                }
+            } else {
+                sources.add(CameraInfoSource(logicalId, logicalId, null, facing, logical, logical, i))
+            }
+        }
+        return sources
+    }
+
+    private fun cameraLabel(source: CameraInfoSource): String {
+        val id = source.physicalId ?: source.logicalId
+        val displayId = source.physicalId ?: source.logicalId
+        val facing = source.facing
+        val ch = source.characteristics
+        val facingLabel = facing.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+        val physicalLabel = "Lens $displayId"
+        val focalLengths = (source.sizesCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            ?: ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS))
+            ?.takeIf { it.isNotEmpty() }
+            ?.joinToString("/") { length -> "${"%.1f".format(length)}mm" }
+        return if (focalLengths == null) "$facingLabel $physicalLabel" else "$facingLabel $physicalLabel ($focalLengths)"
+    }
+
+    private fun getBatteryPercent(): Int = try {
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+        bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+    } catch (_: Exception) {
+        -1
+    }
+
+    private fun getWifiStrength(): Int = try {
+        val hasWifiPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        }
+        if (!hasWifiPermission) {
+            -1
+        } else {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+            val rssi = wifiManager?.connectionInfo?.rssi ?: -127
+            when {
+                rssi == -127 -> -1
+                rssi <= -100 -> 0
+                rssi >= -50 -> 100
+                else -> (rssi + 100) * 2
+            }
+        }
+    } catch (_: Exception) {
+        -1
     }
 
     private fun cleanupExpiredConnections() {
