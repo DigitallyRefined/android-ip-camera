@@ -137,6 +137,31 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         } catch (e: Exception) { Log.e(TAG, "AF: ${e.message}") }
     }
 
+    /**
+     * Best-effort manual focus. The Camera1 API has no focus-distance control, so this only maps to
+     * coarse modes (no gradation across the 0..1 range): [distance] < 0 restores continuous AF;
+     * ~0 uses INFINITY (far); any other value uses FIXED — the lens' fixed factory position (often
+     * hyperfocal/infinity), not the current AF position — where the hardware supports it.
+     */
+    override fun setManualFocus(distance: Float) = live { p ->
+        val modes = p.supportedFocusModes
+        if (distance < 0f) {
+            listOf(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO, Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)
+                .firstOrNull { modes?.contains(it) == true }?.let { p.focusMode = it }
+        } else {
+            val mode = when {
+                distance <= 0.05f && modes?.contains(Camera.Parameters.FOCUS_MODE_INFINITY) == true ->
+                    Camera.Parameters.FOCUS_MODE_INFINITY
+                modes?.contains(Camera.Parameters.FOCUS_MODE_FIXED) == true ->
+                    Camera.Parameters.FOCUS_MODE_FIXED
+                modes?.contains(Camera.Parameters.FOCUS_MODE_INFINITY) == true ->
+                    Camera.Parameters.FOCUS_MODE_INFINITY
+                else -> null
+            }
+            mode?.let { p.focusMode = it }
+        }
+    }
+
     private fun live(block: (Camera.Parameters) -> Unit) {
         try { val p = camera.parameters; block(p); camera.parameters = p } catch (_: Exception) {}
     }
