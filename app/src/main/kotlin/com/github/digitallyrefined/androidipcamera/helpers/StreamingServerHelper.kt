@@ -1000,6 +1000,7 @@ class StreamingServerHelper(
         val audioGain: String,
         val manualRotate: Int,
         val snapshotRes: String,
+        val focus: String,
     )
 
     private data class DeviceInfo(
@@ -1043,6 +1044,7 @@ class StreamingServerHelper(
                 put("audioGain", settings.audioGain)
                 put("manualRotate", settings.manualRotate)
                 put("snapshotRes", settings.snapshotRes)
+                put("focus", settings.focus)
             })
         }.toString()
     }
@@ -1060,9 +1062,9 @@ class StreamingServerHelper(
 
     private fun getStreamSettings(cameraList: List<InfoCamera> = emptyList()): StreamSettings {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val cameraId = prefs.getString("camera_id", null) ?: cameraList.firstOrNull()?.id
         return StreamSettings(
-            cameraId = prefs.getString("camera_id", null)
-            ?: cameraList.firstOrNull()?.id,
+            cameraId = cameraId,
             resolution = prefs.getString("camera_resolution", "low") ?: "low",
             streamRes = prefs.getString("stream_res", "auto") ?: "auto",
             zoom = prefs.getString("camera_zoom", "1.0") ?: "1.0",
@@ -1074,6 +1076,7 @@ class StreamingServerHelper(
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
             manualRotate = prefs.getInt("camera_manual_rotate", 0),
             snapshotRes = prefs.getString("snapshot_res", "max") ?: "max",
+            focus = prefs.getString("focus_$cameraId", "-1") ?: "-1",
         )
     }
 

@@ -327,7 +327,7 @@
           data-control='exposure' data-badge='exposureVal'>
 
         <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
-        <input id="focusDistance" type='range' type='range' min='-0.05' max='1' step='0.05' value='-1'
+        <input id="focusDistance" type='range' min='-0.05' max='1' step='0.05' value='-1'
           data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
 
         <p class="group-title">Post Processing</p>
@@ -985,6 +985,10 @@
       if (settings.streamRes) desiredResolution = settings.streamRes;
       if (settings.manualRotate != null) manualRotate = settings.manualRotate;
       if (settings.snapshotRes) { const sr = getElById('snapshotRes'); if (sr) sr.value = settings.snapshotRes; }
+      if (settings.focus != null) {
+        const f = getElById('focusDistance');
+        if (f) { f.value = settings.focus; const fb = getElById('focusVal'); if (fb) fb.innerText = formatControlValue(f); }
+      }
       populateResolutions();
       const zoom = getElById('zoom');
       const zoomVal = getElById('zoomVal');
