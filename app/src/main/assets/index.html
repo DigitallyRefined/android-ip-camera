@@ -495,8 +495,41 @@
     // Centralized control sender used by data-control bindings and ad-hoc actions.
     function sendControl(param, val) {
       try {
+        // Update local UI state immediately so the client reflects server-side
+        // changes without needing to re-fetch /info.json.
+        try { updateLocalLensSetting(param, val); } catch (_) {}
         return fetch('/?' + encodeURIComponent(param) + '=' + encodeURIComponent(val) + '&ts=' + nextControlTs()).catch(() => {});
       } catch (_) { /* swallow */ }
+    }
+
+    // Map control parameter names to the `lensSettings` keys used in `info.json`.
+    function toLensKey(param) {
+      if (!param) return null;
+      if (param === 'focus' || param === 'focus_distance') return 'focusDistance';
+      if (param === 'snapshot_res') return 'snapshotRes';
+      return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
+    }
+
+    function normalizeValueForKey(key, val) {
+      if (val === null || val === undefined) return val;
+      // Numeric settings should be stored as numbers when possible
+      if (['zoom', 'exposure', 'rotate', 'scale', 'contrast', 'focusDistance'].includes(key)) {
+        const n = parseFloat(val);
+        return Number.isFinite(n) ? n : val;
+      }
+      return val;
+    }
+
+    // Keep the client-side `cameraList` in sync with recently-sent control values.
+    function updateLocalLensSetting(param, val) {
+      const key = toLensKey(param);
+      if (!key) return;
+      const cam = cameraList.find(c => c && c.id === currentCamera);
+      if (!cam) return;
+      cam.lensSettings = cam.lensSettings || {};
+      cam.lensSettings[key] = normalizeValueForKey(key, val);
+      // Reflect the change in the visible controls without re-sending to server
+      try { applyStreamSettings(cam.lensSettings); } catch (_) {}
     }
 
     function formatControlValue(el) {
@@ -997,6 +1030,21 @@
       }
     }
 
+    function updateZoomMax() {
+      try {
+        const zoomEl = getElById('zoom');
+        if (!zoomEl) return;
+        const cam = selectedCameraInfo();
+        const max = (cam && cam.maxZoom) ? parseFloat(cam.maxZoom) : 8;
+        // Ensure a sensible minimum
+        zoomEl.max = String((isFinite(max) && max > 1) ? max : 8);
+        if (parseFloat(zoomEl.value) > parseFloat(zoomEl.max)) {
+          zoomEl.value = zoomEl.max;
+          const b = getElById('zoomVal'); if (b) b.textContent = formatControlValue(zoomEl);
+        }
+      } catch (_) {}
+    }
+
     function renderCameraControls() {
       const select = getElById('cameraSelect');
       if (!select) return;
@@ -1005,6 +1053,7 @@
       appendCameraGroup(select, 'front', 'Front');
       updateCameraSelectValue();
       populateResolutions();
+      updateZoomMax();
     }
 
     // Resolution dropdown is built from the sizes the camera reports, plus "Auto".
@@ -1065,6 +1114,7 @@
       currentCamera = camera;
       updateCameraSelectValue();
       populateResolutions();
+      updateZoomMax();
       // If the next camera has no flash, reflect the forced-off state immediately.
       if (torchState === 'on' && newCameraInfo && !newCameraInfo.hasFlash) {
         try {
@@ -1234,8 +1284,19 @@
         .then(res => res.json())
         .then(data => {
           cameraList = Array.isArray(data.cameras) ? data.cameras : [];
-          renderCameraControls();
           if (applySettings) applyStreamSettings(data.settings);
+          renderCameraControls();
+          // If server provided per-camera lens settings for the selected camera,
+          // apply them so UI controls (zoom/exposure/focus/rotate/scale/contrast)
+          // reflect the values in `/info.json` on initial load.
+          if (applySettings) {
+            try {
+              const cam = cameraList.find(c => c.id === currentCamera);
+              if (cam && cam.lensSettings) applyStreamSettings(cam.lensSettings);
+              // Ensure zoom max and clamps reflect newly applied lens settings
+              try { updateZoomMax(); } catch (_) {}
+            } catch (_) {}
+          }
           updateStatusOverlay(data);
         })
         .catch(err => {

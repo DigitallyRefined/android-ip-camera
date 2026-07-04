@@ -23,6 +23,13 @@ class MjpegStreamingEncoder(
         private const val TAG = "MjpegStreamingEncoder"
     }
 
+    private fun prefStringWithFallback(prefs: android.content.SharedPreferences, vararg keys: String): String? {
+        for (k in keys) {
+            if (prefs.contains(k)) return prefs.getString(k, null)
+        }
+        return null
+    }
+
     private var lastFrameTime = 0L
     private var captureRunning = false
 
@@ -35,10 +42,24 @@ class MjpegStreamingEncoder(
         lastFrameTime = currentTime
 
         val autoRotation = image.imageInfo.rotationDegrees
-        val rotation = prefs.getInt("camera_rotate", 0)
+        val camId = prefs.getString("camera_id", null)
+        val rotation = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            when {
+                prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
+                prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
+                else -> 0
+            }
+        } else 0
         val totalRotation = (autoRotation + rotation) % 360
-        val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
-        val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
+        val scaleFactor = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
+        } else 1.0f
+        val contrastValue = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
+        } else 0
 
         val nv21 = convertYUV420toNV21(image)
         var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height)
@@ -57,10 +78,24 @@ class MjpegStreamingEncoder(
         if (currentTime - lastFrameTime < delay) return
         lastFrameTime = currentTime
 
-        val rotation = prefs.getInt("camera_rotate", 0)
+        val camId = prefs.getString("camera_id", null)
+        val rotation = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            when {
+                prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
+                prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
+                else -> 0
+            }
+        } else 0
         val totalRotation = (rotationDegrees + rotation) % 360
-        val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
-        val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
+        val scaleFactor = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
+        } else 1.0f
+        val contrastValue = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
+        } else 0
 
         var jpegBytes = convertNV21toJPEG(nv21, width, height)
         if (totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0) {
@@ -102,7 +137,12 @@ class MjpegStreamingEncoder(
             "scale" -> {
                 val scale = value.toFloatOrNull() ?: return false
                 if (scale in 0.5f..2.0f) {
-                    prefs.edit().putString("stream_scale", value).apply()
+                    val camId = prefs.getString("camera_id", null)
+                    camId?.let {
+                        prefs.edit().putString("stream_scale_$it", value).apply()
+                        val phys = it.substringAfter(':', it)
+                        if (phys.isNotBlank() && phys != it) prefs.edit().putString("stream_scale_$phys", value).apply()
+                    }
                     true
                 } else {
                     false
@@ -120,7 +160,12 @@ class MjpegStreamingEncoder(
             "rotate" -> {
                 val angle = value.toIntOrNull() ?: return false
                 val norm = ((angle % 360) + 360) % 360
-                prefs.edit().putInt("camera_rotate", norm).apply()
+                val camId = prefs.getString("camera_id", null)
+                camId?.let {
+                    prefs.edit().putInt("camera_rotate_$it", norm).apply()
+                    val phys = it.substringAfter(':', it)
+                    if (phys.isNotBlank() && phys != it) prefs.edit().putInt("camera_rotate_$phys", norm).apply()
+                }
                 true
             }
             "audio_gain" -> {
@@ -134,7 +179,12 @@ class MjpegStreamingEncoder(
             }
             "contrast" -> {
                 val contrast = value.toIntOrNull() ?: return false
-                prefs.edit().putString("camera_contrast", contrast.toString()).apply()
+                val camId = prefs.getString("camera_id", null)
+                camId?.let {
+                    prefs.edit().putString("camera_contrast_$it", contrast.toString()).apply()
+                    val phys = it.substringAfter(':', it)
+                    if (phys.isNotBlank() && phys != it) prefs.edit().putString("camera_contrast_$phys", contrast.toString()).apply()
+                }
                 Log.i(TAG, "Remote Control: Contrast set to $contrast (software-based)")
                 true
             }

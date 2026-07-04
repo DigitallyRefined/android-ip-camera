@@ -975,7 +975,7 @@ class StreamingServerHelper(
 
     private data class InfoSize(val w: Int, val h: Int)
 
-    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int)
+    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val maxZoom: Float)
 
     private data class CameraInfoSource(
         val id: String,
@@ -991,17 +991,10 @@ class StreamingServerHelper(
         val cameraId: String?,
         val resolution: String,
         val streamRes: String,
-        val zoom: String,
-        val focusDistance: String,
-        val scale: String,
-        val exposure: String,
-        val contrast: String,
         val delay: String,
         val torch: String,
         val audioGain: String,
-        val rotate: Int,
         val snapshotRes: String,
-        val focus: String,
     )
 
     private data class DeviceInfo(
@@ -1035,26 +1028,23 @@ class StreamingServerHelper(
                                 lensMap.forEach { (k, v) -> put(k, v) }
                             })
                         }
+                        // Expose reported max digital zoom for the camera (float)
+                        try { put("maxZoom", camera.maxZoom) } catch (_: Exception) {}
                     })
                 }
             })
             put("batteryPercent", batteryPercent)
             put("wifiStrength", wifiStrength)
             put("settings", JSONObject().apply {
+                // Keep global stream-level settings here; per-camera lens settings are exposed
+                // under `cameras[].lensSettings` and should be used by the UI.
                 put("cameraId", settings.cameraId)
                 put("resolution", settings.resolution)
                 put("streamRes", settings.streamRes)
-                put("zoom", settings.zoom)
-                put("scale", settings.scale)
-                put("exposure", settings.exposure)
-                put("contrast", settings.contrast)
                 put("delay", settings.delay)
                 put("torch", settings.torch)
                 put("audioGain", settings.audioGain)
-                put("focusDistance", settings.focusDistance)
-                put("rotate", settings.rotate)
                 put("snapshotRes", settings.snapshotRes)
-                put("focus", settings.focus)
             })
         }.toString()
     }
@@ -1066,15 +1056,56 @@ class StreamingServerHelper(
         // zoom_<cameraId>, exposure_<cameraId>, focus_<cameraId> which are already used
         // by getStreamSettings()/handleRemoteControl.
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        // Helper to read a string preference with fallback keys (tries keys in order)
+        fun prefStringFallback(default: String?, vararg keys: String): String? {
+            for (k in keys) {
+                if (prefs.contains(k)) return prefs.getString(k, default)
+            }
+            return default
+        }
+
+        // Helper to read an int preference with fallback keys
+        fun prefIntFallback(default: Int, vararg keys: String): Int {
+            for (k in keys) {
+                if (prefs.contains(k)) return prefs.getInt(k, default)
+            }
+            return default
+        }
+
         val perCamera = cameraList.associate { cam ->
             val id = cam.id
+            // Physical id may be present after ':' (e.g. "1:3")
+            val physical = id.substringAfter(':', id)
             val map = mutableMapOf<String, String>()
-            prefs.getString("zoom_$id", null)?.let { map["zoom"] = it }
-            prefs.getString("exposure_$id", null)?.let { map["exposure"] = it }
-            prefs.getString("focus_$id", null)?.let { map["focusDistance"] = it }
-            // Allow per-camera snapshot resolution if present, otherwise omit
-            prefs.getString("snapshot_res_$id", null)?.let { map["snapshotRes"] = it }
-            // Any other per-camera keys can be added here as needed.
+
+            // Zoom: prefer token-specific key, then fallback to physical id key
+            val zoomVal = prefStringFallback("1.0", "zoom_$id", "zoom_$physical") ?: "1.0"
+            map["zoom"] = zoomVal
+
+            // Exposure
+            val exposureVal = prefStringFallback("0", "exposure_$id", "exposure_$physical") ?: "0"
+            map["exposure"] = exposureVal
+
+            // Focus distance
+            val focusVal = prefStringFallback("-1", "focus_$id", "focus_$physical") ?: "-1"
+            map["focusDistance"] = focusVal
+
+            // Rotation: per-camera only; try token then physical
+            val rotateVal = prefIntFallback(0, "camera_rotate_$id", "camera_rotate_$physical")
+            map["rotate"] = rotateVal.toString()
+
+            // Scale
+            val scaleVal = prefStringFallback("1.0", "stream_scale_$id", "stream_scale_$physical") ?: "1.0"
+            map["scale"] = scaleVal
+
+            // Contrast
+            val contrastVal = prefStringFallback("0", "camera_contrast_$id", "camera_contrast_$physical") ?: "0"
+            map["contrast"] = contrastVal
+
+            // Snapshot resolution optional (per-camera)
+            val snapshot = prefStringFallback(null, "snapshot_res_$id", "snapshot_res_$physical")
+            snapshot?.let { map["snapshotRes"] = it }
+
             id to map
         }
 
@@ -1089,27 +1120,28 @@ class StreamingServerHelper(
 
     private fun getStreamSettings(cameraList: List<InfoCamera> = emptyList()): StreamSettings {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-        val cameraId = prefs.getString("camera_id", null) ?: cameraList.firstOrNull()?.id
-        // Per-camera prefs use suffixes like zoom_<id>, exposure_<id>, focus_<id>
-        val zoomPref = cameraId?.let { prefs.getString("zoom_$it", null) } ?: null
-        val exposurePref = cameraId?.let { prefs.getString("exposure_$it", null) } ?: null
-        val focusPref = cameraId?.let { prefs.getString("focus_$it", null) } ?: null
-
+        val storedCameraId = prefs.getString("camera_id", null)
+        // Prefer the stored camera id; if it's canonical (e.g. physical id) but the UI
+        // options use a logical:physical token (e.g. "1:3"), map to that token so the
+        // client can select the correct option value. Fall back to the first camera id.
+        var cameraId = storedCameraId
+        if (cameraId == null) cameraId = cameraList.firstOrNull()?.id
+        else {
+            // If the stored id isn't in cameraList but a camera has a matching physical id,
+            // prefer the cameraList id (logical:physical) so UI selection matches.
+            if (cameraList.none { it.id == cameraId }) {
+                val match = cameraList.firstOrNull { it.id.endsWith(":$cameraId") }
+                if (match != null) cameraId = match.id
+            }
+        }
         return StreamSettings(
             cameraId = cameraId,
             resolution = prefs.getString("camera_resolution", "low") ?: "low",
             streamRes = prefs.getString("stream_res", "auto") ?: "auto",
-            zoom = zoomPref ?: prefs.getString("camera_zoom", "1.0") ?: "1.0",
-            focusDistance = focusPref ?: prefs.getString("focus_distance", "-1") ?: "-1",
-            scale = prefs.getString("stream_scale", "1.0") ?: "1.0",
-            exposure = exposurePref ?: prefs.getString("camera_exposure", "0") ?: "0",
-            contrast = prefs.getString("camera_contrast", "0") ?: "0",
             delay = prefs.getString("stream_delay", "33") ?: "33",
             torch = prefs.getString("camera_torch", "off") ?: "off",
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
-            rotate = prefs.getInt("camera_rotate", 0),
-            snapshotRes = prefs.getString("snapshot_res", "max") ?: "max",
-            focus = prefs.getString("focus_$cameraId", "-1") ?: "-1",
+            snapshotRes = prefs.getString("snapshot_res_$cameraId", "max") ?: "max",
         )
     }
 
@@ -1143,7 +1175,13 @@ class StreamingServerHelper(
                     source.characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
                 val sensorOrientation = (ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
                     ?: source.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)) ?: 0
-                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation)
+                // Max digital zoom (fallback to 1.0 if unavailable)
+                val maxZoom = try {
+                    (ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+                        ?: source.characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+                        ?: 1.0f).toFloat()
+                } catch (_: Exception) { 1.0f }
+                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, maxZoom)
             }
         } catch (_: Exception) {
             emptyList()

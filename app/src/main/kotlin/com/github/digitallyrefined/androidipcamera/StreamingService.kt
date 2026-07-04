@@ -205,7 +205,7 @@ class StreamingService : LifecycleService() {
     fun switchCamera() {
         selectCamera(!frontFacing, null)
         PreferenceManager.getDefaultSharedPreferences(this).edit()
-            .putString(PREF_CAMERA_ID, selectedCameraId)
+            .putString(PREF_CAMERA_ID, camId())
             .apply()
         if (captureRunning) launchMain { startCamera() }
     }
@@ -435,9 +435,31 @@ class StreamingService : LifecycleService() {
                 }.also { it.start() }
                 Log.i(TAG, "stream ${camId()} api=camerax")
             }
+            // Persist the active camera id so encoders and helpers can read per-camera prefs
+            try {
+                val prefs = PreferenceManager.getDefaultSharedPreferences(this@StreamingService)
+                prefs.edit().putString(PREF_CAMERA_ID, camId()).apply()
+            } catch (_: Exception) {}
+
             captureRunning = true
             encoders.forEach { it.start() }
-            backend?.let { applyStored(it) }
+            // Apply stored camera-level controls (exposure/zoom/focus) to the backend.
+            // CameraX binding is asynchronous; retry in a background coroutine until ready.
+            lifecycleScope.launch(Dispatchers.IO) {
+                var attempts = 0
+                while (attempts < 40) {
+                    val b = backend
+                    if (b == null) break
+                    try {
+                        if (b.ready) {
+                            launchMain { try { applyStored(b) } catch (_: Exception) {} }
+                            break
+                        }
+                    } catch (_: Exception) {}
+                    attempts++
+                    try { kotlinx.coroutines.delay(200) } catch (_: Exception) { break }
+                }
+            }
         } catch (e: Exception) { Log.e(TAG, "startCamera: ${e.message}"); stopCamera() }
     }
 
@@ -457,10 +479,31 @@ class StreamingService : LifecycleService() {
     }
 
     private fun applyStored(b: CaptureBackend) {
-        val p = PreferenceManager.getDefaultSharedPreferences(this); val id = camId()
-        p.getString("exposure_$id", null)?.toIntOrNull()?.let { b.setExposure(it) }
-        p.getString("zoom_$id", null)?.toFloatOrNull()?.let { b.setZoom(it) }
-        p.getString("focus_$id", null)?.toFloatOrNull()?.let { b.setManualFocus(it) }
+        val p = PreferenceManager.getDefaultSharedPreferences(this)
+        val id = camId()
+        if (id == null) return
+        val phys = id.substringAfter(':', id)
+        // Prefer token-specific prefs, fallback to physical id prefs
+        val exposure = when {
+            p.contains("exposure_$id") -> p.getString("exposure_$id", null)
+            p.contains("exposure_$phys") -> p.getString("exposure_$phys", null)
+            else -> null
+        }
+        exposure?.toIntOrNull()?.let { b.setExposure(it) }
+
+        val zoom = when {
+            p.contains("zoom_$id") -> p.getString("zoom_$id", null)
+            p.contains("zoom_$phys") -> p.getString("zoom_$phys", null)
+            else -> null
+        }
+        zoom?.toFloatOrNull()?.let { b.setZoom(it) }
+
+        val focus = when {
+            p.contains("focus_$id") -> p.getString("focus_$id", null)
+            p.contains("focus_$phys") -> p.getString("focus_$phys", null)
+            else -> null
+        }
+        focus?.toFloatOrNull()?.let { b.setManualFocus(it) }
     }
 
     // ---------------- snapshot (full resolution) ----------------
@@ -482,7 +525,9 @@ class StreamingService : LifecycleService() {
             val live = backend
             if (live != null && targetFront == frontFacing && targetCameraId == selectedCameraId) {
                 // "stream": reuse the last streamed frame (no camera rebind); "max": full-res capture.
-                val res = PreferenceManager.getDefaultSharedPreferences(this).getString("snapshot_res", "max")
+                val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+                val idForPref = targetCameraId ?: key
+                val res = prefs.getString("snapshot_res_$idForPref", "max")
                 if (res == "stream") mjpegStreamingEncoder?.lastFrame()?.let { return it }
                 return captureFrom(live, key) ?: snapCache[key]
             }
@@ -606,6 +651,8 @@ class StreamingService : LifecycleService() {
         // reads from getStreamSettings() (which uses the saved `camera_id`) match.
         val storedCameraPref = prefs.getString(PREF_CAMERA_ID, null)
         val id = storedCameraPref ?: camId()
+        // physical id fallback (if id is "logical:physical" this extracts physical)
+        val physicalId = id?.substringAfter(':', id ?: "") ?: ""
         when (key) {
             "torch" -> {
                 val current = backend?.getTorch() ?: false
@@ -620,21 +667,36 @@ class StreamingService : LifecycleService() {
             "exposure" -> {
                 val ev = value.toIntOrNull() ?: return
                 prefs.edit().putString("exposure_$id", ev.toString()).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("exposure_$physicalId", ev.toString()).apply()
                 launchMain { backend?.setExposure(ev) }
             }
             "zoom" -> {
                 val z = value.toFloatOrNull() ?: return
                 prefs.edit().putString("zoom_$id", z.toString()).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("zoom_$physicalId", z.toString()).apply()
                 launchMain { backend?.setZoom(z) }
             }
             "focus_distance" -> {
                 val f = value.toFloatOrNull() ?: return
-                if (f < 0f) prefs.edit().remove("focus_$id").apply()
-                else prefs.edit().putString("focus_$id", f.coerceIn(0f, 1f).toString()).apply()
+                if (f < 0f) {
+                    prefs.edit().remove("focus_$id").apply()
+                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit().remove("focus_$physicalId").apply()
+                } else {
+                    prefs.edit().putString("focus_$id", f.coerceIn(0f, 1f).toString()).apply()
+                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("focus_$physicalId", f.coerceIn(0f, 1f).toString()).apply()
+                }
                 launchMain { backend?.setManualFocus(f) }
             }
             "snapshot_res" -> {
-                if (value == "max" || value == "stream") prefs.edit().putString("snapshot_res", value).apply()
+                if (value == "max" || value == "stream") {
+                    val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+                    val sid = camId()
+                    if (sid != null) {
+                        prefs.edit().putString("snapshot_res_$sid", value).apply()
+                        val phys = sid.substringAfter(':', sid)
+                        if (phys.isNotBlank() && phys != sid) prefs.edit().putString("snapshot_res_$phys", value).apply()
+                    }
+                }
             }
             "camera" -> {
                 val keepTorchOn = backend?.getTorch() == true
@@ -642,8 +704,10 @@ class StreamingService : LifecycleService() {
                 selectCamera(target.first, target.second)
                 // Save the original value (e.g. "1:3") so the dropdown can match it;
                 // selectedCameraId may be the bare physical ID (e.g. "3") used by CameraX.
+                // Persist the canonical camera id (what camId() will return) so per-camera
+                // preferences are stored/loaded under the same key format.
                 prefs.edit()
-                    .putString(PREF_CAMERA_ID, value)
+                    .putString(PREF_CAMERA_ID, camId())
                     .apply()
                 launchMain {
                     if (captureRunning) {
@@ -665,7 +729,19 @@ class StreamingService : LifecycleService() {
                 val angle = value.toIntOrNull() ?: return
                 // normalize to 0..359
                 val norm = ((angle % 360) + 360) % 360
-                prefs.edit().putInt("camera_rotate", norm).apply()
+                // Persist rotate per-camera
+                prefs.edit().putInt("camera_rotate_$id", norm).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putInt("camera_rotate_$physicalId", norm).apply()
+            }
+            "scale" -> {
+                // Persist scale per-camera (string like "1.0")
+                prefs.edit().putString("stream_scale_$id", value).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("stream_scale_$physicalId", value).apply()
+            }
+            "contrast" -> {
+                // Persist contrast per-camera
+                prefs.edit().putString("camera_contrast_$id", value).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("camera_contrast_$physicalId", value).apply()
             }
             "api" -> {
                 if (value in listOf("auto", "camerax", "camera1")) {
