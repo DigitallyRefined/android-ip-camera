@@ -460,6 +460,7 @@ class StreamingService : LifecycleService() {
         val p = PreferenceManager.getDefaultSharedPreferences(this); val id = camId()
         p.getString("exposure_$id", null)?.toIntOrNull()?.let { b.setExposure(it) }
         p.getString("zoom_$id", null)?.toFloatOrNull()?.let { b.setZoom(it) }
+        p.getString("focus_$id", null)?.toFloatOrNull()?.let { b.setManualFocus(it) }
     }
 
     // ---------------- snapshot (full resolution) ----------------
@@ -576,7 +577,8 @@ class StreamingService : LifecycleService() {
 
     /**
      * GET /?<key>=<value> (proxied as /api/video/control):
-     *   torch=on|off|toggle   focus=1   exposure=<ev>   zoom=<ratio>
+     *   torch=on|off|toggle   focus_distance=<0..1|-1>
+     *   exposure=<ev>   zoom=<ratio>
      *   camera=<id>|front|back|toggle   resolution=WxH   api=auto|camerax|camera1
      */
     /** Last accepted client timestamp per control key. */
@@ -617,7 +619,12 @@ class StreamingService : LifecycleService() {
                 prefs.edit().putString("zoom_$id", z.toString()).apply()
                 launchMain { backend?.setZoom(z) }
             }
-            "focus" -> launchMain { backend?.triggerAutoFocus() }
+            "focus_distance" -> {
+                val f = value.toFloatOrNull() ?: return
+                if (f < 0f) prefs.edit().remove("focus_$id").apply()
+                else prefs.edit().putString("focus_$id", f.coerceIn(0f, 1f).toString()).apply()
+                launchMain { backend?.setManualFocus(f) }
+            }
             "camera" -> {
                 val keepTorchOn = backend?.getTorch() == true
                 val target = resolveCamera(value) ?: return

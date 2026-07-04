@@ -265,7 +265,7 @@
           <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
         </div>
 
-        <button class='btn btn-action' onclick='fetch("/?rotate=90")'>Rotate 90&deg;</button>
+        <button class='btn btn-action' data-control='rotate' data-value='90'>Rotate 90&deg;</button>
 
         <div style="margin-bottom: 15px">
           <button id="muteBtn" class="btn btn-action" style='width: 49%;'>🔇 Unmute Audio</button>
@@ -284,7 +284,7 @@
         <p class="group-title">Camera Control</p>
 
         <label for="resolutionSelect">Resolution</label>
-        <select id="resolutionSelect" style="margin-bottom: 20px" onchange='fetch("/?resolution="+this.value)'>
+        <select id="resolutionSelect" style="margin-bottom: 20px" data-control='resolution'>
           <option value='low'>Low (Fastest)</option>
           <option value='medium'>Medium</option>
           <option value='high'>High (Sharpest)</option>
@@ -298,6 +298,10 @@
         <input id="exposure" type='range' min='-10' max='10' step='1' value='0'
           data-control='exposure' data-badge='exposureVal'>
 
+        <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
+        <input id="focusDistance" type='range' type='range' min='-0.05' max='1' step='0.05' value='-1'
+          data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
+
         <p class="group-title">Post Processing</p>
 
         <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
@@ -309,8 +313,7 @@
           data-control='contrast' data-badge='contVal'>
 
         <label for="delay">Frame Delay (ms)</label>
-        <input id="delay" type='number' min='10' max='1000' value='33'
-          onchange='fetch("/?delay="+this.value)'>
+        <input id="delay" type='number' min='10' max='1000' value='33' data-control='delay'>
       </div>
 
       <p class="notice">Some changes will momentarily restart the camera.</p>
@@ -473,18 +476,33 @@
 
     function bindControl(el) {
       const param = el.dataset.control;
+      if (!param) return;
       const badge = el.dataset.badge ? getElById(el.dataset.badge) : null;
       let lastSentAt = 0;
       let lastSentValue = null;
       let timer = null;
 
+      function doFetch(val) {
+        fetch('/?' + param + '=' + encodeURIComponent(val) + '&ts=' + nextControlTs()).catch(() => {});
+      }
+
+      // Buttons send their configured value immediately on click
+      if (el.tagName === 'BUTTON') {
+        el.addEventListener('click', () => {
+          const val = el.dataset.value !== undefined ? el.dataset.value : (el.value !== undefined ? el.value : '');
+          if (badge) badge.innerText = val;
+          doFetch(val);
+        });
+        return;
+      }
+
       function send() {
         if (timer) { clearTimeout(timer); timer = null; }
-        if (el.value === lastSentValue) return; // nothing new to apply
-        lastSentValue = el.value;
+        const val = el.value;
+        if (val === lastSentValue) return;
+        lastSentValue = val;
         lastSentAt = Date.now();
-        fetch('/?' + param + '=' + encodeURIComponent(el.value)
-          + '&ts=' + nextControlTs()).catch(() => {});
+        doFetch(val);
       }
 
       function schedule() {
@@ -506,7 +524,7 @@
       if (badge) badge.innerText = formatControlValue(el);
     }
 
-    document.querySelectorAll('input[type="range"][data-control]').forEach(bindControl);
+    document.querySelectorAll('[data-control]').forEach(bindControl);
 
     function startMjpegStream() {
       if (!streamCanvas)
