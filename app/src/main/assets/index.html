@@ -867,7 +867,18 @@
             ctx.save();
             ctx.translate(size.w / 2, size.h / 2);
             if (rot) ctx.rotate(rot * Math.PI / 180);
+            // Apply client-side contrast filter when available
+            try {
+              const contrastEl = getElById('contrast');
+              if (contrastEl) {
+                const c = parseInt(contrastEl.value, 10) || 0;
+                ctx.filter = `contrast(${100 + c}%)`;
+              } else {
+                ctx.filter = 'none';
+              }
+            } catch (_) { ctx.filter = 'none'; }
             ctx.drawImage(frame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
+            ctx.filter = 'none';
             ctx.restore();
           } finally { frame.close(); }
         },
