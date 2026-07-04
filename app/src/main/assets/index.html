@@ -577,6 +577,15 @@
 
     document.querySelectorAll('[data-control]').forEach(bindControl);
 
+    function getUserScale() {
+      const el = getElById('scale');
+      if (!el) return 1;
+      try {
+        const n = parseFloat(el.value);
+        return (isFinite(n) && n > 0) ? n : 1;
+      } catch (_) { return 1; }
+    }
+
     // Reset controls to the app's initial defaults (as shipped):
     // resolution -> 'auto' (use Auto mode), zoom -> 1.0, exposure -> 0, focus -> -1 (auto), scale -> 1.0, contrast -> 0, delay -> 33ms
     function resetToDefaults() {
@@ -720,7 +729,8 @@
               applyCanvasSize(size);
               const iw = candidate.bmp.width;
               const ih = candidate.bmp.height;
-              const scale = Math.min(w / iw, h / ih);
+              const userScale = getUserScale();
+              const scale = Math.min(w / iw, h / ih) * userScale;
               const dw = Math.max(1, Math.floor(iw * scale));
               const dh = Math.max(1, Math.floor(ih * scale));
               const dx = Math.floor((w - dw) / 2);
@@ -852,7 +862,7 @@
             const cw = swap ? fh : fw, ch = swap ? fw : fh;   // canvas content dims after rotation
             const size = targetCanvasSize({ width: cw, height: ch });
             applyCanvasSize(size);
-            const s = Math.min(size.w / cw, size.h / ch);
+            const s = Math.min(size.w / cw, size.h / ch) * getUserScale();
             ctx.clearRect(0, 0, size.w, size.h);
             ctx.save();
             ctx.translate(size.w / 2, size.h / 2);
