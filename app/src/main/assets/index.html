@@ -208,6 +208,21 @@
       text-align: center;
     }
 
+    .stream-title {
+      font-size: 12px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: bold;
+      margin: 22px 0 6px;
+    }
+
+    .stream-hint {
+      color: #666;
+      font-size: 11px;
+      margin: 0 0 10px;
+    }
+
     @media (max-width: 900px) {
       .main {
         flex-direction: column;
@@ -271,6 +286,18 @@
           <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='1.0'
             oninput='getElById("audioGainVal").innerText=this.value;fetch("/?audio_gain="+this.value)'>
         </div>
+
+        <p class="stream-title">Stream</p>
+        <div style="display:flex; gap:6px; margin-bottom:8px">
+          <button id="modeMjpegBtn" class="btn active" style="flex:1" onclick="setStreamMode('mjpeg')">MJPEG</button>
+          <button id="modeH264Btn" class="btn" style="flex:1" onclick="setStreamMode('h264')">H.264 (4K)</button>
+        </div>
+        <p class="stream-hint" id="streamHint"></p>
+        <div id="streamExtRow" style="display:none; margin-bottom:12px">
+          <label for="streamExtUrl">Open in an external player (VLC / ffplay)</label>
+          <input id="streamExtUrl" type="text" readonly onclick="this.select()">
+        </div>
+        <p class="stream-hint">Full-resolution photo: <a id="snapLink" href="/video/snapshot" target="_blank" style="color:#007AFF">/video/snapshot</a> &mdash; briefly drops the live stream to preview size while the shot is taken.</p>
 
         <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
         <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
@@ -551,7 +578,7 @@
         .catch(() => { mjpegRunning = false; });
     }
 
-    loadDeviceInfo(true).finally(() => startMjpegStream());
+    loadDeviceInfo(true).finally(() => initStreamUi());
     setInterval(() => loadDeviceInfo(false), 60000);
 
     function stopMjpegStream() {
@@ -560,6 +587,121 @@
       }
       mjpegAbort = null;
       mjpegRunning = false;
+    }
+
+    // ---- Stream mode: MJPEG (universal) vs H.264 decoded in-browser via WebCodecs ----
+    let streamMode = 'mjpeg';
+    const h264Supported = ('VideoDecoder' in window) && ('EncodedVideoChunk' in window);
+    const baseUrl = () => location.protocol + '//' + location.host;
+
+    function initStreamUi() {
+      const h = getElById('modeH264Btn');
+      const ext = getElById('streamExtUrl');
+      if (ext) ext.value = baseUrl() + '/video/h264';
+      if (h && !h264Supported) {
+        h.disabled = true;
+        h.textContent = 'H.264 (n/a)';
+        // WebCodecs is a secure-context API: available over HTTPS (or localhost), not plain HTTP.
+        h.title = window.isSecureContext
+          ? 'This browser has no WebCodecs H.264 decoder'
+          : 'In-browser H.264 needs HTTPS (WebCodecs is a secure-context API). Open this page via https://, or use the external player URL.';
+      }
+      setStreamMode('mjpeg');
+    }
+
+    function setStreamMode(mode) {
+      if (mode === 'h264' && !h264Supported) mode = 'mjpeg';
+      streamMode = mode;
+      const mj = getElById('modeMjpegBtn'), h = getElById('modeH264Btn');
+      if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
+      if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
+      const hint = getElById('streamHint');
+      if (mode === 'mjpeg') {
+        if (hint) hint.innerHTML = 'Motion-JPEG, decoded by any browser. Universal, but bandwidth-heavy at high resolution (a 4K frame is ~2 MB, so the frame rate drops).';
+        stopH264Stream();
+        startMjpegStream();
+      } else {
+        if (hint) hint.innerHTML = 'Hardware H.264 decoded in-browser (WebCodecs) &mdash; efficient enough for live 4K at full frame rate. The same raw stream also plays in VLC / ffplay:';
+        stopMjpegStream();
+        startH264Stream();
+      }
+    }
+
+    // Minimal WebCodecs H.264 player: parse the Annex-B elementary stream into access
+    // units and feed them to a VideoDecoder, drawing frames onto the same canvas.
+    let h264Abort = null;
+    let h264Decoder = null;
+    function stopH264Stream() {
+      if (h264Abort) { try { h264Abort.abort(); } catch (_) { } h264Abort = null; }
+      if (h264Decoder) { try { h264Decoder.close(); } catch (_) { } h264Decoder = null; }
+    }
+    async function startH264Stream() {
+      if (!h264Supported) return;
+      stopH264Stream();
+      const ctx = streamCanvas.getContext('2d');
+      const controller = new AbortController();
+      h264Abort = controller;
+      let configured = false, ts = 0;
+      let au = [], auHasVcl = false, auKey = false;
+      const decoder = new VideoDecoder({
+        output: (frame) => {
+          try {
+            const size = targetCanvasSize({ width: frame.displayWidth, height: frame.displayHeight });
+            applyCanvasSize(size);
+            const s = Math.min(size.w / frame.displayWidth, size.h / frame.displayHeight);
+            const dw = Math.max(1, Math.floor(frame.displayWidth * s));
+            const dh = Math.max(1, Math.floor(frame.displayHeight * s));
+            ctx.clearRect(0, 0, size.w, size.h);
+            ctx.drawImage(frame, Math.floor((size.w - dw) / 2), Math.floor((size.h - dh) / 2), dw, dh);
+          } finally { frame.close(); }
+        },
+        error: (e) => console.error('H.264 decode:', e)
+      });
+      h264Decoder = decoder;
+      const hex = (n) => n.toString(16).padStart(2, '0');
+      const flush = () => {
+        if (!configured || !au.length) { au = []; auHasVcl = false; auKey = false; return; }
+        let len = au.reduce((a, n) => a + 4 + n.length, 0);
+        const data = new Uint8Array(len); let o = 0;
+        for (const n of au) { data[o + 3] = 1; o += 4; data.set(n, o); o += n.length; }  // 00 00 00 01 start code
+        try { decoder.decode(new EncodedVideoChunk({ type: auKey ? 'key' : 'delta', timestamp: ts, data })); ts += 33333; }
+        catch (e) { console.error('decode:', e); }
+        au = []; auHasVcl = false; auKey = false;
+      };
+      const onNal = (nal) => {
+        if (!nal.length) return;
+        const type = nal[0] & 0x1f;
+        if (type === 7 && !configured) {
+          try { decoder.configure({ codec: 'avc1.' + hex(nal[1]) + hex(nal[2]) + hex(nal[3]), optimizeForLatency: true }); configured = true; }
+          catch (e) { console.error('configure:', e); }
+        }
+        const isVcl = type >= 1 && type <= 5;
+        if (isVcl && auHasVcl) flush();            // a new VCL starts the next access unit
+        au.push(nal.slice());
+        if (isVcl) { auHasVcl = true; if (type === 5) auKey = true; }
+      };
+      let resp;
+      try { resp = await fetch(baseUrl() + '/video/h264', { signal: controller.signal }); } catch (_) { return; }
+      const reader = resp.body.getReader();
+      let buf = new Uint8Array(0);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || controller.signal.aborted) break;
+          const merged = new Uint8Array(buf.length + value.length);
+          merged.set(buf); merged.set(value, buf.length); buf = merged;
+          // Collect start-code positions, emit each complete NAL, keep the trailing partial.
+          const starts = [];
+          for (let i = 0; i + 3 < buf.length;) {
+            if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1) { starts.push([i, i + 3]); i += 3; }
+            else if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 0 && buf[i + 3] === 1) { starts.push([i, i + 4]); i += 4; }
+            else i++;
+          }
+          if (starts.length < 2) continue;
+          for (let k = 0; k < starts.length - 1; k++) onNal(buf.subarray(starts[k][1], starts[k + 1][0]));
+          buf = buf.slice(starts[starts.length - 1][0]);
+        }
+      } catch (_) { }
     }
 
     document.addEventListener('visibilitychange', () => {
@@ -574,9 +716,10 @@
           audioEl.load();
         }
         stopMjpegStream();
+        stopH264Stream();
       } else {
-        // Restart only the image stream on foreground
-        startMjpegStream();
+        // Restart the currently selected stream on foreground
+        if (streamMode === 'h264') startH264Stream(); else startMjpegStream();
       }
     });
 
