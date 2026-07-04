@@ -272,12 +272,8 @@
             oninput='getElById("audioGainVal").innerText=this.value;fetch("/?audio_gain="+this.value)'>
         </div>
 
-        <label for="resolutionSelect">Resolution</label>
-        <select id="resolutionSelect" style="margin-bottom: 20px" onchange='fetch("/?resolution="+this.value)'>
-          <option value='low'>Low (Fastest)</option>
-          <option value='medium'>Medium</option>
-          <option value='high'>High (Sharpest)</option>
-        </select>
+        <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
+        <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
 
         <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
         <input id="zoom" type='range' min='1' max='8' step='0.1' value='1.0'
@@ -543,6 +539,7 @@
               ctx.clearRect(0, 0, w, h);
               ctx.drawImage(candidate.bmp, dx, dy, dw, dh);
               lastDrawn = candidate.bmp;
+              setStreamResolution(iw, ih);
             }
             requestAnimationFrame(drawLoop);
           }
@@ -633,6 +630,56 @@
       appendCameraGroup(select, 'back', 'Back');
       appendCameraGroup(select, 'front', 'Front');
       updateCameraSelectValue();
+      populateResolutions();
+    }
+
+    // Resolution dropdown is built from the sizes the camera reports, plus "Auto".
+    let desiredResolution = 'auto';
+
+    function selectedCameraInfo() {
+      return cameraList.find(camera => camera.id === currentCamera)
+        || camerasForFacing(currentCameraFacing())[0]
+        || cameraList[0]
+        || null;
+    }
+
+    function resolutionLabel(w, h) {
+      return w + '×' + h + ' · ' + ((w * h) / 1e6).toFixed(1) + ' MP';
+    }
+
+    function populateResolutions() {
+      const select = getElById('resolutionSelect');
+      if (!select) return;
+      const cam = selectedCameraInfo();
+      const sizes = (cam && Array.isArray(cam.sizes)) ? cam.sizes : [];
+      select.innerHTML = '';
+      const auto = document.createElement('option');
+      auto.value = 'auto';
+      auto.textContent = 'Auto';
+      select.appendChild(auto);
+      sizes.forEach(s => {
+        if (!s || !s.w || !s.h) return;
+        const opt = document.createElement('option');
+        opt.value = s.w + 'x' + s.h;
+        opt.textContent = resolutionLabel(s.w, s.h);
+        select.appendChild(opt);
+      });
+      const available = Array.from(select.options).some(o => o.value === desiredResolution);
+      if (available) {
+        select.value = desiredResolution;
+      } else if (desiredResolution !== 'auto') {
+        // Chosen size isn't supported by this camera: reconcile to Auto so the
+        // dropdown, desiredResolution and the server pref stay in sync.
+        setResolution('auto');
+        select.value = 'auto';
+      } else {
+        select.value = 'auto';
+      }
+    }
+
+    function setResolution(value) {
+      desiredResolution = value;
+      fetch('/?resolution=' + encodeURIComponent(value)).catch(() => {});
     }
 
     function setCamera(camera) {
@@ -640,6 +687,7 @@
       const newCameraInfo = cameraList.find(c => c.id === camera);
       currentCamera = camera;
       updateCameraSelectValue();
+      populateResolutions();
       // If the next camera has no flash, reflect the forced-off state immediately.
       if (torchState === 'on' && newCameraInfo && !newCameraInfo.hasFlash) {
         try {
@@ -673,10 +721,8 @@
         currentCamera = settings.cameraId;
         updateCameraSelectValue();
       }
-      const resolutionSelect = getElById('resolutionSelect');
-      if (resolutionSelect && settings.resolution) {
-        resolutionSelect.value = settings.resolution;
-      }
+      if (settings.streamRes) desiredResolution = settings.streamRes;
+      populateResolutions();
       const zoom = getElById('zoom');
       const zoomVal = getElById('zoomVal');
       if (zoom && settings.zoom) {
@@ -711,6 +757,17 @@
         audioGain.value = settings.audioGain;
         if (audioGainVal) audioGainVal.textContent = settings.audioGain;
       }
+    }
+
+    // Badge showing the actual negotiated resolution (from decoded frames).
+    let lastStreamRes = '';
+    function setStreamResolution(w, h) {
+      if (!w || !h) return;
+      const label = w + '×' + h;
+      if (label === lastStreamRes) return;
+      lastStreamRes = label;
+      const badge = getElById('resolutionVal');
+      if (badge) badge.innerText = label;
     }
 
     function updateStatusOverlay(data) {

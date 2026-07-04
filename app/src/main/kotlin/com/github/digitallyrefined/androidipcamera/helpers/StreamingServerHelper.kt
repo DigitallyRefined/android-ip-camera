@@ -986,6 +986,7 @@ class StreamingServerHelper(
     private data class StreamSettings(
         val cameraId: String?,
         val resolution: String,
+        val streamRes: String,
         val zoom: String,
         val scale: String,
         val exposure: String,
@@ -1025,6 +1026,7 @@ class StreamingServerHelper(
             put("settings", JSONObject().apply {
                 put("cameraId", settings.cameraId)
                 put("resolution", settings.resolution)
+                put("streamRes", settings.streamRes)
                 put("zoom", settings.zoom)
                 put("scale", settings.scale)
                 put("exposure", settings.exposure)
@@ -1053,6 +1055,7 @@ class StreamingServerHelper(
             cameraId = prefs.getString("camera_id", null)
             ?: cameraList.firstOrNull()?.id,
             resolution = prefs.getString("camera_resolution", "low") ?: "low",
+            streamRes = prefs.getString("stream_res", "auto") ?: "auto",
             zoom = prefs.getString("camera_zoom", "1.0") ?: "1.0",
             scale = prefs.getString("stream_scale", "1.0") ?: "1.0",
             exposure = prefs.getString("camera_exposure", "0") ?: "0",
