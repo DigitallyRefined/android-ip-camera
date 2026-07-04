@@ -1009,6 +1009,7 @@ class StreamingServerHelper(
         val batteryPercent: Int,
         val wifiStrength: Int,
         val settings: StreamSettings,
+        val perCameraSettings: Map<String, Map<String, String>> = emptyMap(),
     ) {
         fun toJsonString(): String = JSONObject().apply {
             put("cameras", JSONArray().apply {
@@ -1027,6 +1028,13 @@ class StreamingServerHelper(
                                 })
                             }
                         })
+                        // Attach any stored per-camera lens/settings if available
+                        val lensMap = perCameraSettings[camera.id]
+                        if (lensMap != null && lensMap.isNotEmpty()) {
+                            put("lensSettings", JSONObject().apply {
+                                lensMap.forEach { (k, v) -> put(k, v) }
+                            })
+                        }
                     })
                 }
             })
@@ -1054,11 +1062,28 @@ class StreamingServerHelper(
     private fun buildDeviceInfo(): DeviceInfo {
         val idle = clients.isEmpty() && h264Clients.isEmpty()
         val cameraList = buildCameraInfoList(idle)
+        // Gather per-camera stored settings from SharedPreferences. Keys use suffixes like
+        // zoom_<cameraId>, exposure_<cameraId>, focus_<cameraId> which are already used
+        // by getStreamSettings()/handleRemoteControl.
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val perCamera = cameraList.associate { cam ->
+            val id = cam.id
+            val map = mutableMapOf<String, String>()
+            prefs.getString("zoom_$id", null)?.let { map["zoom"] = it }
+            prefs.getString("exposure_$id", null)?.let { map["exposure"] = it }
+            prefs.getString("focus_$id", null)?.let { map["focusDistance"] = it }
+            // Allow per-camera snapshot resolution if present, otherwise omit
+            prefs.getString("snapshot_res_$id", null)?.let { map["snapshotRes"] = it }
+            // Any other per-camera keys can be added here as needed.
+            id to map
+        }
+
         return DeviceInfo(
             cameras = cameraList,
             batteryPercent = getBatteryPercent(),
             wifiStrength = getWifiStrength(),
             settings = getStreamSettings(cameraList),
+            perCameraSettings = perCamera,
         )
     }
 

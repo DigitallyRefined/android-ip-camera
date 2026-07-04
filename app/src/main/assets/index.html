@@ -1057,7 +1057,10 @@
     }
 
     function setCamera(camera) {
-      sendControl('camera', camera);
+      // Ask the server to switch cameras, then refresh device info so the
+      // UI reflects any camera-specific settings the server provides.
+      const p = sendControl('camera', camera);
+      // Update local selection immediately for snappy UI
       const newCameraInfo = cameraList.find(c => c.id === camera);
       currentCamera = camera;
       updateCameraSelectValue();
@@ -1068,9 +1071,17 @@
           sendControl('torch', 'off');
         } catch (_) { }
         setTorchState('off');
-        return;
       }
       updateFlashButton();
+
+      // If the server provided per-camera lens settings in the camera object, apply
+      // them immediately
+      try {
+        if (newCameraInfo && newCameraInfo.lensSettings) {
+          // applyStreamSettings expects camelCase keys (e.g. focusDistance)
+          applyStreamSettings(newCameraInfo.lensSettings);
+        }
+      } catch (_) {}
     }
 
     function setView(mode) {
