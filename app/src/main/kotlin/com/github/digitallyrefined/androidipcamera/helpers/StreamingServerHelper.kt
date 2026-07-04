@@ -975,7 +975,7 @@ class StreamingServerHelper(
 
     private data class InfoSize(val w: Int, val h: Int)
 
-    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean)
+    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int)
 
     private data class CameraInfoSource(
         val id: String,
@@ -990,13 +990,18 @@ class StreamingServerHelper(
     private data class StreamSettings(
         val cameraId: String?,
         val resolution: String,
+        val streamRes: String,
         val zoom: String,
+        val focusDistance: String,
         val scale: String,
         val exposure: String,
         val contrast: String,
         val delay: String,
         val torch: String,
         val audioGain: String,
+        val manualRotate: Int,
+        val snapshotRes: String,
+        val focus: String,
     )
 
     private data class DeviceInfo(
@@ -1013,6 +1018,7 @@ class StreamingServerHelper(
                         put("facing", camera.facing)
                         put("label", camera.label)
                         put("hasFlash", camera.hasFlash)
+                        put("sensorOrientation", camera.sensorOrientation)
                         put("sizes", JSONArray().apply {
                             camera.sizes.forEach { size ->
                                 put(JSONObject().apply {
@@ -1029,6 +1035,7 @@ class StreamingServerHelper(
             put("settings", JSONObject().apply {
                 put("cameraId", settings.cameraId)
                 put("resolution", settings.resolution)
+                put("streamRes", settings.streamRes)
                 put("zoom", settings.zoom)
                 put("scale", settings.scale)
                 put("exposure", settings.exposure)
@@ -1036,6 +1043,10 @@ class StreamingServerHelper(
                 put("delay", settings.delay)
                 put("torch", settings.torch)
                 put("audioGain", settings.audioGain)
+                put("focusDistance", settings.focusDistance)
+                put("manualRotate", settings.manualRotate)
+                put("snapshotRes", settings.snapshotRes)
+                put("focus", settings.focus)
             })
         }.toString()
     }
@@ -1053,17 +1064,27 @@ class StreamingServerHelper(
 
     private fun getStreamSettings(cameraList: List<InfoCamera> = emptyList()): StreamSettings {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val cameraId = prefs.getString("camera_id", null) ?: cameraList.firstOrNull()?.id
+        // Per-camera prefs use suffixes like zoom_<id>, exposure_<id>, focus_<id>
+        val zoomPref = cameraId?.let { prefs.getString("zoom_$it", null) } ?: null
+        val exposurePref = cameraId?.let { prefs.getString("exposure_$it", null) } ?: null
+        val focusPref = cameraId?.let { prefs.getString("focus_$it", null) } ?: null
+
         return StreamSettings(
-            cameraId = prefs.getString("camera_id", null)
-            ?: cameraList.firstOrNull()?.id,
+            cameraId = cameraId,
             resolution = prefs.getString("camera_resolution", "low") ?: "low",
-            zoom = prefs.getString("camera_zoom", "1.0") ?: "1.0",
+            streamRes = prefs.getString("stream_res", "auto") ?: "auto",
+            zoom = zoomPref ?: prefs.getString("camera_zoom", "1.0") ?: "1.0",
+            focusDistance = focusPref ?: prefs.getString("focus_distance", "-1") ?: "-1",
             scale = prefs.getString("stream_scale", "1.0") ?: "1.0",
-            exposure = prefs.getString("camera_exposure", "0") ?: "0",
+            exposure = exposurePref ?: prefs.getString("camera_exposure", "0") ?: "0",
             contrast = prefs.getString("camera_contrast", "0") ?: "0",
             delay = prefs.getString("stream_delay", "33") ?: "33",
             torch = prefs.getString("camera_torch", "off") ?: "off",
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
+            manualRotate = prefs.getInt("camera_manual_rotate", 0),
+            snapshotRes = prefs.getString("snapshot_res", "max") ?: "max",
+            focus = prefs.getString("focus_$cameraId", "-1") ?: "-1",
         )
     }
 
@@ -1095,7 +1116,9 @@ class StreamingServerHelper(
                 // Some devices report flash on logical camera, others on physical
                 val hasFlash = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true ||
                     source.characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-                InfoCamera(source.id, source.facing, label, sizes, hasFlash)
+                val sensorOrientation = (ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
+                    ?: source.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)) ?: 0
+                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation)
             }
         } catch (_: Exception) {
             emptyList()

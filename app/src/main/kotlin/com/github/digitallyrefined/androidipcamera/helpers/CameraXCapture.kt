@@ -5,6 +5,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -56,7 +58,17 @@ class CameraXCapture(
     private var provider: ProcessCameraProvider? = null
     private var camera: androidx.camera.core.Camera? = null
     private var imageCapture: ImageCapture? = null
+    // Kept so a still can briefly rebind ImageCapture on demand (see captureStill).
+    private var boundSelector: CameraSelector? = null
+    private var analysisUseCase: ImageAnalysis? = null
+    private var previewUseCase: Preview? = null
+    private var capturing = false
+    @Volatile private var released = false
+    private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var torchEnabled = false
+    // Cached camera controls, re-applied after a rebind (which replaces the camera control).
+    @Volatile private var zoomRatio: Float? = null
+    @Volatile private var exposureIndex: Int? = null
     // Cached manual focus (0f..1f) so it can be re-applied after an async (re)bind; null = autofocus.
     @Volatile private var manualFocus: Float? = null
     private val main = ContextCompat.getMainExecutor(ctx)
@@ -94,59 +106,107 @@ class CameraXCapture(
                     analysisInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
                     Log.i(TAG, "AE fps range $it (auto within range)")
                 }
-                val analysis = aBuilder.build()
+                analysisUseCase = aBuilder.build()
                     .also { a -> a.setAnalyzer(analysisExec) { img -> width = img.width; height = img.height; onFrame(img) } }
+                // ImageCapture is NOT bound during streaming: co-binding a MAXIMUM still stream forces the
+                // HAL to cap ImageAnalysis at preview size. It is bound on demand in captureStill() instead,
+                // so the live analysis stream can use the full sensor resolution.
                 val imageCaptureBuilder = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)   // full-res stills
                 physicalCameraId?.let { Camera2Interop.Extender(imageCaptureBuilder).setPhysicalCameraId(it) }
                 imageCapture = imageCaptureBuilder.build()
-                val useCases = mutableListOf<androidx.camera.core.UseCase>(analysis, imageCapture!!)
-                previewSurfaceProvider?.let { provider ->
+                previewSurfaceProvider?.let { pv ->
                     val previewBuilder = Preview.Builder()
                     physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
-                    val preview = previewBuilder.build()
-                    preview.setSurfaceProvider(provider)
-                    useCases.add(0, preview)
+                    previewUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
-                val selector = logicalCameraId?.let { requestedId ->
+                boundSelector = logicalCameraId?.let { requestedId ->
                     CameraSelector.Builder()
                         .addCameraFilter { cameraInfos ->
                             cameraInfos.filter { Camera2CameraInfo.from(it).cameraId == requestedId }
                         }
                         .build()
                 } ?: if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
-                p.unbindAll()
-                camera = p.bindToLifecycle(owner, selector, *useCases.toTypedArray())
-                // setTorch() may be called before bind completes; re-apply cached state now that control exists.
-                if (torchEnabled) {
-                    try { camera?.cameraControl?.enableTorch(true) } catch (_: Exception) {}
-                }
-                // setManualFocus() may be called before bind completes; re-apply cached value now.
-                manualFocus?.let { setManualFocus(it) }
+                rebind(withCapture = false)
                 ready = true
                 Log.i(TAG, "bound desired ${desired.width}x${desired.height} front=$front cameraId=${cameraId ?: "default"}")
             } catch (e: Exception) { Log.e(TAG, "start: ${e.message}") }
         }, main)
     }
 
+    /** (Re)bind the streaming use cases on the main thread; [withCapture] adds ImageCapture for a still. */
+    private fun rebind(withCapture: Boolean) {
+        if (released) return
+        val p = provider ?: return
+        val sel = boundSelector ?: return
+        val analysis = analysisUseCase ?: return
+        val cases = mutableListOf<androidx.camera.core.UseCase>()
+        previewUseCase?.let { cases.add(it) }
+        cases.add(analysis)
+        if (withCapture) imageCapture?.let { cases.add(it) }
+        p.unbindAll()
+        camera = p.bindToLifecycle(owner, sel, *cases.toTypedArray())
+        // Re-apply cached controls, since rebinding replaces the camera control.
+        val cc = camera?.cameraControl
+        if (torchEnabled) try { cc?.enableTorch(true) } catch (_: Exception) {}
+        zoomRatio?.let { try { cc?.setZoomRatio(it) } catch (_: Exception) {} }
+        exposureIndex?.let { try { cc?.setExposureCompensationIndex(it) } catch (_: Exception) {} }
+        manualFocus?.let { setManualFocus(it) }
+    }
+
     override fun captureStill(onJpeg: (ByteArray?) -> Unit) {
         val ic = imageCapture ?: return onJpeg(null)
-        ic.takePicture(main, object : ImageCapture.OnImageCapturedCallback() {
-            override fun onCaptureSuccess(image: ImageProxy) {
-                try {
-                    val buf = image.planes[0].buffer
-                    val b = ByteArray(buf.remaining()); buf.get(b); onJpeg(b)
-                } catch (e: Exception) { Log.e(TAG, "read: ${e.message}"); onJpeg(null) }
-                finally { image.close() }
+        if (provider == null || released) return onJpeg(null)
+        // Briefly add ImageCapture (drops the live stream to preview size for the shot), then restore
+        // analysis-only so streaming returns to full resolution.
+        main.execute {
+            if (capturing || released) return@execute onJpeg(null)
+            capturing = true
+            var finished = false
+            fun done(result: ByteArray?) {
+                if (finished) return
+                finished = true
+                mainHandler.removeCallbacksAndMessages(null)
+                onJpeg(result)
+                restoreStreamBind()
             }
-            override fun onError(e: ImageCaptureException) { Log.e(TAG, "capture: ${e.message}"); onJpeg(null) }
-        })
+            try { rebind(withCapture = true) }
+            catch (e: Exception) { Log.e(TAG, "rebind capture: ${e.message}"); capturing = false; return@execute onJpeg(null) }
+            // Watchdog: if the HAL never calls back, don't leave `capturing` stuck (would reject all
+            // future stills) and don't strand the live stream at preview size.
+            mainHandler.postDelayed({ if (!finished) { Log.w(TAG, "capture timeout"); done(null) } }, 5000)
+            val shoot = Runnable {
+                if (finished) return@Runnable
+                ic.takePicture(main, object : ImageCapture.OnImageCapturedCallback() {
+                    override fun onCaptureSuccess(image: ImageProxy) {
+                        val b = try {
+                            val buf = image.planes[0].buffer
+                            ByteArray(buf.remaining()).also { buf.get(it) }
+                        } catch (e: Exception) { Log.e(TAG, "read: ${e.message}"); null } finally { image.close() }
+                        done(b)
+                    }
+                    override fun onError(e: ImageCaptureException) { Log.e(TAG, "capture: ${e.message}"); done(null) }
+                })
+            }
+            // Wait for the re-applied zoom to actually take effect on the new camera, else the still
+            // would be captured at the reset (1.0x) zoom.
+            val zoomFuture = zoomRatio?.let { r -> try { camera?.cameraControl?.setZoomRatio(r) } catch (_: Exception) { null } }
+            if (zoomFuture != null) zoomFuture.addListener(shoot, main) else shoot.run()
+        }
+    }
+
+    /** Restore the analysis-only (full-resolution) bind after a still. */
+    private fun restoreStreamBind() {
+        main.execute {
+            try { rebind(withCapture = false) } catch (e: Exception) { Log.e(TAG, "rebind stream: ${e.message}") }
+            finally { capturing = false }
+        }
     }
 
     override fun getTorch(): Boolean = torchEnabled
     override fun setTorch(on: Boolean) { torchEnabled = on; try { camera?.cameraControl?.enableTorch(on) } catch (_: Exception) {} }
-    override fun setExposure(ev: Int) { try { camera?.cameraControl?.setExposureCompensationIndex(ev) } catch (_: Exception) {} }
-    override fun setZoom(ratio: Float) { try { camera?.cameraControl?.setZoomRatio(ratio) } catch (_: Exception) {} }
+    override fun setExposure(ev: Int) { exposureIndex = ev; try { camera?.cameraControl?.setExposureCompensationIndex(ev) } catch (_: Exception) {} }
+    override fun setZoom(ratio: Float) { zoomRatio = ratio; try { camera?.cameraControl?.setZoomRatio(ratio) } catch (_: Exception) {} }
     @OptIn(ExperimentalCamera2Interop::class)
     override fun triggerAutoFocus() {
         try {
@@ -206,9 +266,12 @@ class CameraXCapture(
 
     override fun stop() {
         ready = false
+        released = true               // block any in-flight capture callback from rebinding
+        capturing = false
+        mainHandler.removeCallbacksAndMessages(null)
         try { provider?.unbindAll() } catch (_: Exception) {}
         try { analysisExec.shutdown() } catch (_: Exception) {}
-        camera = null; imageCapture = null
+        provider = null; camera = null; imageCapture = null
     }
 
     companion object { private const val TAG = "CameraXCapture" }

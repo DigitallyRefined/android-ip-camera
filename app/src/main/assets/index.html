@@ -217,6 +217,15 @@
       text-align: center;
     }
 
+    .stream-title {
+      font-size: 12px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: bold;
+      margin: 22px 0 6px;
+    }
+
     @media (max-width: 900px) {
       .main {
         flex-direction: column;
@@ -265,11 +274,11 @@
           <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
         </div>
 
-        <button class='btn btn-action' data-control='rotate' data-value='90'>Rotate 90&deg;</button>
+        <button class='btn btn-action' onclick='rotate90()'>Rotate 90&deg;</button>
 
-        <div style="margin-bottom: 15px">
-          <button id="muteBtn" class="btn btn-action" style='width: 49%;'>🔇 Unmute Audio</button>
-          <button id="flashBtn" class="btn btn-action" style='width: 49%;'>💡 Flash On</button>
+        <div>
+          <button id="muteBtn" class="btn btn-action" style="width: 49%;">🔇 Unmute Audio</button>
+          <button id="flashBtn" class="btn btn-action" style="width: 49%;">💡 Flash On</button>
         </div>
 
         <div id="audioControls">
@@ -281,14 +290,15 @@
             data-control='audio_gain' data-badge='audioGainVal'>
         </div>
 
+        <div>
+          <button id="modeMjpegBtn" class="btn btn-action" style="width: 49%;">MJPEG</button>
+          <button id="modeH264Btn" class="btn btn-action" style="width: 49%;">H.264</button>
+        </div>
+
         <p class="group-title">Camera Control</p>
 
-        <label for="resolutionSelect">Resolution</label>
-        <select id="resolutionSelect" style="margin-bottom: 20px" data-control='resolution'>
-          <option value='low'>Low (Fastest)</option>
-          <option value='medium'>Medium</option>
-          <option value='high'>High (Sharpest)</option>
-        </select>
+        <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
+        <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
 
         <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
         <input id="zoom" type='range' min='1' max='8' step='0.1' value='1.0'
@@ -299,7 +309,7 @@
           data-control='exposure' data-badge='exposureVal'>
 
         <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
-        <input id="focusDistance" type='range' type='range' min='-0.05' max='1' step='0.05' value='-1'
+        <input id="focusDistance" type='range' min='-0.05' max='1' step='0.05' value='-1'
           data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
 
         <p class="group-title">Post Processing</p>
@@ -314,6 +324,19 @@
 
         <label for="delay">Frame Delay (ms)</label>
         <input id="delay" type='number' min='10' max='1000' value='33' data-control='delay'>
+
+        <div style="margin-top:12px;">
+          <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
+        </div>
+
+        <p class="group-title">Snapshot</p>
+
+        <label for="snapshotRes">Snapshot Resolution</label>
+        <select id="snapshotRes" style="margin-bottom: 12px" data-control="snapshot_res">
+          <option value="stream">Match stream (fast)</option>
+          <option value="max">Max (full sensor)</option>
+        </select>
+        <button id="snapBtn" class="btn btn-action" onclick="window.open('/video/snapshot','_blank')">📸 Take Snapshot</button>
       </div>
 
       <p class="notice">Some changes will momentarily restart the camera.</p>
@@ -398,7 +421,7 @@
       flashBtn.addEventListener('click', () => {
         const next = (torchState === 'on') ? 'off' : 'on';
         try {
-          fetch('/?torch=' + next).catch(() => { });
+          sendControl('torch', next);
         } catch (_) { }
         setTorchState(next);
       });
@@ -460,6 +483,13 @@
       return lastControlTs;
     }
 
+    // Centralized control sender used by data-control bindings and ad-hoc actions.
+    function sendControl(param, val) {
+      try {
+        return fetch('/?' + encodeURIComponent(param) + '=' + encodeURIComponent(val) + '&ts=' + nextControlTs()).catch(() => {});
+      } catch (_) { /* swallow */ }
+    }
+
     function formatControlValue(el) {
       const v = el.value;
       switch (el.dataset.fmt) {
@@ -482,16 +512,14 @@
       let lastSentValue = null;
       let timer = null;
 
-      function doFetch(val) {
-        fetch('/?' + param + '=' + encodeURIComponent(val) + '&ts=' + nextControlTs()).catch(() => {});
-      }
+
 
       // Buttons send their configured value immediately on click
       if (el.tagName === 'BUTTON') {
         el.addEventListener('click', () => {
           const val = el.dataset.value !== undefined ? el.dataset.value : (el.value !== undefined ? el.value : '');
           if (badge) badge.innerText = val;
-          doFetch(val);
+          sendControl(param, val);
         });
         return;
       }
@@ -502,7 +530,7 @@
         if (val === lastSentValue) return;
         lastSentValue = val;
         lastSentAt = Date.now();
-        doFetch(val);
+        sendControl(param, val);
       }
 
       function schedule() {
@@ -525,6 +553,47 @@
     }
 
     document.querySelectorAll('[data-control]').forEach(bindControl);
+
+    // Reset controls to the app's initial defaults (as shipped):
+    // resolution -> 'auto' (use Auto mode), zoom -> 1.0, exposure -> 0, focus -> -1 (auto), scale -> 1.0, contrast -> 0, delay -> 33ms
+    function resetToDefaults() {
+      const defaults = {
+        resolution: 'auto',
+        zoom: '1.0',
+        exposure: '0',
+        focus_distance: '-1',
+        scale: '1.0',
+        contrast: '0',
+        delay: '33'
+      };
+
+      // Update UI controls where possible
+      try {
+        // Resolution select is camera-specific; set dropdown to 'auto' visually and send camera pref 'low'
+        const resSelect = getElById('resolutionSelect');
+        if (resSelect) { desiredResolution = 'auto'; resSelect.value = 'auto'; }
+
+        const zoomEl = getElById('zoom'); if (zoomEl) { zoomEl.value = defaults.zoom; const b = getElById('zoomVal'); if (b) b.textContent = formatControlValue(zoomEl); }
+        const exposureEl = getElById('exposure'); if (exposureEl) { exposureEl.value = defaults.exposure; const b = getElById('exposureVal'); if (b) b.textContent = formatControlValue(exposureEl); }
+        const focusEl = getElById('focusDistance'); if (focusEl) { focusEl.value = defaults.focus_distance; const b = getElById('focusVal'); if (b) b.textContent = formatControlValue(focusEl); }
+        const scaleEl = getElById('scale'); if (scaleEl) { scaleEl.value = defaults.scale; const b = getElById('scaleVal'); if (b) b.textContent = formatControlValue(scaleEl); }
+        const contEl = getElById('contrast'); if (contEl) { contEl.value = defaults.contrast; const b = getElById('contVal'); if (b) b.textContent = formatControlValue(contEl); }
+        const delayEl = getElById('delay'); if (delayEl) { delayEl.value = defaults.delay; }
+      } catch (_) {}
+
+      // Send server-side control updates
+      try {
+        sendControl('resolution', defaults.resolution);
+        sendControl('zoom', defaults.zoom);
+        sendControl('exposure', defaults.exposure);
+        sendControl('focus_distance', defaults.focus_distance);
+        sendControl('scale', defaults.scale);
+        sendControl('contrast', defaults.contrast);
+        sendControl('delay', defaults.delay);
+      } catch (_) {}
+    }
+
+    getElById('resetDefaultsBtn')?.addEventListener('click', resetToDefaults);
 
     function startMjpegStream() {
       if (!streamCanvas)
@@ -634,6 +703,7 @@
               ctx.clearRect(0, 0, w, h);
               ctx.drawImage(candidate.bmp, dx, dy, dw, dh);
               lastDrawn = candidate.bmp;
+              setStreamResolution(iw, ih);
             }
             requestAnimationFrame(drawLoop);
           }
@@ -645,7 +715,7 @@
         .catch(() => { mjpegRunning = false; });
     }
 
-    loadDeviceInfo(true).finally(() => startMjpegStream());
+    loadDeviceInfo(true).finally(() => initStreamUi());
     setInterval(() => loadDeviceInfo(false), 60000);
 
     function stopMjpegStream() {
@@ -654,6 +724,157 @@
       }
       mjpegAbort = null;
       mjpegRunning = false;
+      drawing = false;   // let the rAF draw loop exit (esp. when switching to H.264)
+    }
+
+    // ---- Stream mode: MJPEG (universal) vs H.264 decoded in-browser via WebCodecs ----
+    let streamMode = 'mjpeg';
+    // MJPEG is rotated server-side; the raw H.264 stream isn't, so the H.264 player rotates on
+    // draw by (sensorOrientation + manualRotate), mirroring what the MJPEG encoder bakes in.
+    let manualRotate = 0;
+    function rotate90() {
+      manualRotate = (manualRotate + 90) % 360;
+      sendControl('rotate', '90');
+    }
+    function h264Rotation() {
+      const c = selectedCameraInfo();
+      return (((c && c.sensorOrientation) || 0) + manualRotate) % 360;
+    }
+    const h264Supported = ('VideoDecoder' in window) && ('EncodedVideoChunk' in window);
+    const baseUrl = () => location.protocol + '//' + location.host;
+
+    function initStreamUi() {
+      const h = getElById('modeH264Btn');
+      const ext = getElById('streamExtUrl');
+      if (ext) ext.value = baseUrl() + '/video/h264';
+      const mj = getElById('modeMjpegBtn');
+      if (mj) mj.addEventListener('click', () => setStreamMode('mjpeg'));
+      if (h) h.addEventListener('click', () => {
+        if (!window.isSecureContext) {
+          alert('H.264 requires HTTPS/TLS. Enable TLS in the app settings to use H.264');
+          return;
+        }
+        if (!h264Supported) {
+          alert('H.264 is not supported in this browser (WebCodecs unavailable)');
+          return;
+        }
+        setStreamMode('h264');
+      });
+      if (h) {
+        if (!window.isSecureContext) {
+          // Keep the button clickable so we can show an explanatory alert when users try to use it.
+          h.textContent = 'H.264 (N/A)';
+          h.title = 'In-browser H.264 requires HTTPS/TLS (enable TLS in app settings)';
+        } else if (!h264Supported) {
+          h.title = 'This browser has no WebCodecs H.264 decoder';
+        }
+      }
+      // Default selection: prefer H.264 when running in a secure context and
+      // the browser supports WebCodecs H.264; otherwise fall back to MJPEG.
+      const defaultMode = (h264Supported && window.isSecureContext) ? 'h264' : 'mjpeg';
+      setStreamMode(defaultMode);
+    }
+
+    function setStreamMode(mode) {
+      if (mode === 'h264' && !h264Supported) mode = 'mjpeg';
+      streamMode = mode;
+      const mj = getElById('modeMjpegBtn'), h = getElById('modeH264Btn');
+      if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
+      if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
+      if (mode === 'mjpeg') {
+        stopH264Stream();
+        startMjpegStream();
+      } else {
+        stopMjpegStream();
+        startH264Stream();
+      }
+    }
+
+    // Minimal WebCodecs H.264 player: parse the Annex-B elementary stream into access
+    // units and feed them to a VideoDecoder, drawing frames onto the same canvas.
+    let h264Abort = null;
+    let h264Decoder = null;
+    function stopH264Stream() {
+      if (h264Abort) { try { h264Abort.abort(); } catch (_) { } h264Abort = null; }
+      if (h264Decoder) { try { h264Decoder.close(); } catch (_) { } h264Decoder = null; }
+    }
+    async function startH264Stream() {
+      if (!h264Supported) return;
+      stopH264Stream();
+      const ctx = streamCanvas.getContext('2d');
+      const controller = new AbortController();
+      h264Abort = controller;
+      let configured = false, ts = 0;
+      let au = [], auHasVcl = false, auKey = false;
+      const decoder = new VideoDecoder({
+        output: (frame) => {
+          try {
+            const rot = h264Rotation();
+            const fw = frame.displayWidth, fh = frame.displayHeight;
+            const swap = (rot === 90 || rot === 270);
+            const cw = swap ? fh : fw, ch = swap ? fw : fh;   // canvas content dims after rotation
+            const size = targetCanvasSize({ width: cw, height: ch });
+            applyCanvasSize(size);
+            const s = Math.min(size.w / cw, size.h / ch);
+            ctx.clearRect(0, 0, size.w, size.h);
+            ctx.save();
+            ctx.translate(size.w / 2, size.h / 2);
+            if (rot) ctx.rotate(rot * Math.PI / 180);
+            ctx.drawImage(frame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
+            ctx.restore();
+          } finally { frame.close(); }
+        },
+        error: (e) => console.error('H.264 decode:', e)
+      });
+      h264Decoder = decoder;
+      const hex = (n) => n.toString(16).padStart(2, '0');
+      const flush = () => {
+        if (!configured || !au.length) { au = []; auHasVcl = false; auKey = false; return; }
+        let len = au.reduce((a, n) => a + 4 + n.length, 0);
+        const data = new Uint8Array(len); let o = 0;
+        for (const n of au) { data[o + 3] = 1; o += 4; data.set(n, o); o += n.length; }  // 00 00 00 01 start code
+        try { decoder.decode(new EncodedVideoChunk({ type: auKey ? 'key' : 'delta', timestamp: ts, data })); ts += 33333; }
+        catch (e) { console.error('decode:', e); }
+        au = []; auHasVcl = false; auKey = false;
+      };
+      const onNal = (nal) => {
+        if (!nal.length) return;
+        const type = nal[0] & 0x1f;
+        if (type === 7 && !configured) {
+          try { decoder.configure({ codec: 'avc1.' + hex(nal[1]) + hex(nal[2]) + hex(nal[3]), optimizeForLatency: true }); configured = true; }
+          catch (e) { console.error('configure:', e); }
+        }
+        const isVcl = type >= 1 && type <= 5;
+        if (isVcl && auHasVcl) flush();            // a new VCL starts the next access unit
+        au.push(nal.slice());
+        if (isVcl) { auHasVcl = true; if (type === 5) auKey = true; }
+      };
+      let resp;
+      try { resp = await fetch(baseUrl() + '/video/h264', { signal: controller.signal }); } catch (_) { return; }
+      const reader = resp.body.getReader();
+      let buf = new Uint8Array(0);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || controller.signal.aborted) break;
+          const merged = new Uint8Array(buf.length + value.length);
+          merged.set(buf); merged.set(value, buf.length); buf = merged;
+          // Collect start-code positions, emit each complete NAL, keep the trailing partial.
+          const starts = [];
+          for (let i = 0; i + 3 < buf.length;) {
+            if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1) { starts.push([i, i + 3]); i += 3; }
+            else if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 0 && buf[i + 3] === 1) { starts.push([i, i + 4]); i += 4; }
+            else i++;
+          }
+          if (starts.length < 2) {
+            // Guard against unbounded growth if the response isn't an Annex-B stream (e.g. an error page).
+            if (buf.length > 8000000) { console.error('H.264: no start codes found, resetting buffer'); buf = new Uint8Array(0); }
+            continue;
+          }
+          for (let k = 0; k < starts.length - 1; k++) onNal(buf.subarray(starts[k][1], starts[k + 1][0]));
+          buf = buf.slice(starts[starts.length - 1][0]);
+        }
+      } catch (_) { }
     }
 
     document.addEventListener('visibilitychange', () => {
@@ -668,9 +889,10 @@
           audioEl.load();
         }
         stopMjpegStream();
+        stopH264Stream();
       } else {
-        // Restart only the image stream on foreground
-        startMjpegStream();
+        // Restart the currently selected stream on foreground
+        if (streamMode === 'h264') startH264Stream(); else startMjpegStream();
       }
     });
 
@@ -724,17 +946,68 @@
       appendCameraGroup(select, 'back', 'Back');
       appendCameraGroup(select, 'front', 'Front');
       updateCameraSelectValue();
+      populateResolutions();
+    }
+
+    // Resolution dropdown is built from the sizes the camera reports, plus "Auto".
+    let desiredResolution = 'auto';
+
+    function selectedCameraInfo() {
+      return cameraList.find(camera => camera.id === currentCamera)
+        || camerasForFacing(currentCameraFacing())[0]
+        || cameraList[0]
+        || null;
+    }
+
+    function resolutionLabel(w, h) {
+      return w + '×' + h + ' · ' + ((w * h) / 1e6).toFixed(1) + ' MP';
+    }
+
+    function populateResolutions() {
+      const select = getElById('resolutionSelect');
+      if (!select) return;
+      const cam = selectedCameraInfo();
+      const sizes = (cam && Array.isArray(cam.sizes)) ? cam.sizes : [];
+      select.innerHTML = '';
+      const auto = document.createElement('option');
+      auto.value = 'auto';
+      auto.textContent = 'Auto';
+      select.appendChild(auto);
+      sizes.forEach(s => {
+        if (!s || !s.w || !s.h) return;
+        const opt = document.createElement('option');
+        opt.value = s.w + 'x' + s.h;
+        opt.textContent = resolutionLabel(s.w, s.h);
+        select.appendChild(opt);
+      });
+      const available = Array.from(select.options).some(o => o.value === desiredResolution);
+      if (available) {
+        select.value = desiredResolution;
+      } else if (desiredResolution !== 'auto') {
+        // Chosen size isn't supported by this camera: reconcile to Auto so the
+        // dropdown, desiredResolution and the server pref stay in sync.
+        setResolution('auto');
+        select.value = 'auto';
+      } else {
+        select.value = 'auto';
+      }
+    }
+
+    function setResolution(value) {
+      desiredResolution = value;
+      sendControl('resolution', value);
     }
 
     function setCamera(camera) {
-      fetch("/?camera=" + encodeURIComponent(camera));
+      sendControl('camera', camera);
       const newCameraInfo = cameraList.find(c => c.id === camera);
       currentCamera = camera;
       updateCameraSelectValue();
+      populateResolutions();
       // If the next camera has no flash, reflect the forced-off state immediately.
       if (torchState === 'on' && newCameraInfo && !newCameraInfo.hasFlash) {
         try {
-          fetch('/?torch=off').catch(() => { });
+          sendControl('torch', 'off');
         } catch (_) { }
         setTorchState('off');
         return;
@@ -764,10 +1037,17 @@
         currentCamera = settings.cameraId;
         updateCameraSelectValue();
       }
-      const resolutionSelect = getElById('resolutionSelect');
-      if (resolutionSelect && settings.resolution) {
-        resolutionSelect.value = settings.resolution;
+      if (settings.streamRes) desiredResolution = settings.streamRes;
+      if (settings.manualRotate != null) manualRotate = settings.manualRotate;
+      // Snapshot resolution: prefer server setting, otherwise default to 'stream'.
+      // Some older clients/servers use 'match' to mean the stream — normalize it to server value 'stream'.
+      const sr = getElById('snapshotRes');
+      if (sr) {
+        let sVal = (settings.snapshotRes !== undefined && settings.snapshotRes !== null) ? String(settings.snapshotRes) : 'stream';
+        if (sVal === 'match') sVal = 'stream';
+        sr.value = sVal;
       }
+      populateResolutions();
       const zoom = getElById('zoom');
       const zoomVal = getElById('zoomVal');
       if (zoom && settings.zoom) {
@@ -802,6 +1082,41 @@
         audioGain.value = settings.audioGain;
         if (audioGainVal) audioGainVal.textContent = settings.audioGain;
       }
+
+      // Populate any remaining controls that use `data-control` from the settings
+      // mapping snake_case -> camelCase (e.g. audio_gain -> audioGain).
+      const toCamel = (s) => s.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
+      document.querySelectorAll('[data-control]').forEach(el => {
+        const param = el.dataset.control;
+        if (!param) return;
+        const key = toCamel(param);
+        const serverVal = settings[key];
+        // If server provided a value, set it in the control (but don't send back).
+        if (serverVal !== undefined && serverVal !== null) {
+          try { el.value = serverVal; } catch (_) { }
+        } else {
+          // Ensure selects default to their first option if not set
+          if (el.tagName === 'SELECT' && !el.value) {
+            el.selectedIndex = 0;
+          }
+        }
+        // Update any badge showing the formatted value
+        if (el.dataset.badge) {
+          const b = getElById(el.dataset.badge);
+          if (b) b.textContent = formatControlValue(el);
+        }
+      });
+    }
+
+    // Badge showing the actual negotiated resolution (from decoded frames).
+    let lastStreamRes = '';
+    function setStreamResolution(w, h) {
+      if (!w || !h) return;
+      const label = w + '×' + h;
+      if (label === lastStreamRes) return;
+      lastStreamRes = label;
+      const badge = getElById('resolutionVal');
+      if (badge) badge.innerText = label;
     }
 
     function updateStatusOverlay(data) {

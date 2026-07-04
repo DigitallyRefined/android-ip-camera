@@ -480,7 +480,12 @@ class StreamingService : LifecycleService() {
             val hadViewers = streamingServerHelper?.getH264Clients()?.isNotEmpty() == true
 
             val live = backend
-            if (live != null && targetFront == frontFacing && targetCameraId == selectedCameraId) return captureFrom(live, key) ?: snapCache[key]
+            if (live != null && targetFront == frontFacing && targetCameraId == selectedCameraId) {
+                // "stream": reuse the last streamed frame (no camera rebind); "max": full-res capture.
+                val res = PreferenceManager.getDefaultSharedPreferences(this).getString("snapshot_res", "max")
+                if (res == "stream") mjpegStreamingEncoder?.lastFrame()?.let { return it }
+                return captureFrom(live, key) ?: snapCache[key]
+            }
 
             val orig = frontFacing
             val origCameraId = selectedCameraId
@@ -597,7 +602,10 @@ class StreamingService : LifecycleService() {
     private fun handleRemoteControl(key: String, value: String, ts: Long = 0L) {
         if (!acceptControl(key, ts)) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val id = camId()
+        // Use the stored camera preference key when persisting per-camera settings so
+        // reads from getStreamSettings() (which uses the saved `camera_id`) match.
+        val storedCameraPref = prefs.getString(PREF_CAMERA_ID, null)
+        val id = storedCameraPref ?: camId()
         when (key) {
             "torch" -> {
                 val current = backend?.getTorch() ?: false
@@ -624,6 +632,9 @@ class StreamingService : LifecycleService() {
                 if (f < 0f) prefs.edit().remove("focus_$id").apply()
                 else prefs.edit().putString("focus_$id", f.coerceIn(0f, 1f).toString()).apply()
                 launchMain { backend?.setManualFocus(f) }
+            }
+            "snapshot_res" -> {
+                if (value == "max" || value == "stream") prefs.edit().putString("snapshot_res", value).apply()
             }
             "camera" -> {
                 val keepTorchOn = backend?.getTorch() == true
