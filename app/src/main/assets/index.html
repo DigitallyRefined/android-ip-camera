@@ -171,6 +171,15 @@
       margin-bottom: 15px;
     }
 
+    .group-title {
+      font-size: 12px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: bold;
+      margin: 22px 0 14px;
+    }
+
     label {
       display: block;
       margin-bottom: 5px;
@@ -206,21 +215,6 @@
       color: #555;
       font-size: 11px;
       text-align: center;
-    }
-
-    .group-title {
-      font-size: 12px;
-      color: #aaa;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      font-weight: bold;
-      margin: 22px 0 2px;
-    }
-
-    .group-hint {
-      color: #666;
-      font-size: 11px;
-      margin: 0 0 14px;
     }
 
     @media (max-width: 900px) {
@@ -288,7 +282,6 @@
         </div>
 
         <p class="group-title">Camera Control</p>
-        <p class="group-hint">Adjusts the actual camera hardware (sensor &amp; lens) &mdash; not a digital effect.</p>
 
         <label for="resolutionSelect">Resolution</label>
         <select id="resolutionSelect" style="margin-bottom: 20px" onchange='fetch("/?resolution="+this.value)'>
@@ -306,7 +299,6 @@
           data-control='exposure' data-badge='exposureVal'>
 
         <p class="group-title">Post Processing</p>
-        <p class="group-hint">Applied to the video stream after capture (digital, does not touch the camera).</p>
 
         <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
         <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='1.0'
