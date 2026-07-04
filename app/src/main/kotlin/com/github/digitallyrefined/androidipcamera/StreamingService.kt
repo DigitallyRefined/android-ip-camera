@@ -479,7 +479,12 @@ class StreamingService : LifecycleService() {
             val hadViewers = streamingServerHelper?.getH264Clients()?.isNotEmpty() == true
 
             val live = backend
-            if (live != null && targetFront == frontFacing && targetCameraId == selectedCameraId) return captureFrom(live, key) ?: snapCache[key]
+            if (live != null && targetFront == frontFacing && targetCameraId == selectedCameraId) {
+                // "stream": reuse the last streamed frame (no camera rebind); "max": full-res capture.
+                val res = PreferenceManager.getDefaultSharedPreferences(this).getString("snapshot_res", "max")
+                if (res == "stream") mjpegStreamingEncoder?.lastFrame()?.let { return it }
+                return captureFrom(live, key) ?: snapCache[key]
+            }
 
             val orig = frontFacing
             val origCameraId = selectedCameraId
@@ -604,6 +609,9 @@ class StreamingService : LifecycleService() {
                 launchMain { backend?.setZoom(z) }
             }
             "focus" -> launchMain { backend?.triggerAutoFocus() }
+            "snapshot_res" -> {
+                if (value == "max" || value == "stream") prefs.edit().putString("snapshot_res", value).apply()
+            }
             "camera" -> {
                 val keepTorchOn = backend?.getTorch() == true
                 val target = resolveCamera(value) ?: return

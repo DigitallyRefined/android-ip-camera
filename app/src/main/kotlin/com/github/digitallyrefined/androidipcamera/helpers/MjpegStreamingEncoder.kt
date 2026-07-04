@@ -69,7 +69,12 @@ class MjpegStreamingEncoder(
         broadcastJpeg(jpegBytes)
     }
 
+    // Latest JPEG sent to clients, so a "match stream" snapshot can reuse it without a camera rebind.
+    @Volatile private var lastJpeg: ByteArray? = null
+    fun lastFrame(): ByteArray? = lastJpeg
+
     private fun broadcastJpeg(jpegBytes: ByteArray) {
+        lastJpeg = jpegBytes
         val helper = streamingServerHelper ?: return
         val clients = helper.getClients()
         if (clients.isEmpty()) return

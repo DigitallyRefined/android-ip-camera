@@ -995,6 +995,7 @@ class StreamingServerHelper(
         val torch: String,
         val audioGain: String,
         val manualRotate: Int,
+        val snapshotRes: String,
     )
 
     private data class DeviceInfo(
@@ -1037,6 +1038,7 @@ class StreamingServerHelper(
                 put("torch", settings.torch)
                 put("audioGain", settings.audioGain)
                 put("manualRotate", settings.manualRotate)
+                put("snapshotRes", settings.snapshotRes)
             })
         }.toString()
     }
@@ -1067,6 +1069,7 @@ class StreamingServerHelper(
             torch = prefs.getString("camera_torch", "off") ?: "off",
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
             manualRotate = prefs.getInt("camera_manual_rotate", 0),
+            snapshotRes = prefs.getString("snapshot_res", "max") ?: "max",
         )
     }
 

@@ -297,7 +297,12 @@
           <label for="streamExtUrl">Open in an external player (VLC / ffplay)</label>
           <input id="streamExtUrl" type="text" readonly onclick="this.select()">
         </div>
-        <p class="stream-hint">Full-resolution photo: <a id="snapLink" href="/video/snapshot" target="_blank" style="color:#007AFF">/video/snapshot</a> &mdash; briefly drops the live stream to preview size while the shot is taken.</p>
+        <label for="snapshotRes">Snapshot resolution</label>
+        <select id="snapshotRes" style="margin-bottom: 8px" onchange='fetch("/?snapshot_res=" + this.value)'>
+          <option value='max'>Max (full sensor)</option>
+          <option value='stream'>Match stream (fast)</option>
+        </select>
+        <p class="stream-hint"><a id="snapLink" href="/video/snapshot" target="_blank" style="color:#007AFF">Take snapshot</a> &mdash; <b>Max</b> captures the full sensor (briefly drops the live stream to preview size); <b>Match stream</b> reuses the current frame at the stream resolution (instant).</p>
 
         <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
         <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
@@ -888,6 +893,7 @@
       }
       if (settings.streamRes) desiredResolution = settings.streamRes;
       if (settings.manualRotate != null) manualRotate = settings.manualRotate;
+      if (settings.snapshotRes) { const sr = getElById('snapshotRes'); if (sr) sr.value = settings.snapshotRes; }
       populateResolutions();
       const zoom = getElById('zoom');
       const zoomVal = getElById('zoomVal');
