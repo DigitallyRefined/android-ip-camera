@@ -274,8 +274,6 @@
           <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
         </div>
 
-        <button class='btn btn-action' onclick='rotate90()'>Rotate 90&deg;</button>
-
         <div>
           <button id="muteBtn" class="btn btn-action" style="width: 49%;">🔇 Unmute Audio</button>
           <button id="flashBtn" class="btn btn-action" style="width: 49%;">💡 Flash On</button>
@@ -311,6 +309,17 @@
         <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
         <input id="focusDistance" type='range' min='-0.05' max='1' step='0.05' value='-1'
           data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
+
+        <div style="margin-bottom: 12px">
+          <label for="rotate">Rotation <span class='val-badge' id='rotateVal'>0°</span></label>
+          <input id="rotate" type="range" min="0" max="359" step="1" value="0" data-control="rotate" data-badge="rotateVal" data-fmt="suffix" data-suffix="°" style="margin-bottom: 8px;">
+          <div style="display:flex;gap:8px;margin-bottom:8px;width:100%;">
+            <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0">0°</button>
+            <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90">90°</button>
+            <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180">180°</button>
+            <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270">270°</button>
+          </div>
+        </div>
 
         <p class="group-title">Post Processing</p>
 
@@ -519,7 +528,14 @@
         el.addEventListener('click', () => {
           const val = el.dataset.value !== undefined ? el.dataset.value : (el.value !== undefined ? el.value : '');
           if (badge) badge.innerText = val;
-          sendControl(param, val);
+          // If this is the rotate control, use setRotation so the slider
+          // and internal `rotate` var are updated and the control is
+          // sent only once (setRotation calls sendControl).
+          if (param === 'rotate') {
+            try { setRotation(parseInt(val, 10) || 0); } catch (_) { sendControl(param, val); }
+          } else {
+            sendControl(param, val);
+          }
         });
         return;
       }
@@ -545,6 +561,13 @@
       el.addEventListener('input', () => {
         if (badge) badge.innerText = formatControlValue(el);
         if (el.dataset.setview) setView(el.dataset.setview);
+        // If this is the rotate slider, update the local rotation immediately
+        if (param === 'rotate') {
+          try {
+            const v = parseInt(el.value, 10) || 0;
+            rotate = ((v % 360) + 360) % 360;
+          } catch (_) {}
+        }
         schedule();
       });
       el.addEventListener('change', send); // final value on release
@@ -564,7 +587,8 @@
         focus_distance: '-1',
         scale: '1.0',
         contrast: '0',
-        delay: '33'
+        delay: '33',
+        rotate: '0'
       };
 
       // Update UI controls where possible
@@ -579,6 +603,7 @@
         const scaleEl = getElById('scale'); if (scaleEl) { scaleEl.value = defaults.scale; const b = getElById('scaleVal'); if (b) b.textContent = formatControlValue(scaleEl); }
         const contEl = getElById('contrast'); if (contEl) { contEl.value = defaults.contrast; const b = getElById('contVal'); if (b) b.textContent = formatControlValue(contEl); }
         const delayEl = getElById('delay'); if (delayEl) { delayEl.value = defaults.delay; }
+        const rotEl = getElById('rotate'); if (rotEl) { try { setRotation(parseInt(defaults.rotate, 10) || 0); } catch (_) { rotEl.value = defaults.rotate; const rb = getElById('rotateVal'); if (rb) rb.textContent = `${defaults.rotate}°`; } }
       } catch (_) {}
 
       // Send server-side control updates
@@ -730,15 +755,27 @@
     // ---- Stream mode: MJPEG (universal) vs H.264 decoded in-browser via WebCodecs ----
     let streamMode = 'mjpeg';
     // MJPEG is rotated server-side; the raw H.264 stream isn't, so the H.264 player rotates on
-    // draw by (sensorOrientation + manualRotate), mirroring what the MJPEG encoder bakes in.
-    let manualRotate = 0;
-    function rotate90() {
-      manualRotate = (manualRotate + 90) % 360;
-      sendControl('rotate', '90');
+    // draw by (sensorOrientation + rotate), mirroring what the MJPEG encoder bakes in.
+    let rotate = 0;
+
+    function setRotation(angle) {
+      const el = getElById('rotate');
+      const badge = getElById('rotateVal');
+      try {
+        if (el) {
+          el.value = String(angle);
+          // Trigger input/change so other listeners update badges/UI
+          try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+          try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+        }
+        if (badge) badge.textContent = `${angle}°`;
+      } catch (_) {}
+      rotate = ((angle % 360) + 360) % 360;
     }
+
     function h264Rotation() {
       const c = selectedCameraInfo();
-      return (((c && c.sensorOrientation) || 0) + manualRotate) % 360;
+      return (((c && c.sensorOrientation) || 0) + rotate) % 360;
     }
     const h264Supported = ('VideoDecoder' in window) && ('EncodedVideoChunk' in window);
     const baseUrl = () => location.protocol + '//' + location.host;
@@ -1038,7 +1075,13 @@
         updateCameraSelectValue();
       }
       if (settings.streamRes) desiredResolution = settings.streamRes;
-      if (settings.manualRotate != null) manualRotate = settings.manualRotate;
+      if (settings.rotate != null) {
+        rotate = settings.rotate;
+        // Reflect server-provided rotation in the UI
+        const el = getElById('rotate');
+        const b = getElById('rotateVal');
+        try { if (el) el.value = String(rotate); if (b) b.textContent = `${rotate}°`; } catch (_) {}
+      }
       // Snapshot resolution: prefer server setting, otherwise default to 'stream'.
       // Some older clients/servers use 'match' to mean the stream — normalize it to server value 'stream'.
       const sr = getElById('snapshotRes');

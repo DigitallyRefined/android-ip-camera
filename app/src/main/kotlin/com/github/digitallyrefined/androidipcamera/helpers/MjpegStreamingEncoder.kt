@@ -35,8 +35,8 @@ class MjpegStreamingEncoder(
         lastFrameTime = currentTime
 
         val autoRotation = image.imageInfo.rotationDegrees
-        val manualRotation = prefs.getInt("camera_manual_rotate", 0)
-        val totalRotation = (autoRotation + manualRotation) % 360
+        val rotation = prefs.getInt("camera_rotate", 0)
+        val totalRotation = (autoRotation + rotation) % 360
         val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
         val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
 
@@ -57,8 +57,8 @@ class MjpegStreamingEncoder(
         if (currentTime - lastFrameTime < delay) return
         lastFrameTime = currentTime
 
-        val manualRotation = prefs.getInt("camera_manual_rotate", 0)
-        val totalRotation = (rotationDegrees + manualRotation) % 360
+        val rotation = prefs.getInt("camera_rotate", 0)
+        val totalRotation = (rotationDegrees + rotation) % 360
         val scaleFactor = prefs.getString("stream_scale", "1.0")?.toFloatOrNull() ?: 1.0f
         val contrastValue = prefs.getString("camera_contrast", "0")?.toIntOrNull() ?: 0
 
@@ -118,9 +118,9 @@ class MjpegStreamingEncoder(
                 }
             }
             "rotate" -> {
-                val currentRotation = prefs.getInt("camera_manual_rotate", 0)
-                val nextRotation = (currentRotation + 90) % 360
-                prefs.edit().putInt("camera_manual_rotate", nextRotation).apply()
+                val angle = value.toIntOrNull() ?: return false
+                val norm = ((angle % 360) + 360) % 360
+                prefs.edit().putInt("camera_rotate", norm).apply()
                 true
             }
             "audio_gain" -> {

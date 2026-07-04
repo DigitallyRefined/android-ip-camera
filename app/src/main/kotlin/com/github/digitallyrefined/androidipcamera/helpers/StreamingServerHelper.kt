@@ -999,7 +999,7 @@ class StreamingServerHelper(
         val delay: String,
         val torch: String,
         val audioGain: String,
-        val manualRotate: Int,
+        val rotate: Int,
         val snapshotRes: String,
         val focus: String,
     )
@@ -1044,7 +1044,7 @@ class StreamingServerHelper(
                 put("torch", settings.torch)
                 put("audioGain", settings.audioGain)
                 put("focusDistance", settings.focusDistance)
-                put("manualRotate", settings.manualRotate)
+                put("rotate", settings.rotate)
                 put("snapshotRes", settings.snapshotRes)
                 put("focus", settings.focus)
             })
@@ -1082,7 +1082,7 @@ class StreamingServerHelper(
             delay = prefs.getString("stream_delay", "33") ?: "33",
             torch = prefs.getString("camera_torch", "off") ?: "off",
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
-            manualRotate = prefs.getInt("camera_manual_rotate", 0),
+            rotate = prefs.getInt("camera_rotate", 0),
             snapshotRes = prefs.getString("snapshot_res", "max") ?: "max",
             focus = prefs.getString("focus_$cameraId", "-1") ?: "-1",
         )

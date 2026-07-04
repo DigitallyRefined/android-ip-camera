@@ -661,6 +661,12 @@ class StreamingService : LifecycleService() {
                     launchMain { if (captureRunning) startCamera() }
                 }
             }
+            "rotate" -> {
+                val angle = value.toIntOrNull() ?: return
+                // normalize to 0..359
+                val norm = ((angle % 360) + 360) % 360
+                prefs.edit().putInt("camera_rotate", norm).apply()
+            }
             "api" -> {
                 if (value in listOf("auto", "camerax", "camera1")) {
                     prefs.edit().putString("capture_api", value).apply()
