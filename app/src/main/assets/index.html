@@ -271,7 +271,7 @@
           <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
         </div>
 
-        <button class='btn btn-action' onclick='fetch("/?rotate=90")'>Rotate 90&deg;</button>
+        <button class='btn btn-action' onclick='rotate90()'>Rotate 90&deg;</button>
 
         <div style="margin-bottom: 15px">
           <button id="muteBtn" class="btn btn-action" style='width: 49%;'>🔇 Unmute Audio</button>
@@ -592,6 +592,17 @@
 
     // ---- Stream mode: MJPEG (universal) vs H.264 decoded in-browser via WebCodecs ----
     let streamMode = 'mjpeg';
+    // MJPEG is rotated server-side; the raw H.264 stream isn't, so the H.264 player rotates on
+    // draw by (sensorOrientation + manualRotate), mirroring what the MJPEG encoder bakes in.
+    let manualRotate = 0;
+    function rotate90() {
+      manualRotate = (manualRotate + 90) % 360;
+      fetch('/?rotate=90').catch(() => {});
+    }
+    function h264Rotation() {
+      const c = selectedCameraInfo();
+      return (((c && c.sensorOrientation) || 0) + manualRotate) % 360;
+    }
     const h264Supported = ('VideoDecoder' in window) && ('EncodedVideoChunk' in window);
     const baseUrl = () => location.protocol + '//' + location.host;
 
@@ -647,13 +658,19 @@
       const decoder = new VideoDecoder({
         output: (frame) => {
           try {
-            const size = targetCanvasSize({ width: frame.displayWidth, height: frame.displayHeight });
+            const rot = h264Rotation();
+            const fw = frame.displayWidth, fh = frame.displayHeight;
+            const swap = (rot === 90 || rot === 270);
+            const cw = swap ? fh : fw, ch = swap ? fw : fh;   // canvas content dims after rotation
+            const size = targetCanvasSize({ width: cw, height: ch });
             applyCanvasSize(size);
-            const s = Math.min(size.w / frame.displayWidth, size.h / frame.displayHeight);
-            const dw = Math.max(1, Math.floor(frame.displayWidth * s));
-            const dh = Math.max(1, Math.floor(frame.displayHeight * s));
+            const s = Math.min(size.w / cw, size.h / ch);
             ctx.clearRect(0, 0, size.w, size.h);
-            ctx.drawImage(frame, Math.floor((size.w - dw) / 2), Math.floor((size.h - dh) / 2), dw, dh);
+            ctx.save();
+            ctx.translate(size.w / 2, size.h / 2);
+            if (rot) ctx.rotate(rot * Math.PI / 180);
+            ctx.drawImage(frame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
+            ctx.restore();
           } finally { frame.close(); }
         },
         error: (e) => console.error('H.264 decode:', e)
@@ -870,6 +887,7 @@
         updateCameraSelectValue();
       }
       if (settings.streamRes) desiredResolution = settings.streamRes;
+      if (settings.manualRotate != null) manualRotate = settings.manualRotate;
       populateResolutions();
       const zoom = getElById('zoom');
       const zoomVal = getElById('zoomVal');
