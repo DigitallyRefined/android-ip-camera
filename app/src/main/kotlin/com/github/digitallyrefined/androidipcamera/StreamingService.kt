@@ -260,7 +260,7 @@ class StreamingService : LifecycleService() {
                     if (!encoders.any { it.hasClients() })
                         launchMain { stopCamera(); onClientDisconnected?.invoke() }
                 },
-                onControlCommand = { key, value -> handleRemoteControl(key, value) },
+                onControlCommand = { key, value, ts -> handleRemoteControl(key, value, ts) },
                 onSnapshot = { id -> snapshot(id) }
             )
             // Initialize encoders with the streaming server helper
@@ -460,6 +460,7 @@ class StreamingService : LifecycleService() {
         val p = PreferenceManager.getDefaultSharedPreferences(this); val id = camId()
         p.getString("exposure_$id", null)?.toIntOrNull()?.let { b.setExposure(it) }
         p.getString("zoom_$id", null)?.toFloatOrNull()?.let { b.setZoom(it) }
+        p.getString("focus_$id", null)?.toFloatOrNull()?.let { b.setManualFocus(it) }
     }
 
     // ---------------- snapshot (full resolution) ----------------
@@ -581,10 +582,25 @@ class StreamingService : LifecycleService() {
 
     /**
      * GET /?<key>=<value> (proxied as /api/video/control):
-     *   torch=on|off|toggle   focus=1   exposure=<ev>   zoom=<ratio>
+     *   torch=on|off|toggle   focus_distance=<0..1|-1>
+     *   exposure=<ev>   zoom=<ratio>
      *   camera=<id>|front|back|toggle   resolution=WxH   api=auto|camerax|camera1
      */
-    private fun handleRemoteControl(key: String, value: String) {
+    /** Last accepted client timestamp per control key. */
+    private val controlTimestamps = HashMap<String, Long>()
+
+    /** True unless [ts] is older-or-equal to the last one accepted for [key] (0 = no ordering info). */
+    private fun acceptControl(key: String, ts: Long): Boolean {
+        if (ts == 0L) return true
+        if (ts <= (controlTimestamps[key] ?: 0L)) return false
+        controlTimestamps[key] = ts
+        return true
+    }
+
+    // Synchronized so the timestamp check and the (async) dispatch stay ordered per request.
+    @Synchronized
+    private fun handleRemoteControl(key: String, value: String, ts: Long = 0L) {
+        if (!acceptControl(key, ts)) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val id = camId()
         when (key) {
@@ -608,7 +624,12 @@ class StreamingService : LifecycleService() {
                 prefs.edit().putString("zoom_$id", z.toString()).apply()
                 launchMain { backend?.setZoom(z) }
             }
-            "focus" -> launchMain { backend?.triggerAutoFocus() }
+            "focus_distance" -> {
+                val f = value.toFloatOrNull() ?: return
+                if (f < 0f) prefs.edit().remove("focus_$id").apply()
+                else prefs.edit().putString("focus_$id", f.coerceIn(0f, 1f).toString()).apply()
+                launchMain { backend?.setManualFocus(f) }
+            }
             "snapshot_res" -> {
                 if (value == "max" || value == "stream") prefs.edit().putString("snapshot_res", value).apply()
             }

@@ -54,7 +54,7 @@ class StreamingServerHelper(
     private val onLog: (String) -> Unit = {},
     private val onClientConnected: () -> Unit = {},
     private val onClientDisconnected: () -> Unit = {},
-    private val onControlCommand: (String, String) -> Unit = { _, _ -> },
+    private val onControlCommand: (String, String, Long) -> Unit = { _, _, _ -> },
     private val onSnapshot: (String) -> ByteArray? = { null }
 ) {
     data class Client(
@@ -624,8 +624,12 @@ class StreamingServerHelper(
             }
 
             if (uri.contains("?")) {
-                parseQueryParams(uri).forEach { (key, value) ->
-                    onControlCommand(key, value)
+                val params = parseQueryParams(uri)
+                val ts = params["ts"]?.toLongOrNull() ?: 0L // for ordering; 0 = none
+
+                params.forEach { (key, value) ->
+                    if (key == "ts") return@forEach
+                    onControlCommand(key, value, ts)
                 }
                 writer.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK")
                 writer.flush()

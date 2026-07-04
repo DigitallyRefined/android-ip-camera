@@ -17,5 +17,11 @@ interface CaptureBackend {
     fun setExposure(ev: Int)
     fun setZoom(ratio: Float)
     fun triggerAutoFocus()
+    /**
+     * Manual focus. [distance] in 0f..1f is a normalized fixed focus distance
+     * (0f = far/infinity, 1f = nearest). A negative value returns the camera to
+     * continuous autofocus. Backends apply this on a best-effort basis.
+     */
+    fun setManualFocus(distance: Float)
     fun stop()
 }
