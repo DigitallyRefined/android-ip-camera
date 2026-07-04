@@ -260,7 +260,7 @@ class StreamingService : LifecycleService() {
                     if (!encoders.any { it.hasClients() })
                         launchMain { stopCamera(); onClientDisconnected?.invoke() }
                 },
-                onControlCommand = { key, value -> handleRemoteControl(key, value) },
+                onControlCommand = { key, value, ts -> handleRemoteControl(key, value, ts) },
                 onSnapshot = { id -> snapshot(id) }
             )
             // Initialize encoders with the streaming server helper
@@ -579,7 +579,21 @@ class StreamingService : LifecycleService() {
      *   torch=on|off|toggle   focus=1   exposure=<ev>   zoom=<ratio>
      *   camera=<id>|front|back|toggle   resolution=WxH   api=auto|camerax|camera1
      */
-    private fun handleRemoteControl(key: String, value: String) {
+    /** Last accepted client timestamp per control key. */
+    private val controlTimestamps = HashMap<String, Long>()
+
+    /** True unless [ts] is older-or-equal to the last one accepted for [key] (0 = no ordering info). */
+    private fun acceptControl(key: String, ts: Long): Boolean {
+        if (ts == 0L) return true
+        if (ts <= (controlTimestamps[key] ?: 0L)) return false
+        controlTimestamps[key] = ts
+        return true
+    }
+
+    // Synchronized so the timestamp check and the (async) dispatch stay ordered per request.
+    @Synchronized
+    private fun handleRemoteControl(key: String, value: String, ts: Long = 0L) {
+        if (!acceptControl(key, ts)) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val id = camId()
         when (key) {
