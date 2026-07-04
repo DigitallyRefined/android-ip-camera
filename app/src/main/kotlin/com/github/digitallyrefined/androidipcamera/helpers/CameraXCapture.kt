@@ -4,6 +4,8 @@ import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -58,6 +60,8 @@ class CameraXCapture(
     private var analysisUseCase: ImageAnalysis? = null
     private var previewUseCase: Preview? = null
     private var capturing = false
+    @Volatile private var released = false
+    private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var torchEnabled = false
     private val main = ContextCompat.getMainExecutor(ctx)
     private val analysisExec = Executors.newSingleThreadExecutor()
@@ -124,6 +128,7 @@ class CameraXCapture(
 
     /** (Re)bind the streaming use cases on the main thread; [withCapture] adds ImageCapture for a still. */
     private fun rebind(withCapture: Boolean) {
+        if (released) return
         val p = provider ?: return
         val sel = boundSelector ?: return
         val analysis = analysisUseCase ?: return
@@ -139,25 +144,34 @@ class CameraXCapture(
 
     override fun captureStill(onJpeg: (ByteArray?) -> Unit) {
         val ic = imageCapture ?: return onJpeg(null)
-        if (provider == null) return onJpeg(null)
+        if (provider == null || released) return onJpeg(null)
         // Briefly add ImageCapture (drops the live stream to preview size for the shot), then restore
         // analysis-only so streaming returns to full resolution.
         main.execute {
-            if (capturing) return@execute onJpeg(null)
+            if (capturing || released) return@execute onJpeg(null)
             capturing = true
+            var finished = false
+            fun done(result: ByteArray?) {
+                if (finished) return
+                finished = true
+                mainHandler.removeCallbacksAndMessages(null)
+                onJpeg(result)
+                restoreStreamBind()
+            }
             try { rebind(withCapture = true) }
             catch (e: Exception) { Log.e(TAG, "rebind capture: ${e.message}"); capturing = false; return@execute onJpeg(null) }
+            // Watchdog: if the HAL never calls back, don't leave `capturing` stuck (would reject all
+            // future stills) and don't strand the live stream at preview size.
+            mainHandler.postDelayed({ if (!finished) { Log.w(TAG, "capture timeout"); done(null) } }, 5000)
             ic.takePicture(main, object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
-                    try {
+                    val b = try {
                         val buf = image.planes[0].buffer
-                        val b = ByteArray(buf.remaining()); buf.get(b); onJpeg(b)
-                    } catch (e: Exception) { Log.e(TAG, "read: ${e.message}"); onJpeg(null) }
-                    finally { image.close(); restoreStreamBind() }
+                        ByteArray(buf.remaining()).also { buf.get(it) }
+                    } catch (e: Exception) { Log.e(TAG, "read: ${e.message}"); null } finally { image.close() }
+                    done(b)
                 }
-                override fun onError(e: ImageCaptureException) {
-                    Log.e(TAG, "capture: ${e.message}"); onJpeg(null); restoreStreamBind()
-                }
+                override fun onError(e: ImageCaptureException) { Log.e(TAG, "capture: ${e.message}"); done(null) }
             })
         }
     }
@@ -198,9 +212,12 @@ class CameraXCapture(
 
     override fun stop() {
         ready = false
+        released = true               // block any in-flight capture callback from rebinding
+        capturing = false
+        mainHandler.removeCallbacksAndMessages(null)
         try { provider?.unbindAll() } catch (_: Exception) {}
         try { analysisExec.shutdown() } catch (_: Exception) {}
-        camera = null; imageCapture = null
+        provider = null; camera = null; imageCapture = null
     }
 
     companion object { private const val TAG = "CameraXCapture" }

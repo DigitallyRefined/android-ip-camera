@@ -587,6 +587,7 @@
       }
       mjpegAbort = null;
       mjpegRunning = false;
+      drawing = false;   // let the rAF draw loop exit (esp. when switching to H.264)
     }
 
     // ---- Stream mode: MJPEG (universal) vs H.264 decoded in-browser via WebCodecs ----
@@ -697,7 +698,11 @@
             else if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 0 && buf[i + 3] === 1) { starts.push([i, i + 4]); i += 4; }
             else i++;
           }
-          if (starts.length < 2) continue;
+          if (starts.length < 2) {
+            // Guard against unbounded growth if the response isn't an Annex-B stream (e.g. an error page).
+            if (buf.length > 8000000) { console.error('H.264: no start codes found, resetting buffer'); buf = new Uint8Array(0); }
+            continue;
+          }
           for (let k = 0; k < starts.length - 1; k++) onNal(buf.subarray(starts[k][1], starts[k + 1][0]));
           buf = buf.slice(starts[starts.length - 1][0]);
         }
