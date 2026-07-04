@@ -12,15 +12,15 @@ An Android MJPEG / H.264 IP Camera app
 <div align="center">
 <a href="https://github.com/DigitallyRefined/android-ip-camera/releases">
 <img src="https://user-images.githubusercontent.com/69304392/148696068-0cfea65d-b18f-4685-82b5-329a330b1c0d.png"
-alt="Get it on GitHub" align="center" height="80" /></a>
+alt="Get it on GitHub" align="center" height="70" /></a>
 
 <a href="https://github.com/ImranR98/Obtainium" target="_blank">
 <img src="https://raw.githubusercontent.com/ImranR98/Obtainium/refs/heads/main/assets/graphics/badge_obtainium.png"
-alt="Get it on Obtainium" align="center" height="54" /></a>
+alt="Get it on Obtainium" align="center" height="70" /></a>
 
 <a href="https://f-droid.org/en/packages/com.github.digitallyrefined.androidipcamera/" target="_blank">
 <img src="https://f-droid.org/badge/get-it-on.png"
-alt="Get it on F-Droid" align="center" height="80" /></a>
+alt="Get it on F-Droid" align="center" height="70" /></a>
 </div>
 
 ## Features
@@ -67,7 +67,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Query Parameter:** `?camera=<id|front|back|toggle>` to query a specific camera sensor.
     * *Example:* `https://[ip_address]:[port]/video/snapshot?camera=back`
 * **Device Info and Capabilities JSON (`/info.json`)**
-  * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, and Wi-Fi signal strength.
+  * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, Wi-Fi signal strength and individual camera len settings.
   * **Format:** `application/json`
 
 ### 🎛️ Remote Control Commands
@@ -75,15 +75,18 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
 Settings can be changed dynamically by passing query parameters in HTTP GET requests (e.g., to the root path `/` or any control endpoint).
 
 * **Parameters:**
-  * `camera=<id|front|back|toggle>`: Switches the active camera sensor.
-  * `camera_resolution=<low|medium|high>`: Changes camera capture resolution.
+  * `camera=<id|front|back|toggle>`: Switches the active camera sensor (supports logical:physical ids).
+  * `resolution=<low|medium|high|auto|max|WxH>`: Change capture/stream resolution. Use `low|medium|high` for presets; `auto`/`max` or explicit `WxH` may be used to control the negotiated stream size.
   * `zoom=<value>`: Adjusts digital zoom (e.g., `1.0`, `2.5`).
-  * `scale=<value>`: Adjusts preview scale (e.g., `0.5`, `1.0`).
-  * `exposure=<value>`: Adjusts exposure value.
-  * `contrast=<value>`: Adjusts contrast value.
+  * `scale=<value>`: Adjusts preview stream scale (per-camera; e.g., `0.5`, `1.0`).
+  * `exposure=<value>`: Adjusts exposure value (per-camera).
+  * `contrast=<value>`: Adjusts contrast (software; per-camera, integer).
   * `torch=<on|off|toggle>`: Controls the flashlight.
   * `audio_gain=<value>`: Changes microphone gain multiplier (e.g., `1.0`, `2.0`).
-  * `focus=1`: Triggers camera autofocus.
+  * `focus_distance=<0..1|-1>`: Set manual focus distance (0..1). Use `-1` to restore autofocus.
+  * `snapshot_res=<max|stream>`: Choose snapshot resolution for the selected camera (`max` for full sensor, `stream` to match current stream resolution).
+  * `rotate=<degrees>`: Rotate preview/snapshot (persisted per-camera).
+  * `api=<auto|camerax|camera1>`: Prefer capture API implementation.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
 
 ## HTTPS/TLS certificates

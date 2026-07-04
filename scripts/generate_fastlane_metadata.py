@@ -63,8 +63,8 @@ def bullets_to_html(lines):
             items.append(s[2:].strip())
     if not items:
         return ""
-    inner = "".join(f"\t<li>{i}</li>\n" for i in items)
-    return f"<ul>\n{inner}</ul>\n\n"
+    inner = "".join(f"<li>{i}</li>" for i in items)
+    return f"<ul>{inner}</ul>"
 
 def paragraphs_to_html(lines):
     result = []
@@ -85,12 +85,12 @@ def extract_full_description(readme):
     warnings = section_lines(readme, "Warning")
     html = ""
     if features:
-        html += "<h3>Features</h3>\n\n"
+        html += "<h3>Features</h3>"
         html += bullets_to_html(features)
     if warnings:
         html += "<h3>Warning</h3>\n\n"
         html += paragraphs_to_html(warnings)
-    html += '<p>For more details/usage see: https://github.com/DigitallyRefined/android-ip-camera</p>'
+    html += '<p>For more details/usage see: <a href="https://github.com/DigitallyRefined/android-ip-camera">Android IP Camera GitHub Readme</a></p>'
     return html.strip() or ""
 
 def extract_version_name_as_code(build_gradle_path):
