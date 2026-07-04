@@ -602,7 +602,10 @@ class StreamingService : LifecycleService() {
     private fun handleRemoteControl(key: String, value: String, ts: Long = 0L) {
         if (!acceptControl(key, ts)) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val id = camId()
+        // Use the stored camera preference key when persisting per-camera settings so
+        // reads from getStreamSettings() (which uses the saved `camera_id`) match.
+        val storedCameraPref = prefs.getString(PREF_CAMERA_ID, null)
+        val id = storedCameraPref ?: camId()
         when (key) {
             "torch" -> {
                 val current = backend?.getTorch() ?: false

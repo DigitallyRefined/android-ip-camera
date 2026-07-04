@@ -992,6 +992,7 @@ class StreamingServerHelper(
         val resolution: String,
         val streamRes: String,
         val zoom: String,
+        val focusDistance: String,
         val scale: String,
         val exposure: String,
         val contrast: String,
@@ -1042,6 +1043,7 @@ class StreamingServerHelper(
                 put("delay", settings.delay)
                 put("torch", settings.torch)
                 put("audioGain", settings.audioGain)
+                put("focusDistance", settings.focusDistance)
                 put("manualRotate", settings.manualRotate)
                 put("snapshotRes", settings.snapshotRes)
                 put("focus", settings.focus)
@@ -1063,13 +1065,19 @@ class StreamingServerHelper(
     private fun getStreamSettings(cameraList: List<InfoCamera> = emptyList()): StreamSettings {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
         val cameraId = prefs.getString("camera_id", null) ?: cameraList.firstOrNull()?.id
+        // Per-camera prefs use suffixes like zoom_<id>, exposure_<id>, focus_<id>
+        val zoomPref = cameraId?.let { prefs.getString("zoom_$it", null) } ?: null
+        val exposurePref = cameraId?.let { prefs.getString("exposure_$it", null) } ?: null
+        val focusPref = cameraId?.let { prefs.getString("focus_$it", null) } ?: null
+
         return StreamSettings(
             cameraId = cameraId,
             resolution = prefs.getString("camera_resolution", "low") ?: "low",
             streamRes = prefs.getString("stream_res", "auto") ?: "auto",
-            zoom = prefs.getString("camera_zoom", "1.0") ?: "1.0",
+            zoom = zoomPref ?: prefs.getString("camera_zoom", "1.0") ?: "1.0",
+            focusDistance = focusPref ?: prefs.getString("focus_distance", "-1") ?: "-1",
             scale = prefs.getString("stream_scale", "1.0") ?: "1.0",
-            exposure = prefs.getString("camera_exposure", "0") ?: "0",
+            exposure = exposurePref ?: prefs.getString("camera_exposure", "0") ?: "0",
             contrast = prefs.getString("camera_contrast", "0") ?: "0",
             delay = prefs.getString("stream_delay", "33") ?: "33",
             torch = prefs.getString("camera_torch", "off") ?: "off",

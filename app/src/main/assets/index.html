@@ -226,12 +226,6 @@
       margin: 22px 0 6px;
     }
 
-    .stream-hint {
-      color: #666;
-      font-size: 11px;
-      margin: 0 0 10px;
-    }
-
     @media (max-width: 900px) {
       .main {
         flex-direction: column;
@@ -282,9 +276,9 @@
 
         <button class='btn btn-action' onclick='rotate90()'>Rotate 90&deg;</button>
 
-        <div style="margin-bottom: 15px">
-          <button id="muteBtn" class="btn btn-action" style='width: 49%;'>🔇 Unmute Audio</button>
-          <button id="flashBtn" class="btn btn-action" style='width: 49%;'>💡 Flash On</button>
+        <div>
+          <button id="muteBtn" class="btn btn-action" style="width: 49%;">🔇 Unmute Audio</button>
+          <button id="flashBtn" class="btn btn-action" style="width: 49%;">💡 Flash On</button>
         </div>
 
         <div id="audioControls">
@@ -296,22 +290,10 @@
             data-control='audio_gain' data-badge='audioGainVal'>
         </div>
 
-        <p class="stream-title">Stream</p>
-        <div style="display:flex; gap:6px; margin-bottom:8px">
-          <button id="modeMjpegBtn" class="btn active" style="flex:1" onclick="setStreamMode('mjpeg')">MJPEG</button>
-          <button id="modeH264Btn" class="btn" style="flex:1" onclick="setStreamMode('h264')">H.264 (4K)</button>
+        <div>
+          <button id="modeMjpegBtn" class="btn btn-action" style="width: 49%;">MJPEG</button>
+          <button id="modeH264Btn" class="btn btn-action" style="width: 49%;">H.264</button>
         </div>
-        <p class="stream-hint" id="streamHint"></p>
-        <div id="streamExtRow" style="display:none; margin-bottom:12px">
-          <label for="streamExtUrl">Open in an external player (VLC / ffplay)</label>
-          <input id="streamExtUrl" type="text" readonly onclick="this.select()">
-        </div>
-        <label for="snapshotRes">Snapshot resolution</label>
-        <select id="snapshotRes" style="margin-bottom: 8px" onchange='fetch("/?snapshot_res=" + this.value)'>
-          <option value='max'>Max (full sensor)</option>
-          <option value='stream'>Match stream (fast)</option>
-        </select>
-        <p class="stream-hint"><a id="snapLink" href="/video/snapshot" target="_blank" style="color:#007AFF">Take snapshot</a> &mdash; <b>Max</b> captures the full sensor (briefly drops the live stream to preview size); <b>Match stream</b> reuses the current frame at the stream resolution (instant).</p>
 
         <p class="group-title">Camera Control</p>
 
@@ -342,6 +324,19 @@
 
         <label for="delay">Frame Delay (ms)</label>
         <input id="delay" type='number' min='10' max='1000' value='33' data-control='delay'>
+
+        <div style="margin-top:12px;">
+          <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
+        </div>
+
+        <p class="group-title">Snapshot</p>
+
+        <label for="snapshotRes">Snapshot Resolution</label>
+        <select id="snapshotRes" style="margin-bottom: 12px" data-control="snapshot_res">
+          <option value="stream">Match stream (fast)</option>
+          <option value="max">Max (full sensor)</option>
+        </select>
+        <button id="snapBtn" class="btn btn-action" onclick="window.open('/video/snapshot','_blank')">📸 Take Snapshot</button>
       </div>
 
       <p class="notice">Some changes will momentarily restart the camera.</p>
@@ -426,7 +421,7 @@
       flashBtn.addEventListener('click', () => {
         const next = (torchState === 'on') ? 'off' : 'on';
         try {
-          fetch('/?torch=' + next).catch(() => { });
+          sendControl('torch', next);
         } catch (_) { }
         setTorchState(next);
       });
@@ -488,6 +483,13 @@
       return lastControlTs;
     }
 
+    // Centralized control sender used by data-control bindings and ad-hoc actions.
+    function sendControl(param, val) {
+      try {
+        return fetch('/?' + encodeURIComponent(param) + '=' + encodeURIComponent(val) + '&ts=' + nextControlTs()).catch(() => {});
+      } catch (_) { /* swallow */ }
+    }
+
     function formatControlValue(el) {
       const v = el.value;
       switch (el.dataset.fmt) {
@@ -510,16 +512,14 @@
       let lastSentValue = null;
       let timer = null;
 
-      function doFetch(val) {
-        fetch('/?' + param + '=' + encodeURIComponent(val) + '&ts=' + nextControlTs()).catch(() => {});
-      }
+
 
       // Buttons send their configured value immediately on click
       if (el.tagName === 'BUTTON') {
         el.addEventListener('click', () => {
           const val = el.dataset.value !== undefined ? el.dataset.value : (el.value !== undefined ? el.value : '');
           if (badge) badge.innerText = val;
-          doFetch(val);
+          sendControl(param, val);
         });
         return;
       }
@@ -530,7 +530,7 @@
         if (val === lastSentValue) return;
         lastSentValue = val;
         lastSentAt = Date.now();
-        doFetch(val);
+        sendControl(param, val);
       }
 
       function schedule() {
@@ -553,6 +553,47 @@
     }
 
     document.querySelectorAll('[data-control]').forEach(bindControl);
+
+    // Reset controls to the app's initial defaults (as shipped):
+    // resolution -> 'auto' (use Auto mode), zoom -> 1.0, exposure -> 0, focus -> -1 (auto), scale -> 1.0, contrast -> 0, delay -> 33ms
+    function resetToDefaults() {
+      const defaults = {
+        resolution: 'auto',
+        zoom: '1.0',
+        exposure: '0',
+        focus_distance: '-1',
+        scale: '1.0',
+        contrast: '0',
+        delay: '33'
+      };
+
+      // Update UI controls where possible
+      try {
+        // Resolution select is camera-specific; set dropdown to 'auto' visually and send camera pref 'low'
+        const resSelect = getElById('resolutionSelect');
+        if (resSelect) { desiredResolution = 'auto'; resSelect.value = 'auto'; }
+
+        const zoomEl = getElById('zoom'); if (zoomEl) { zoomEl.value = defaults.zoom; const b = getElById('zoomVal'); if (b) b.textContent = formatControlValue(zoomEl); }
+        const exposureEl = getElById('exposure'); if (exposureEl) { exposureEl.value = defaults.exposure; const b = getElById('exposureVal'); if (b) b.textContent = formatControlValue(exposureEl); }
+        const focusEl = getElById('focusDistance'); if (focusEl) { focusEl.value = defaults.focus_distance; const b = getElById('focusVal'); if (b) b.textContent = formatControlValue(focusEl); }
+        const scaleEl = getElById('scale'); if (scaleEl) { scaleEl.value = defaults.scale; const b = getElById('scaleVal'); if (b) b.textContent = formatControlValue(scaleEl); }
+        const contEl = getElById('contrast'); if (contEl) { contEl.value = defaults.contrast; const b = getElById('contVal'); if (b) b.textContent = formatControlValue(contEl); }
+        const delayEl = getElById('delay'); if (delayEl) { delayEl.value = defaults.delay; }
+      } catch (_) {}
+
+      // Send server-side control updates
+      try {
+        sendControl('resolution', defaults.resolution);
+        sendControl('zoom', defaults.zoom);
+        sendControl('exposure', defaults.exposure);
+        sendControl('focus_distance', defaults.focus_distance);
+        sendControl('scale', defaults.scale);
+        sendControl('contrast', defaults.contrast);
+        sendControl('delay', defaults.delay);
+      } catch (_) {}
+    }
+
+    getElById('resetDefaultsBtn')?.addEventListener('click', resetToDefaults);
 
     function startMjpegStream() {
       if (!streamCanvas)
@@ -693,7 +734,7 @@
     let manualRotate = 0;
     function rotate90() {
       manualRotate = (manualRotate + 90) % 360;
-      fetch('/?rotate=90').catch(() => {});
+      sendControl('rotate', '90');
     }
     function h264Rotation() {
       const c = selectedCameraInfo();
@@ -706,15 +747,32 @@
       const h = getElById('modeH264Btn');
       const ext = getElById('streamExtUrl');
       if (ext) ext.value = baseUrl() + '/video/h264';
-      if (h && !h264Supported) {
-        h.disabled = true;
-        h.textContent = 'H.264 (n/a)';
-        // WebCodecs is a secure-context API: available over HTTPS (or localhost), not plain HTTP.
-        h.title = window.isSecureContext
-          ? 'This browser has no WebCodecs H.264 decoder'
-          : 'In-browser H.264 needs HTTPS (WebCodecs is a secure-context API). Open this page via https://, or use the external player URL.';
+      const mj = getElById('modeMjpegBtn');
+      if (mj) mj.addEventListener('click', () => setStreamMode('mjpeg'));
+      if (h) h.addEventListener('click', () => {
+        if (!window.isSecureContext) {
+          alert('H.264 requires HTTPS/TLS. Enable TLS in the app settings to use H.264');
+          return;
+        }
+        if (!h264Supported) {
+          alert('H.264 is not supported in this browser (WebCodecs unavailable)');
+          return;
+        }
+        setStreamMode('h264');
+      });
+      if (h) {
+        if (!window.isSecureContext) {
+          // Keep the button clickable so we can show an explanatory alert when users try to use it.
+          h.textContent = 'H.264 (N/A)';
+          h.title = 'In-browser H.264 requires HTTPS/TLS (enable TLS in app settings)';
+        } else if (!h264Supported) {
+          h.title = 'This browser has no WebCodecs H.264 decoder';
+        }
       }
-      setStreamMode('mjpeg');
+      // Default selection: prefer H.264 when running in a secure context and
+      // the browser supports WebCodecs H.264; otherwise fall back to MJPEG.
+      const defaultMode = (h264Supported && window.isSecureContext) ? 'h264' : 'mjpeg';
+      setStreamMode(defaultMode);
     }
 
     function setStreamMode(mode) {
@@ -723,13 +781,10 @@
       const mj = getElById('modeMjpegBtn'), h = getElById('modeH264Btn');
       if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
       if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
-      const hint = getElById('streamHint');
       if (mode === 'mjpeg') {
-        if (hint) hint.innerHTML = 'Motion-JPEG, decoded by any browser. Universal, but bandwidth-heavy at high resolution (a 4K frame is ~2 MB, so the frame rate drops).';
         stopH264Stream();
         startMjpegStream();
       } else {
-        if (hint) hint.innerHTML = 'Hardware H.264 decoded in-browser (WebCodecs) &mdash; efficient enough for live 4K at full frame rate. The same raw stream also plays in VLC / ffplay:';
         stopMjpegStream();
         startH264Stream();
       }
@@ -940,11 +995,11 @@
 
     function setResolution(value) {
       desiredResolution = value;
-      fetch('/?resolution=' + encodeURIComponent(value)).catch(() => {});
+      sendControl('resolution', value);
     }
 
     function setCamera(camera) {
-      fetch("/?camera=" + encodeURIComponent(camera));
+      sendControl('camera', camera);
       const newCameraInfo = cameraList.find(c => c.id === camera);
       currentCamera = camera;
       updateCameraSelectValue();
@@ -952,7 +1007,7 @@
       // If the next camera has no flash, reflect the forced-off state immediately.
       if (torchState === 'on' && newCameraInfo && !newCameraInfo.hasFlash) {
         try {
-          fetch('/?torch=off').catch(() => { });
+          sendControl('torch', 'off');
         } catch (_) { }
         setTorchState('off');
         return;
@@ -984,10 +1039,13 @@
       }
       if (settings.streamRes) desiredResolution = settings.streamRes;
       if (settings.manualRotate != null) manualRotate = settings.manualRotate;
-      if (settings.snapshotRes) { const sr = getElById('snapshotRes'); if (sr) sr.value = settings.snapshotRes; }
-      if (settings.focus != null) {
-        const f = getElById('focusDistance');
-        if (f) { f.value = settings.focus; const fb = getElById('focusVal'); if (fb) fb.innerText = formatControlValue(f); }
+      // Snapshot resolution: prefer server setting, otherwise default to 'stream'.
+      // Some older clients/servers use 'match' to mean the stream — normalize it to server value 'stream'.
+      const sr = getElById('snapshotRes');
+      if (sr) {
+        let sVal = (settings.snapshotRes !== undefined && settings.snapshotRes !== null) ? String(settings.snapshotRes) : 'stream';
+        if (sVal === 'match') sVal = 'stream';
+        sr.value = sVal;
       }
       populateResolutions();
       const zoom = getElById('zoom');
@@ -1024,6 +1082,30 @@
         audioGain.value = settings.audioGain;
         if (audioGainVal) audioGainVal.textContent = settings.audioGain;
       }
+
+      // Populate any remaining controls that use `data-control` from the settings
+      // mapping snake_case -> camelCase (e.g. audio_gain -> audioGain).
+      const toCamel = (s) => s.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
+      document.querySelectorAll('[data-control]').forEach(el => {
+        const param = el.dataset.control;
+        if (!param) return;
+        const key = toCamel(param);
+        const serverVal = settings[key];
+        // If server provided a value, set it in the control (but don't send back).
+        if (serverVal !== undefined && serverVal !== null) {
+          try { el.value = serverVal; } catch (_) { }
+        } else {
+          // Ensure selects default to their first option if not set
+          if (el.tagName === 'SELECT' && !el.value) {
+            el.selectedIndex = 0;
+          }
+        }
+        // Update any badge showing the formatted value
+        if (el.dataset.badge) {
+          const b = getElById(el.dataset.badge);
+          if (b) b.textContent = formatControlValue(el);
+        }
+      });
     }
 
     // Badge showing the actual negotiated resolution (from decoded frames).
