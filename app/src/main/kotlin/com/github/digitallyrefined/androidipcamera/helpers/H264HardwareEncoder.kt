@@ -28,6 +28,7 @@ class H264HardwareEncoder(
     private val onNal: (ByteArray, Boolean) -> Unit
 ) {
     private val codec: MediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+    private val codecLock = Any()
     var inputSurface: Surface? = null
         private set
     @Volatile private var running = true
@@ -73,31 +74,34 @@ class H264HardwareEncoder(
 
     /** Convert one analyzer frame to the encoder's YUV layout and feed it. Drops the frame if no input buffer is free. */
     fun feed(image: ImageProxy, ptsUs: Long) {
-        if (!running || useSurface) return
-        try {
-            val idx = codec.dequeueInputBuffer(2000)
-            if (idx < 0) return
+        if (useSurface) return
+        synchronized(codecLock) {
+            if (!running) return
+            try {
+                val idx = codec.dequeueInputBuffer(2000)
+                if (idx < 0) return
 
-            // Modern and safe path: use getInputImage(idx) which respects hardware strides/padding
-            val dstImage = codec.getInputImage(idx)
-            if (dstImage != null) {
-                copyYuv(image, dstImage)
+                // Modern and safe path: use getInputImage(idx) which respects hardware strides/padding
+                val dstImage = codec.getInputImage(idx)
+                if (dstImage != null) {
+                    copyYuv(image, dstImage)
+                    val size = width * height * 3 / 2
+                    codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
+                    return
+                }
+
+                // Fallback for legacy / safety
+                val buf = codec.getInputBuffer(idx)
+                if (buf == null) { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0); return }
                 val size = width * height * 3 / 2
+                var arr = yuv
+                if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
+                toYuv420(image, arr)
+                buf.clear(); buf.put(arr, 0, size)
                 codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
-                return
+            } catch (e: Exception) {
+                if (running) Log.e(TAG, "feed: ${e.message}")
             }
-
-            // Fallback for legacy / safety
-            val buf = codec.getInputBuffer(idx)
-            if (buf == null) { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0); return }
-            val size = width * height * 3 / 2
-            var arr = yuv
-            if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
-            toYuv420(image, arr)
-            buf.clear(); buf.put(arr, 0, size)
-            codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
-        } catch (e: Exception) {
-            if (running) Log.e(TAG, "feed: ${e.message}")
         }
     }
 
@@ -203,15 +207,15 @@ class H264HardwareEncoder(
         val info = MediaCodec.BufferInfo()
         try {
             while (running) {
-                val idx = codec.dequeueOutputBuffer(info, 10000)
+                val idx = synchronized(codecLock) { codec.dequeueOutputBuffer(info, 10000) }
                 if (idx >= 0) {
-                    val buf = codec.getOutputBuffer(idx)
+                    val buf = synchronized(codecLock) { codec.getOutputBuffer(idx) }
                     if (buf != null && info.size > 0) {
                         buf.position(info.offset); buf.limit(info.offset + info.size)
                         val data = ByteArray(info.size); buf.get(data)
                         onNal(data, (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0)
                     }
-                    codec.releaseOutputBuffer(idx, false)
+                    synchronized(codecLock) { codec.releaseOutputBuffer(idx, false) }
                 }
             }
         } catch (e: Exception) {
@@ -220,11 +224,13 @@ class H264HardwareEncoder(
     }
 
     fun stop() {
-        running = false
-        try { thread?.join(500) } catch (_: Exception) {}
-        try { codec.stop() } catch (_: Exception) {}
-        try { codec.release() } catch (_: Exception) {}
-        try { inputSurface?.release() } catch (_: Exception) {}
+        synchronized(codecLock) {
+            running = false
+            try { thread?.join(500) } catch (_: Exception) {}
+            try { codec.stop() } catch (_: Exception) {}
+            try { codec.release() } catch (_: Exception) {}
+            try { inputSurface?.release() } catch (_: Exception) {}
+        }
     }
 
     companion object {
