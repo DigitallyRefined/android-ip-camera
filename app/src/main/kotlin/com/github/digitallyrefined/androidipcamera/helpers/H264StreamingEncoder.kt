@@ -33,10 +33,13 @@ class H264StreamingEncoder(
             var enc = h264HardwareEncoder
             if (enc == null || enc.width != image.width || enc.height != image.height) {
                 enc?.stop()
+                val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+                val delay = prefs.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
+                val fps = (1000L / delay).toInt().coerceIn(1, 60)
                 enc = H264HardwareEncoder(
                     image.width,
                     image.height,
-                    30,
+                    fps,
                     H264HardwareEncoder.bitrateFor(image.width, image.height),
                     false
                 ) { d, k -> broadcastH264(d, k) }

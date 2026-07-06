@@ -849,10 +849,7 @@
           h.title = 'This browser has no WebCodecs H.264 decoder';
         }
       }
-      // Default selection: prefer H.264 when running in a secure context and
-      // the browser supports WebCodecs H.264; otherwise fall back to MJPEG.
-      const defaultMode = (h264Supported && window.isSecureContext) ? 'h264' : 'mjpeg';
-      setStreamMode(defaultMode);
+      setStreamMode('mjpeg');
     }
 
     function setStreamMode(mode) {
