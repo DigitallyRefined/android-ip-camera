@@ -9,6 +9,9 @@ import androidx.camera.core.ImageProxy
 import androidx.preference.PreferenceManager
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * MJPEG streaming encoder implementation.
@@ -114,20 +117,24 @@ class MjpegStreamingEncoder(
         val clients = helper.getClients()
         if (clients.isEmpty()) return
         val toRemove = mutableListOf<StreamingServerHelper.Client>()
-        clients.forEach { client ->
-            try {
-                client.writer.print("--frame\r\n")
-                client.writer.print("Content-Type: image/jpeg\r\n")
-                client.writer.print("Content-Length: ${jpegBytes.size}\r\n\r\n")
-                client.writer.flush()
-                client.outputStream.write(jpegBytes)
-                client.outputStream.flush()
-            } catch (e: IOException) {
-                try { client.socket.close() } catch (_: Exception) {}
-                toRemove.add(client)
+
+        // Perform network I/O on an IO dispatcher to avoid NetworkOnMainThreadException
+        CoroutineScope(Dispatchers.IO).launch {
+            clients.forEach { client ->
+                try {
+                    client.writer.print("--frame\r\n")
+                    client.writer.print("Content-Type: image/jpeg\r\n")
+                    client.writer.print("Content-Length: ${jpegBytes.size}\r\n\r\n")
+                    client.writer.flush()
+                    client.outputStream.write(jpegBytes)
+                    client.outputStream.flush()
+                } catch (e: IOException) {
+                    try { client.socket.close() } catch (_: Exception) {}
+                    toRemove.add(client)
+                }
             }
+            toRemove.forEach { helper.removeClient(it) }
         }
-        toRemove.forEach { helper.removeClient(it) }
     }
 
     override fun handleRemoteControl(key: String, value: String): Boolean {

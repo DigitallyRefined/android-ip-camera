@@ -5,6 +5,8 @@ import android.util.Log
 import android.util.Size
 import androidx.camera.core.ImageProxy
 import androidx.preference.PreferenceManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
@@ -79,17 +81,24 @@ class H264StreamingEncoder(
     fun broadcastH264(data: ByteArray, isKey: Boolean) {
         val helper = streamingServerHelper ?: return
         val list = helper.getH264Clients()
-        for (c in list) {
-            try {
-                if (c.waitingKey) {
-                    if (!isKey) continue
-                    c.waitingKey = false
+        if (list.isEmpty()) return
+
+        // Run network I/O on IO dispatcher to avoid main-thread network operations
+        CoroutineScope(Dispatchers.IO).launch {
+            val toRemove = mutableListOf<StreamingServerHelper.Client>()
+            for (c in list) {
+                try {
+                    if (c.waitingKey) {
+                        if (!isKey) continue
+                        c.waitingKey = false
+                    }
+                    c.outputStream.write(data)
+                    c.outputStream.flush()
+                } catch (e: Exception) {
+                    toRemove.add(c)
                 }
-                c.outputStream.write(data)
-                c.outputStream.flush()
-            } catch (e: Exception) {
-                helper.removeH264Client(c)
             }
+            toRemove.forEach { helper.removeH264Client(it) }
         }
     }
 
