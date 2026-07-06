@@ -797,6 +797,10 @@
 
     // ---- Stream mode: MJPEG (universal) vs H.264 decoded in-browser via WebCodecs ----
     let streamMode = 'mjpeg';
+    try {
+      // Persisted preference (may throw in some environments)
+      streamMode = localStorage.getItem('streamMode') || streamMode;
+    } catch (_) {}
     // MJPEG is rotated server-side; the raw H.264 stream isn't, so the H.264 player rotates on
     // draw by (sensorOrientation + rotate), mirroring what the MJPEG encoder bakes in.
     let rotate = 0;
@@ -849,12 +853,20 @@
           h.title = 'This browser has no WebCodecs H.264 decoder';
         }
       }
-      setStreamMode('mjpeg');
+      // Restore persisted preference where possible; fall back to MJPEG.
+      try {
+        const pref = localStorage.getItem('streamMode') || 'mjpeg';
+        setStreamMode(pref);
+      } catch (_) {
+        setStreamMode('mjpeg');
+      }
     }
 
     function setStreamMode(mode) {
-      if (mode === 'h264' && !h264Supported) mode = 'mjpeg';
+      // If H.264 isn't supported or we're not in a secure context, force MJPEG
+      if (mode === 'h264' && (!h264Supported || !window.isSecureContext)) mode = 'mjpeg';
       streamMode = mode;
+      try { localStorage.setItem('streamMode', mode); } catch (_) {}
       const mj = getElById('modeMjpegBtn'), h = getElById('modeH264Btn');
       if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
       if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
