@@ -611,7 +611,25 @@ class StreamingServerHelper(
             if (path == "/video/snapshot") {
                 // One JPEG captured into RAM (no disk). ?camera=<id>. For polling / dual-camera views.
                 val id = parseQueryParams(uri)["camera"] ?: ""
-                val jpeg = onSnapshot(id)
+
+                // Try to get a snapshot immediately; if none available, retry briefly
+                var jpeg = onSnapshot(id)
+                if (jpeg == null) {
+                    val maxRetries = 5
+                    val retryDelayMs = 200L
+                    var attempt = 0
+                    while (jpeg == null && attempt < maxRetries && !socket.isClosed) {
+                        try {
+                            kotlinx.coroutines.delay(retryDelayMs)
+                        } catch (_: Exception) {
+                            // If coroutine is cancelled or interrupted, stop retrying
+                            break
+                        }
+                        jpeg = onSnapshot(id)
+                        attempt++
+                    }
+                }
+
                 if (jpeg != null) {
                     writer.print("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n")
                     writer.print("Content-Length: ${jpeg.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")
