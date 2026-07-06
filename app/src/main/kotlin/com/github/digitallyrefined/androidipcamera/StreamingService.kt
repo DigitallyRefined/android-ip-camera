@@ -473,9 +473,9 @@ class StreamingService : LifecycleService() {
     /** Surface-mode encoder + GL pipe, shared by both backends (CameraX Preview / Camera1 preview). */
     private fun newPipe(sz: Size): CameraGlPipe {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val delay = prefs.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
-        val fps = (1000L / delay).toInt().coerceIn(1, 60)
-        val enc = H264HardwareEncoder(sz.width, sz.height, fps, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k -> h264StreamingEncoder?.broadcastH264(d, k) }
+        val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
+        val fpsCoerced = fps.coerceIn(1, 60)
+        val enc = H264HardwareEncoder(sz.width, sz.height, fpsCoerced, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k -> h264StreamingEncoder?.broadcastH264(d, k) }
         h264StreamingEncoder?.setEncoder(enc)
         streamingServerHelper?.resetH264Wait()
         return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height).also { it.start(); glPipe = it }

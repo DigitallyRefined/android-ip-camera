@@ -38,7 +38,9 @@ class MjpegStreamingEncoder(
 
     override fun processFrame(image: ImageProxy) {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-        val delay = prefs.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
+        val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
+        val fpsCoerced = fps.coerceIn(1, 60)
+        val delay = try { 1000L / fpsCoerced } catch (_: Exception) { 33L }
         val currentTime = System.currentTimeMillis()
 
         if (currentTime - lastFrameTime < delay) return
@@ -76,7 +78,9 @@ class MjpegStreamingEncoder(
     fun processNv21Frame(nv21: ByteArray, width: Int, height: Int, rotationDegrees: Int) {
         if (!hasClients()) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-        val delay = prefs.getString("stream_delay", "33")?.toLongOrNull() ?: 33L
+        val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
+        val fpsCoerced = fps.coerceIn(1, 60)
+        val delay = try { 1000L / fpsCoerced } catch (_: Exception) { 33L }
         val currentTime = System.currentTimeMillis()
         if (currentTime - lastFrameTime < delay) return
         lastFrameTime = currentTime
@@ -155,10 +159,10 @@ class MjpegStreamingEncoder(
                     false
                 }
             }
-            "delay" -> {
-                val delay = value.toLongOrNull() ?: return false
-                if (delay in 10L..1000L) {
-                    prefs.edit().putString("stream_delay", value).apply()
+            "fps" -> {
+                val fps = value.toIntOrNull() ?: return false
+                if (fps in 1..60) {
+                    prefs.edit().putString("stream_fps", value).apply()
                     true
                 } else {
                     false

@@ -49,21 +49,6 @@ object InputValidator {
         }
     }
 
-    // Stream delay validation (milliseconds)
-    fun isValidStreamDelay(delay: String): Boolean {
-        return try {
-            val delayMs = delay.toLong()
-            delayMs in 10..1000 // 10ms to 1 second
-        } catch (e: NumberFormatException) {
-            false
-        }
-    }
-
-    // Camera resolution validation
-    fun isValidCameraResolution(resolution: String): Boolean {
-        return resolution in listOf("low", "medium", "high")
-    }
-
     // Certificate password validation
     fun isValidCertificatePassword(password: String?): Boolean {
         return password == null || password.length <= 256

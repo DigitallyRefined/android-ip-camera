@@ -1009,7 +1009,7 @@ class StreamingServerHelper(
         val cameraId: String?,
         val resolution: String,
         val streamRes: String,
-        val delay: String,
+        val fps: String,
         val torch: String,
         val audioGain: String,
         val snapshotRes: String,
@@ -1059,7 +1059,7 @@ class StreamingServerHelper(
                 put("cameraId", settings.cameraId)
                 put("resolution", settings.resolution)
                 put("streamRes", settings.streamRes)
-                put("delay", settings.delay)
+                put("fps", settings.fps)
                 put("torch", settings.torch)
                 put("audioGain", settings.audioGain)
                 put("snapshotRes", settings.snapshotRes)
@@ -1156,7 +1156,7 @@ class StreamingServerHelper(
             cameraId = cameraId,
             resolution = prefs.getString("camera_resolution", "low") ?: "low",
             streamRes = prefs.getString("stream_res", "auto") ?: "auto",
-            delay = prefs.getString("stream_delay", "33") ?: "33",
+            fps = prefs.getString("stream_fps", "30") ?: "30",
             torch = prefs.getString("camera_torch", "off") ?: "off",
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
             snapshotRes = prefs.getString("snapshot_res_$cameraId", "max") ?: "max",

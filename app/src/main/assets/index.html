@@ -331,8 +331,8 @@
         <input id="contrast" type='range' min='-50' max='50' step='10' value='0'
           data-control='contrast' data-badge='contVal'>
 
-        <label for="delay">Frame Delay (ms)</label>
-        <input id="delay" type='number' min='10' max='1000' value='33' data-control='delay'>
+        <label for="fps">Frame Rate (fps)</label>
+        <input id="fps" type='number' min='1' max='60' value='30' data-control='fps'>
 
         <div style="margin-top:12px;">
           <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
@@ -620,7 +620,7 @@
     }
 
     // Reset controls to the app's initial defaults (as shipped):
-    // resolution -> 'auto' (use Auto mode), zoom -> 1.0, exposure -> 0, focus -> -1 (auto), scale -> 1.0, contrast -> 0, delay -> 33ms
+    // resolution -> 'auto' (use Auto mode), zoom -> 1.0, exposure -> 0, focus -> -1 (auto), scale -> 1.0, contrast -> 0, fps -> 30
     function resetToDefaults() {
       const defaults = {
         resolution: 'auto',
@@ -629,7 +629,7 @@
         focus_distance: '-1',
         scale: '1.0',
         contrast: '0',
-        delay: '33',
+        fps: '30',
         rotate: '0'
       };
 
@@ -644,7 +644,7 @@
         const focusEl = getElById('focusDistance'); if (focusEl) { focusEl.value = defaults.focus_distance; const b = getElById('focusVal'); if (b) b.textContent = formatControlValue(focusEl); }
         const scaleEl = getElById('scale'); if (scaleEl) { scaleEl.value = defaults.scale; const b = getElById('scaleVal'); if (b) b.textContent = formatControlValue(scaleEl); }
         const contEl = getElById('contrast'); if (contEl) { contEl.value = defaults.contrast; const b = getElById('contVal'); if (b) b.textContent = formatControlValue(contEl); }
-        const delayEl = getElById('delay'); if (delayEl) { delayEl.value = defaults.delay; }
+        const fpsEl = getElById('fps'); if (fpsEl) { fpsEl.value = defaults.fps; }
         const rotEl = getElById('rotate'); if (rotEl) { try { setRotation(parseInt(defaults.rotate, 10) || 0); } catch (_) { rotEl.value = defaults.rotate; const rb = getElById('rotateVal'); if (rb) rb.textContent = `${defaults.rotate}°`; } }
       } catch (_) {}
 
@@ -656,7 +656,7 @@
         sendControl('focus_distance', defaults.focus_distance);
         sendControl('scale', defaults.scale);
         sendControl('contrast', defaults.contrast);
-        sendControl('delay', defaults.delay);
+        sendControl('fps', defaults.fps);
       } catch (_) {}
     }
 
@@ -1206,9 +1206,9 @@
         contrast.value = settings.contrast;
         if (contVal) contVal.textContent = settings.contrast;
       }
-      const delay = getElById('delay');
-      if (delay && settings.delay) {
-        delay.value = settings.delay;
+      const fps = getElById('fps');
+      if (fps && settings.fps) {
+        fps.value = settings.fps;
       }
       const audioGain = getElById('audioGain');
       const audioGainVal = getElById('audioGainVal');
