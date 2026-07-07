@@ -269,7 +269,7 @@
       <div class='controls-content'>
       <div class='setting-group'>
         <h3>Settings</h3>
-        <label for="cameraSelect">Camera</label>
+        <label for="cameraSelect">Camera <span class="val-badge" id="cameraFacingBadge">&mdash;</span></label>
         <div class="camera-controls">
           <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
         </div>
@@ -1036,6 +1036,15 @@
       const fallback = selected || camerasForFacing(facing)[0] || cameraList[0];
       if (fallback) {
         select.value = fallback.id;
+        // Update facing badge (Front / Back)
+        try {
+          const badge = getElById('cameraFacingBadge');
+          if (badge) {
+            const f = (fallback.facing || '').toLowerCase();
+            const label = f === 'front' ? 'Front' : (f === 'back' ? 'Back' : (fallback.facing || '\u2014'));
+            badge.textContent = label;
+          }
+        } catch (_) {}
       }
     }
 
