@@ -993,7 +993,7 @@ class StreamingServerHelper(
 
     private data class InfoSize(val w: Int, val h: Int)
 
-    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val maxZoom: Float)
+    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val minZoom: Float, val maxZoom: Float)
 
     private data class CameraInfoSource(
         val id: String,
@@ -1031,6 +1031,13 @@ class StreamingServerHelper(
                         put("label", camera.label)
                         put("hasFlash", camera.hasFlash)
                         put("sensorOrientation", camera.sensorOrientation)
+                        // Expose reported min and max digital zoom for the camera under a `zoom` object
+                        try {
+                            put("zoom", JSONObject().apply {
+                                try { put("min", camera.minZoom) } catch (_: Exception) {}
+                                try { put("max", camera.maxZoom) } catch (_: Exception) {}
+                            })
+                        } catch (_: Exception) {}
                         put("sizes", JSONArray().apply {
                             camera.sizes.forEach { size ->
                                 put(JSONObject().apply {
@@ -1046,8 +1053,6 @@ class StreamingServerHelper(
                                 lensMap.forEach { (k, v) -> put(k, v) }
                             })
                         }
-                        // Expose reported max digital zoom for the camera (float)
-                        try { put("maxZoom", camera.maxZoom) } catch (_: Exception) {}
                     })
                 }
             })
@@ -1097,7 +1102,8 @@ class StreamingServerHelper(
             val map = mutableMapOf<String, String>()
 
             // Zoom: prefer token-specific key, then fallback to physical id key
-            val zoomVal = prefStringFallback("1.0", "zoom_$id", "zoom_$physical") ?: "1.0"
+            // Default to the camera-reported minZoom when no saved preference exists
+            val zoomVal = prefStringFallback(cam.minZoom.toString(), "zoom_$id", "zoom_$physical") ?: cam.minZoom.toString()
             map["zoom"] = zoomVal
 
             // Exposure
@@ -1193,13 +1199,19 @@ class StreamingServerHelper(
                     source.characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
                 val sensorOrientation = (ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
                     ?: source.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)) ?: 0
+                // Min digital zoom (some ultra-wide lenses can report < 1.0; fallback to 1.0)
+                val minZoom = try {
+                    val range = ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                        ?: source.characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                    range?.lower?.toFloat() ?: 1.0f
+                } catch (_: Exception) { 1.0f }
                 // Max digital zoom (fallback to 1.0 if unavailable)
                 val maxZoom = try {
                     (ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
                         ?: source.characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
                         ?: 1.0f).toFloat()
                 } catch (_: Exception) { 1.0f }
-                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, maxZoom)
+                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom)
             }
         } catch (_: Exception) {
             emptyList()

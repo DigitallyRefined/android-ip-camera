@@ -1053,9 +1053,12 @@
         const zoomEl = getElById('zoom');
         if (!zoomEl) return;
         const cam = selectedCameraInfo();
-        const max = (cam && cam.maxZoom) ? parseFloat(cam.maxZoom) : 8;
-        // Ensure a sensible minimum
+        const max = (cam && cam.zoom && cam.zoom.max) ? parseFloat(cam.zoom.max) : 8;
+        // Some cameras may report a min zoom (e.g. ultra-wide starting at 0)
+        const min = (cam && cam.zoom && cam.zoom.min) ? parseFloat(cam.zoom.min) : 1;
+        // Ensure sensible min/max values
         zoomEl.max = String((isFinite(max) && max > 1) ? max : 8);
+        zoomEl.min = String((isFinite(min) && min >= 0) ? min : 1);
         if (parseFloat(zoomEl.value) > parseFloat(zoomEl.max)) {
           zoomEl.value = zoomEl.max;
           const b = getElById('zoomVal'); if (b) b.textContent = formatControlValue(zoomEl);
