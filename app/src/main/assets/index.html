@@ -619,48 +619,21 @@
       } catch (_) { return 1; }
     }
 
-    // Reset controls to the app's initial defaults (as shipped):
-    // resolution -> 'auto' (use Auto mode), zoom -> 1.0, exposure -> 0, focus -> -1 (auto), scale -> 1.0, contrast -> 0, fps -> 30
-    function resetToDefaults() {
-      const defaults = {
-        resolution: 'auto',
-        zoom: '1.0',
-        exposure: '0',
-        focus_distance: '-1',
-        scale: '1.0',
-        contrast: '0',
-        fps: '30',
-        rotate: '0'
-      };
-
-      // Update UI controls where possible
+    getElById('resetDefaultsBtn')?.addEventListener('click', () => {
       try {
-        // Resolution select is camera-specific; set dropdown to 'auto' visually and send camera pref 'low'
-        const resSelect = getElById('resolutionSelect');
-        if (resSelect) { desiredResolution = 'auto'; resSelect.value = 'auto'; }
-
-        const zoomEl = getElById('zoom'); if (zoomEl) { zoomEl.value = defaults.zoom; const b = getElById('zoomVal'); if (b) b.textContent = formatControlValue(zoomEl); }
-        const exposureEl = getElById('exposure'); if (exposureEl) { exposureEl.value = defaults.exposure; const b = getElById('exposureVal'); if (b) b.textContent = formatControlValue(exposureEl); }
-        const focusEl = getElById('focusDistance'); if (focusEl) { focusEl.value = defaults.focus_distance; const b = getElById('focusVal'); if (b) b.textContent = formatControlValue(focusEl); }
-        const scaleEl = getElById('scale'); if (scaleEl) { scaleEl.value = defaults.scale; const b = getElById('scaleVal'); if (b) b.textContent = formatControlValue(scaleEl); }
-        const contEl = getElById('contrast'); if (contEl) { contEl.value = defaults.contrast; const b = getElById('contVal'); if (b) b.textContent = formatControlValue(contEl); }
-        const fpsEl = getElById('fps'); if (fpsEl) { fpsEl.value = defaults.fps; }
-        const rotEl = getElById('rotate'); if (rotEl) { try { setRotation(parseInt(defaults.rotate, 10) || 0); } catch (_) { rotEl.value = defaults.rotate; const rb = getElById('rotateVal'); if (rb) rb.textContent = `${defaults.rotate}°`; } }
-      } catch (_) {}
-
-      // Send server-side control updates
-      try {
-        sendControl('resolution', defaults.resolution);
-        sendControl('zoom', defaults.zoom);
-        sendControl('exposure', defaults.exposure);
-        sendControl('focus_distance', defaults.focus_distance);
-        sendControl('scale', defaults.scale);
-        sendControl('contrast', defaults.contrast);
-        sendControl('fps', defaults.fps);
-      } catch (_) {}
-    }
-
-    getElById('resetDefaultsBtn')?.addEventListener('click', resetToDefaults);
+        const cam = selectedCameraInfo();
+        const id = cam ? cam.id : '';
+        if (!id) return;
+        fetch('/?resetCamera=' + encodeURIComponent(id), { method: 'GET', credentials: 'include' })
+          .then(() => {
+            loadDeviceInfo(true);
+            setView("fit")
+          }).catch(() => {
+            // On failure, refresh device info
+            loadDeviceInfo(true);
+          });
+      } catch (_) { /* ignore */ }
+    });
 
     function startMjpegStream() {
       if (!streamCanvas)

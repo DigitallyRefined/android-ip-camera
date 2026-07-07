@@ -645,6 +645,20 @@ class StreamingServerHelper(
                 val params = parseQueryParams(uri)
                 val ts = params["ts"]?.toLongOrNull() ?: 0L // for ordering; 0 = none
 
+                // Support a single-shot reset command: ?resetCamera=<id>
+                val resetId = params["resetCamera"]
+                if (!resetId.isNullOrBlank()) {
+                    try {
+                        resetCameraPreferences(resetId)
+                    } catch (e: Exception) {
+                        onLog("Error resetting camera prefs for $resetId: ${e.message}")
+                    }
+                    writer.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK")
+                    writer.flush()
+                    socket.close()
+                    return
+                }
+
                 params.forEach { (key, value) ->
                     if (key == "ts") return@forEach
                     onControlCommand(key, value, ts)
@@ -916,6 +930,63 @@ class StreamingServerHelper(
         }
         return false
     }
+
+    /**
+     * Reset stored per-camera preferences for a given camera id.
+     * This will remove stored zoom/exposure/focus/rotate/scale/contrast prefs
+     * for the camera token and its physical fallback, so the server will
+     * return defaults (which now prefer the camera-reported `minZoom`).
+     */
+    fun resetCameraPreferences(cameraId: String) {
+        try {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val editor = prefs.edit()
+            val physical = cameraId.substringAfter(':', cameraId)
+            // Known keys to remove for a camera
+            val keys = listOf(
+                "zoom_$cameraId", "zoom_$physical",
+                "exposure_$cameraId", "exposure_$physical",
+                "focus_$cameraId", "focus_$physical",
+                "camera_rotate_$cameraId", "camera_rotate_$physical",
+                "stream_scale_$cameraId", "stream_scale_$physical",
+                "camera_contrast_$cameraId", "camera_contrast_$physical",
+                "snapshot_res_$cameraId", "snapshot_res_$physical"
+            )
+            keys.forEach { k -> if (prefs.contains(k)) editor.remove(k) }
+            editor.apply()
+            onLog("Reset preferences for camera $cameraId")
+
+            // Apply canonical defaults immediately so the live camera reflects the reset
+            try {
+                val info = buildDeviceInfo()
+                val cam = info.cameras.firstOrNull { it.id == cameraId }
+                    ?: info.cameras.firstOrNull { it.id.endsWith(":$cameraId") }
+                val minZoom = cam?.minZoom ?: 1.0f
+
+                val now = System.currentTimeMillis()
+                val defaults = mapOf(
+                    "resolution" to "auto",
+                    "zoom" to minZoom.toString(),
+                    "exposure" to "0",
+                    "focus_distance" to "-1",
+                    "scale" to "1.0",
+                    "contrast" to "0",
+                    "fps" to "30",
+                    "rotate" to "0"
+                )
+
+                // Dispatch each control through the central handler so prefs are re-written
+                defaults.forEach { (k, v) ->
+                    try { onControlCommand(k, v, now) } catch (e: Exception) { onLog("Error applying default $k=$v: ${e.message}") }
+                }
+            } catch (e: Exception) {
+                onLog("Error applying defaults after reset for $cameraId: ${e.message}")
+            }
+        } catch (e: Exception) {
+            onLog("Error resetting prefs for $cameraId: ${e.message}")
+        }
+    }
+
 
     fun setAppInForeground(foreground: Boolean) {
         appInForeground = foreground
