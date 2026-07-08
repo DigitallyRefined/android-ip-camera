@@ -38,6 +38,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.KeyStore
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import org.json.JSONArray
@@ -966,7 +967,7 @@ class StreamingServerHelper(
                 val now = System.currentTimeMillis()
                 val defaults = mapOf(
                     "resolution" to "auto",
-                    "zoom" to minZoom.toString(),
+                    "zoom" to String.format(Locale.US, "%.1f", minZoom),
                     "exposure" to "0",
                     "focus_distance" to "-1",
                     "scale" to "1.0",
@@ -1104,10 +1105,10 @@ class StreamingServerHelper(
                         put("sensorOrientation", camera.sensorOrientation)
                         // Expose reported min and max digital zoom for the camera under a `zoom` object
                         try {
-                            put("zoom", JSONObject().apply {
-                                try { put("min", camera.minZoom) } catch (_: Exception) {}
-                                try { put("max", camera.maxZoom) } catch (_: Exception) {}
-                            })
+                                put("zoom", JSONObject().apply {
+                                    try { put("min", String.format(Locale.US, "%.1f", camera.minZoom)) } catch (_: Exception) {}
+                                    try { put("max", String.format(Locale.US, "%.1f", camera.maxZoom)) } catch (_: Exception) {}
+                                })
                         } catch (_: Exception) {}
                         put("sizes", JSONArray().apply {
                             camera.sizes.forEach { size ->
@@ -1174,7 +1175,7 @@ class StreamingServerHelper(
 
             // Zoom: prefer token-specific key, then fallback to physical id key
             // Default to the camera-reported minZoom when no saved preference exists
-            val zoomVal = prefStringFallback(cam.minZoom.toString(), "zoom_$id", "zoom_$physical") ?: cam.minZoom.toString()
+            val zoomVal = prefStringFallback(String.format(Locale.US, "%.1f", cam.minZoom), "zoom_$id", "zoom_$physical") ?: String.format(Locale.US, "%.1f", cam.minZoom)
             map["zoom"] = zoomVal
 
             // Exposure

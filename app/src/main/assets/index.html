@@ -299,7 +299,7 @@
         <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
 
         <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
-        <input id="zoom" type='range' min='1' max='8' step='0.1' value='1.0'
+        <input id="zoom" type='range' min='0.1' max='8' step='0.1' value='1.0'
           data-control='zoom' data-badge='zoomVal' data-fmt='suffix' data-suffix='x'>
 
         <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
@@ -536,6 +536,11 @@
       const v = el.value;
       switch (el.dataset.fmt) {
         case 'suffix':
+          // Format zoom with one decimal place, keep others as-is
+            if (el.id === 'zoom') {
+              const n = parseFloat(v);
+              return (isFinite(n) ? n.toFixed(1) : v) + (el.dataset.suffix || '');
+            }
           return v + (el.dataset.suffix || '');
         case 'focus': {
           const n = parseFloat(v);
@@ -1030,8 +1035,8 @@
         // Some cameras may report a min zoom (e.g. ultra-wide starting at 0)
         const min = (cam && cam.zoom && cam.zoom.min) ? parseFloat(cam.zoom.min) : 1;
         // Ensure sensible min/max values
-        zoomEl.max = String((isFinite(max) && max > 1) ? max : 8);
-        zoomEl.min = String((isFinite(min) && min >= 0) ? min : 1);
+        zoomEl.max = String((isFinite(max) && max > 0) ? parseFloat(max).toFixed(1) : '8.0');
+        zoomEl.min = String((isFinite(min) && min >= 0) ? parseFloat(min).toFixed(1) : '0.1');
         if (parseFloat(zoomEl.value) > parseFloat(zoomEl.max)) {
           zoomEl.value = zoomEl.max;
           const b = getElById('zoomVal'); if (b) b.textContent = formatControlValue(zoomEl);

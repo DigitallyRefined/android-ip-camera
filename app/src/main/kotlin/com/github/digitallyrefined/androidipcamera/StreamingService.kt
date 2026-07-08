@@ -36,6 +36,7 @@ import java.io.File
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.security.SecureRandom
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -675,8 +676,9 @@ class StreamingService : LifecycleService() {
             }
             "zoom" -> {
                 val z = value.toFloatOrNull() ?: return
-                prefs.edit().putString("zoom_$id", z.toString()).apply()
-                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("zoom_$physicalId", z.toString()).apply()
+                val zStr = String.format(Locale.US, "%.1f", z)
+                prefs.edit().putString("zoom_$id", zStr).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("zoom_$physicalId", zStr).apply()
                 launchMain { backend?.setZoom(z) }
             }
             "focus_distance" -> {
