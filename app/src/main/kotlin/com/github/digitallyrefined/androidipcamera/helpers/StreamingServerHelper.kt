@@ -1065,7 +1065,7 @@ class StreamingServerHelper(
 
     private data class InfoSize(val w: Int, val h: Int)
 
-    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val minZoom: Float, val maxZoom: Float)
+    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val minZoom: Float?, val maxZoom: Float?)
 
     private data class CameraInfoSource(
         val id: String,
@@ -1103,12 +1103,17 @@ class StreamingServerHelper(
                         put("label", camera.label)
                         put("hasFlash", camera.hasFlash)
                         put("sensorOrientation", camera.sensorOrientation)
-                        // Expose reported min and max digital zoom for the camera under a `zoom` object
                         try {
-                                put("zoom", JSONObject().apply {
-                                    try { put("min", String.format(Locale.US, "%.1f", camera.minZoom)) } catch (_: Exception) {}
-                                    try { put("max", String.format(Locale.US, "%.1f", camera.maxZoom)) } catch (_: Exception) {}
-                                })
+                            put("zoom", JSONObject().apply {
+                                try {
+                                    if (camera.minZoom != null) put("min", String.format(Locale.US, "%.1f", camera.minZoom))
+                                    else put("min", JSONObject.NULL)
+                                } catch (_: Exception) { try { put("min", JSONObject.NULL) } catch (_: Exception) {} }
+                                try {
+                                    if (camera.maxZoom != null) put("max", String.format(Locale.US, "%.1f", camera.maxZoom))
+                                    else put("max", JSONObject.NULL)
+                                } catch (_: Exception) { try { put("max", JSONObject.NULL) } catch (_: Exception) {} }
+                            })
                         } catch (_: Exception) {}
                         put("sizes", JSONArray().apply {
                             camera.sizes.forEach { size ->
@@ -1175,7 +1180,8 @@ class StreamingServerHelper(
 
             // Zoom: prefer token-specific key, then fallback to physical id key
             // Default to the camera-reported minZoom when no saved preference exists
-            val zoomVal = prefStringFallback(String.format(Locale.US, "%.1f", cam.minZoom), "zoom_$id", "zoom_$physical") ?: String.format(Locale.US, "%.1f", cam.minZoom)
+            val defaultMin = String.format(Locale.US, "%.1f", cam.minZoom ?: 1.0f)
+            val zoomVal = prefStringFallback(defaultMin, "zoom_$id", "zoom_$physical") ?: defaultMin
             map["zoom"] = zoomVal
 
             // Exposure
@@ -1271,32 +1277,53 @@ class StreamingServerHelper(
                     source.characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
                 val sensorOrientation = (ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
                     ?: source.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)) ?: 0
-                // Min digital zoom (some ultra-wide lenses can report < 1.0; fallback to 1.0)
-                val minZoom = try {
-                    val range = ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                // Gather zoom-related characteristics and compute fallbacks
+                val (minZoom, maxZoom) = try {
+                    val rangeRaw = ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
                         ?: source.characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-                    if (range != null) {
-                        range.lower.toFloat()
-                    } else {
-                        // Fallback: derive an approximate min zoom from available focal lengths
-                        val focalLens = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                            ?: source.characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                        if (focalLens != null && focalLens.size >= 2) {
-                            val minF = focalLens.minOrNull() ?: focalLens[0]
-                            val maxF = focalLens.maxOrNull() ?: focalLens[0]
-                            // Ratio of smallest to largest focal length approximates the min zoom
-                            (minF / maxF).toFloat().coerceAtMost(1.0f).coerceAtLeast(0.1f)
-                        } else {
-                            1.0f
-                        }
-                    }
-                } catch (_: Exception) { 1.0f }
-                // Max digital zoom (fallback to 1.0 if unavailable)
-                val maxZoom = try {
-                    (ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+                    val focalLensRaw = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                        ?: source.characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    val scalerMaxRaw = ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
                         ?: source.characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
-                        ?: 1.0f).toFloat()
-                } catch (_: Exception) { 1.0f }
+
+                    val computedMin: Float? = try {
+                        when {
+                            rangeRaw != null -> rangeRaw.lower.toFloat()
+                            focalLensRaw != null && focalLensRaw.size >= 2 -> {
+                                val minF = focalLensRaw.minOrNull() ?: focalLensRaw[0]
+                                val maxF = focalLensRaw.maxOrNull() ?: focalLensRaw[0]
+                                // Allow heuristic to be >1.0 for lenses without ultra-wide (tele-only)
+                                (minF / maxF).toFloat().coerceAtLeast(0.1f)
+                            }
+                            else -> null
+                        }
+                    } catch (_: Exception) { null }
+
+                    val computedMax: Float? = try {
+                        when {
+                            // If the scaler reports a max digital zoom, trust it directly (no artificial cap)
+                            scalerMaxRaw != null -> try { (scalerMaxRaw).toFloat() } catch (_: Exception) { null }
+                            // Otherwise derive from focal lengths
+                            focalLensRaw != null && focalLensRaw.size >= 2 -> {
+                                val minF = focalLensRaw.minOrNull() ?: focalLensRaw[0]
+                                val maxF = focalLensRaw.maxOrNull() ?: focalLensRaw[0]
+                                // Derive heuristic max zoom from optical focal lengths; don't artificially cap it.
+                                (maxF / minF).toFloat().coerceAtLeast(0.1f)
+                            }
+                            else -> null
+                        }
+                    } catch (_: Exception) { null }
+
+                    // Debug log to help verify what devices actually report
+                    try {
+                        val focalStr = focalLensRaw?.joinToString(",") ?: "<none>"
+                        val minStr = computedMin?.toString() ?: "<unknown>"
+                        val maxStr = computedMax?.toString() ?: (scalerMaxRaw ?: "<none>")
+                        onLog("Camera ${source.id} zoom info: CONTROL_ZOOM_RATIO_RANGE=${rangeRaw?.toString() ?: "<none>"}, LENS_INFO_AVAILABLE_FOCAL_LENGTHS=$focalStr, computedMinZoom=$minStr, computedMaxZoom=$maxStr")
+                    } catch (_: Exception) {}
+
+                    Pair(computedMin, computedMax)
+                } catch (_: Exception) { Pair(null, null) }
                 InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom)
             }
         } catch (_: Exception) {
