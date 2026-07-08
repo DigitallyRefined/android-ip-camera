@@ -1251,7 +1251,45 @@ class StreamingServerHelper(
         val encCaps = H264HardwareEncoder.caps()
         val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         return try {
-            cameraInfoSources(cm).map { source ->
+            val sources = cameraInfoSources(cm)
+
+            // Sensor size varies between physical lenses (e.g. ultra-wide sensors are often
+            // smaller than the main sensor), so a simple focal-length ratio (e.g. 2.22/4.38 = 0.51)
+            // understates how wide the ultra-wide lens actually is. The OEM camera HAL derives its
+            // zoom ratio from the *effective* focal length (focal length normalized by sensor
+            // width), which accounts for this. We replicate that here: effectiveFocal = focal_mm / sensorWidth_mm.
+            fun sensorWidthMm(s: CameraInfoSource): Float? = try {
+                val sz = s.sizesCharacteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+                    ?: s.characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+                sz?.width?.takeIf { it > 0f }
+            } catch (_: Exception) { null }
+
+            fun focalLengthsOf(s: CameraInfoSource): FloatArray? = try {
+                s.sizesCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    ?: s.characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            } catch (_: Exception) { null }
+
+            // Effective (sensor-normalized) focal length for a source; larger = narrower FOV = more "zoomed in"
+            fun effectiveFocal(s: CameraInfoSource): Float? {
+                val fl = focalLengthsOf(s)?.takeIf { it.isNotEmpty() } ?: return null
+                val sw = sensorWidthMm(s) ?: return null
+                val f = fl.maxOrNull() ?: return null
+                return f / sw
+            }
+
+            // Group by logical camera id: only lenses within the same logical multi-camera group
+            // (e.g. main + ultra-wide under logical "0") share a common zoom slider / 1.0x reference.
+            val groupMaxEffectiveFocal: Map<String, Float?> = sources.groupBy { it.logicalId }
+                .mapValues { (_, group) -> group.mapNotNull { effectiveFocal(it) }.maxOrNull() }
+
+            // Fallback: plain focal-length ratio within the same logical group (used only if
+            // sensor physical size isn't available on this device).
+            val groupMaxRawFocal: Map<String, Float?> = sources.groupBy { it.logicalId }
+                .mapValues { (_, group) ->
+                    group.mapNotNull { focalLengthsOf(it)?.maxOrNull() }.maxOrNull()
+                }
+
+            sources.map { source ->
                 val ch = source.sizesCharacteristics
                 val label = cameraLabel(source)
                 val set = LinkedHashSet<Pair<Int, Int>>()
@@ -1281,20 +1319,38 @@ class StreamingServerHelper(
                 val (minZoom, maxZoom) = try {
                     val rangeRaw = ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
                         ?: source.characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-                    val focalLensRaw = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                        ?: source.characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    val focalLensRaw = focalLengthsOf(source)
                     val scalerMaxRaw = ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
                         ?: source.characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
 
+                    val thisEffectiveFocal = effectiveFocal(source)
+                    val groupMaxEff = groupMaxEffectiveFocal[source.logicalId]
+                    val thisRawFocalMax = focalLensRaw?.maxOrNull()
+                    val groupMaxRaw = groupMaxRawFocal[source.logicalId]
+
+                    // Preferred: sensor-size-normalized ratio (matches how the camera HAL derives
+                    // its multi-camera zoom ratio). Falls back to a plain focal-length ratio
+                    // (within the same logical group) if sensor physical size isn't reported.
+                    val focalDerivedMin: Float? = try {
+                        when {
+                            thisEffectiveFocal != null && groupMaxEff != null && groupMaxEff > 0f ->
+                                (thisEffectiveFocal / groupMaxEff).coerceAtLeast(0.05f)
+                            thisRawFocalMax != null && groupMaxRaw != null && groupMaxRaw > 0f ->
+                                (thisRawFocalMax / groupMaxRaw).coerceAtLeast(0.05f)
+                            else -> null
+                        }
+                    } catch (_: Exception) { null }
+
                     val computedMin: Float? = try {
                         when {
-                            rangeRaw != null -> rangeRaw.lower.toFloat()
-                            focalLensRaw != null && focalLensRaw.size >= 2 -> {
-                                val minF = focalLensRaw.minOrNull() ?: focalLensRaw[0]
-                                val maxF = focalLensRaw.maxOrNull() ?: focalLensRaw[0]
-                                // Allow heuristic to be >1.0 for lenses without ultra-wide (tele-only)
-                                (minF / maxF).toFloat().coerceAtLeast(0.1f)
+                            // If the camera reports a zoom range, prefer its lower bound,
+                            // but allow a focal-derived min if it suggests a smaller (sub-1.0) min zoom.
+                            rangeRaw != null -> {
+                                val reported = rangeRaw.lower.toFloat()
+                                if (focalDerivedMin != null && focalDerivedMin < reported) focalDerivedMin else reported
                             }
+                            // Otherwise use focal-derived min if available
+                            focalDerivedMin != null -> focalDerivedMin
                             else -> null
                         }
                     } catch (_: Exception) { null }
@@ -1303,23 +1359,24 @@ class StreamingServerHelper(
                         when {
                             // If the scaler reports a max digital zoom, trust it directly (no artificial cap)
                             scalerMaxRaw != null -> try { (scalerMaxRaw).toFloat() } catch (_: Exception) { null }
-                            // Otherwise derive from focal lengths
-                            focalLensRaw != null && focalLensRaw.size >= 2 -> {
-                                val minF = focalLensRaw.minOrNull() ?: focalLensRaw[0]
-                                val maxF = focalLensRaw.maxOrNull() ?: focalLensRaw[0]
-                                // Derive heuristic max zoom from optical focal lengths; don't artificially cap it.
-                                (maxF / minF).toFloat().coerceAtLeast(0.1f)
-                            }
+                            // Otherwise derive from the same sensor-normalized ratio, inverted
+                            thisEffectiveFocal != null && groupMaxEff != null && thisEffectiveFocal > 0f ->
+                                (groupMaxEff / thisEffectiveFocal).coerceAtLeast(1.0f)
+                            thisRawFocalMax != null && groupMaxRaw != null && thisRawFocalMax > 0f ->
+                                (groupMaxRaw / thisRawFocalMax).coerceAtLeast(1.0f)
                             else -> null
                         }
                     } catch (_: Exception) { null }
 
-                    // Debug log to help verify what devices actually report
+                    // Detailed debug log to help trace why min/max were chosen
                     try {
                         val focalStr = focalLensRaw?.joinToString(",") ?: "<none>"
                         val minStr = computedMin?.toString() ?: "<unknown>"
                         val maxStr = computedMax?.toString() ?: (scalerMaxRaw ?: "<none>")
-                        onLog("Camera ${source.id} zoom info: CONTROL_ZOOM_RATIO_RANGE=${rangeRaw?.toString() ?: "<none>"}, LENS_INFO_AVAILABLE_FOCAL_LENGTHS=$focalStr, computedMinZoom=$minStr, computedMaxZoom=$maxStr")
+                        val reportedLower = try { rangeRaw?.lower?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
+                        val reportedUpper = try { rangeRaw?.upper?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
+
+                        onLog("Camera ${source.id} zoom info: CONTROL_ZOOM_RATIO_RANGE=[$reportedLower,$reportedUpper], LENS_INFO_AVAILABLE_FOCAL_LENGTHS=$focalStr, effectiveFocal=${thisEffectiveFocal ?: "<none>"}, groupMaxEffectiveFocal=${groupMaxEff ?: "<none>"}, focalDerivedMin=${focalDerivedMin ?: "<none>"}, computedMinZoom=$minStr, computedMaxZoom=$maxStr")
                     } catch (_: Exception) {}
 
                     Pair(computedMin, computedMax)
