@@ -1275,7 +1275,21 @@ class StreamingServerHelper(
                 val minZoom = try {
                     val range = ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
                         ?: source.characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-                    range?.lower?.toFloat() ?: 1.0f
+                    if (range != null) {
+                        range.lower.toFloat()
+                    } else {
+                        // Fallback: derive an approximate min zoom from available focal lengths
+                        val focalLens = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                            ?: source.characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                        if (focalLens != null && focalLens.size >= 2) {
+                            val minF = focalLens.minOrNull() ?: focalLens[0]
+                            val maxF = focalLens.maxOrNull() ?: focalLens[0]
+                            // Ratio of smallest to largest focal length approximates the min zoom
+                            (minF / maxF).toFloat().coerceAtMost(1.0f).coerceAtLeast(0.1f)
+                        } else {
+                            1.0f
+                        }
+                    }
                 } catch (_: Exception) { 1.0f }
                 // Max digital zoom (fallback to 1.0 if unavailable)
                 val maxZoom = try {
