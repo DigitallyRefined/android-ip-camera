@@ -39,6 +39,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.KeyStore
 import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.floor
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import org.json.JSONArray
@@ -1369,17 +1371,26 @@ class StreamingServerHelper(
                     } catch (_: Exception) { null }
 
                     // Detailed debug log to help trace why min/max were chosen
+                    // Apply rounding policy: min -> floor to 1 decimal, max -> ceil to 1 decimal
+                    fun roundDown1(v: Float) = floor(v * 10f) / 10f
+                    fun roundUp1(v: Float) = ceil(v * 10f) / 10f
+
+                    var roundedMin: Float? = null
+                    var roundedMax: Float? = null
                     try {
                         val focalStr = focalLensRaw?.joinToString(",") ?: "<none>"
-                        val minStr = computedMin?.toString() ?: "<unknown>"
-                        val maxStr = computedMax?.toString() ?: (scalerMaxRaw ?: "<none>")
+                        roundedMin = computedMin?.let { roundDown1(it) }
+                        roundedMax = computedMax?.let { roundUp1(it) } ?: scalerMaxRaw?.let { try { roundUp1((it).toFloat()) } catch (_: Exception) { null } }
+
+                        val minStr = roundedMin?.toString() ?: "<unknown>"
+                        val maxStr = roundedMax?.toString() ?: "<none>"
                         val reportedLower = try { rangeRaw?.lower?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
                         val reportedUpper = try { rangeRaw?.upper?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
 
                         onLog("Camera ${source.id} zoom info: CONTROL_ZOOM_RATIO_RANGE=[$reportedLower,$reportedUpper], LENS_INFO_AVAILABLE_FOCAL_LENGTHS=$focalStr, effectiveFocal=${thisEffectiveFocal ?: "<none>"}, groupMaxEffectiveFocal=${groupMaxEff ?: "<none>"}, focalDerivedMin=${focalDerivedMin ?: "<none>"}, computedMinZoom=$minStr, computedMaxZoom=$maxStr")
                     } catch (_: Exception) {}
 
-                    Pair(computedMin, computedMax)
+                    Pair(roundedMin, roundedMax)
                 } catch (_: Exception) { Pair(null, null) }
                 InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom)
             }
