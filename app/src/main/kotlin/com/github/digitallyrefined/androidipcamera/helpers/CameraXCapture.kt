@@ -149,9 +149,40 @@ class CameraXCapture(
         // Re-apply cached controls, since rebinding replaces the camera control.
         val cc = camera?.cameraControl
         if (torchEnabled) try { cc?.enableTorch(true) } catch (_: Exception) {}
-        zoomRatio?.let { try { cc?.setZoomRatio(it) } catch (_: Exception) {} }
+        zoomRatio?.let { applyZoomWithRetry(it) }
         exposureIndex?.let { try { cc?.setExposureCompensationIndex(it) } catch (_: Exception) {} }
         manualFocus?.let { setManualFocus(it) }
+    }
+
+    /**
+     * Apply a zoom ratio, retrying briefly on failure. Right after a (re)bind, CameraX's reported
+     * zoom range (from CONTROL_ZOOM_RATIO_RANGE) can momentarily reject an otherwise-valid ratio —
+     * this mostly bites sub-1.0x (ultra-wide) ratios, since >=1.0x is almost always within the
+     * camera's default range and succeeds on the first try. Without this retry, a saved sub-1.0x
+     * zoom would silently fail to restore on app startup.
+     */
+    private fun applyZoomWithRetry(ratio: Float, attemptsLeft: Int = 10) {
+        val cc = camera?.cameraControl ?: return
+        try {
+            val future = cc.setZoomRatio(ratio)
+            future.addListener({
+                try {
+                    future.get()
+                } catch (e: Exception) {
+                    if (attemptsLeft > 0) {
+                        mainHandler.postDelayed({ applyZoomWithRetry(ratio, attemptsLeft - 1) }, 150)
+                    } else {
+                        Log.e(TAG, "zoom $ratio failed after retries: ${e.message}")
+                    }
+                }
+            }, main)
+        } catch (e: Exception) {
+            if (attemptsLeft > 0) {
+                mainHandler.postDelayed({ applyZoomWithRetry(ratio, attemptsLeft - 1) }, 150)
+            } else {
+                Log.e(TAG, "zoom $ratio rejected after retries: ${e.message}")
+            }
+        }
     }
 
     override fun captureStill(onJpeg: (ByteArray?) -> Unit) {
@@ -190,7 +221,7 @@ class CameraXCapture(
             }
             // Wait for the re-applied zoom to actually take effect on the new camera, else the still
             // would be captured at the reset (1.0x) zoom.
-            val zoomFuture = zoomRatio?.let { r -> try { camera?.cameraControl?.setZoomRatio(r) } catch (_: Exception) { null } }
+            val zoomFuture = zoomRatio?.let { r -> try { camera?.cameraControl?.setZoomRatio(r) } catch (_: Exception) { applyZoomWithRetry(r); null } }
             if (zoomFuture != null) zoomFuture.addListener(shoot, main) else shoot.run()
         }
     }
@@ -206,7 +237,7 @@ class CameraXCapture(
     override fun getTorch(): Boolean = torchEnabled
     override fun setTorch(on: Boolean) { torchEnabled = on; try { camera?.cameraControl?.enableTorch(on) } catch (_: Exception) {} }
     override fun setExposure(ev: Int) { exposureIndex = ev; try { camera?.cameraControl?.setExposureCompensationIndex(ev) } catch (_: Exception) {} }
-    override fun setZoom(ratio: Float) { zoomRatio = ratio; try { camera?.cameraControl?.setZoomRatio(ratio) } catch (_: Exception) {} }
+    override fun setZoom(ratio: Float) { zoomRatio = ratio; applyZoomWithRetry(ratio) }
     @OptIn(ExperimentalCamera2Interop::class)
     override fun triggerAutoFocus() {
         try {
