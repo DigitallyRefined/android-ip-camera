@@ -296,7 +296,22 @@ def main():
     release_notes = os.getenv("RELEASE_NOTES", "").strip()
     if not release_notes:
         release_notes = f"Release {os.getenv('RELEASE_TAG', '').strip()}"
-    write_file(out_dir / "changelogs" / f"{version_code}.txt", release_notes.encode("ascii", "ignore").decode("ascii")[:500])
+
+    def _truncate_replace_line(s, limit=500):
+        # s is expected to be ASCII-cleaned already
+        if len(s) <= limit:
+            return s[:limit]
+        trunc_index = limit
+        # if truncation happens exactly at a newline boundary, keep the prefix
+        if s[trunc_index-1] == '\n' or (trunc_index < len(s) and s[trunc_index] == '\n'):
+            return s[:trunc_index]
+        # find start of the line that is being truncated
+        last_newline_before = s.rfind('\n', 0, trunc_index)
+        line_start = last_newline_before + 1 if last_newline_before != -1 else 0
+        return s[:line_start] + "..."
+
+    safe_notes = release_notes.encode("ascii", "ignore").decode("ascii")
+    write_file(out_dir / "changelogs" / f"{version_code}.txt", _truncate_replace_line(safe_notes, 500))
 
     images_dir = out_dir / "images"
     phone_dir = images_dir / "phoneScreenshots"
