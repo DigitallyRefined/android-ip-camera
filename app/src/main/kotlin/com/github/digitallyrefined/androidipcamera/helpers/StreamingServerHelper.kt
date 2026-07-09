@@ -38,6 +38,9 @@ import java.nio.charset.StandardCharsets
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.KeyStore
+import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.floor
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import org.json.JSONArray
@@ -645,6 +648,20 @@ class StreamingServerHelper(
                 val params = parseQueryParams(uri)
                 val ts = params["ts"]?.toLongOrNull() ?: 0L // for ordering; 0 = none
 
+                // Support a single-shot reset command: ?resetCamera=<id>
+                val resetId = params["resetCamera"]
+                if (!resetId.isNullOrBlank()) {
+                    try {
+                        resetCameraPreferences(resetId)
+                    } catch (e: Exception) {
+                        onLog("Error resetting camera prefs for $resetId: ${e.message}")
+                    }
+                    writer.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK")
+                    writer.flush()
+                    socket.close()
+                    return
+                }
+
                 params.forEach { (key, value) ->
                     if (key == "ts") return@forEach
                     onControlCommand(key, value, ts)
@@ -917,6 +934,63 @@ class StreamingServerHelper(
         return false
     }
 
+    /**
+     * Reset stored per-camera preferences for a given camera id.
+     * This will remove stored zoom/exposure/focus/rotate/scale/contrast prefs
+     * for the camera token and its physical fallback, so the server will
+     * return defaults (which now prefer the camera-reported `minZoom`).
+     */
+    fun resetCameraPreferences(cameraId: String) {
+        try {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val editor = prefs.edit()
+            val physical = cameraId.substringAfter(':', cameraId)
+            // Known keys to remove for a camera
+            val keys = listOf(
+                "zoom_$cameraId", "zoom_$physical",
+                "exposure_$cameraId", "exposure_$physical",
+                "focus_$cameraId", "focus_$physical",
+                "camera_rotate_$cameraId", "camera_rotate_$physical",
+                "stream_scale_$cameraId", "stream_scale_$physical",
+                "camera_contrast_$cameraId", "camera_contrast_$physical",
+                "snapshot_res_$cameraId", "snapshot_res_$physical"
+            )
+            keys.forEach { k -> if (prefs.contains(k)) editor.remove(k) }
+            editor.apply()
+            onLog("Reset preferences for camera $cameraId")
+
+            // Apply canonical defaults immediately so the live camera reflects the reset
+            try {
+                val info = buildDeviceInfo()
+                val cam = info.cameras.firstOrNull { it.id == cameraId }
+                    ?: info.cameras.firstOrNull { it.id.endsWith(":$cameraId") }
+                val minZoom = cam?.minZoom ?: 1.0f
+
+                val now = System.currentTimeMillis()
+                val defaults = mapOf(
+                    "resolution" to "auto",
+                    "zoom" to String.format(Locale.US, "%.1f", minZoom),
+                    "exposure" to "0",
+                    "focus_distance" to "-1",
+                    "scale" to "1.0",
+                    "contrast" to "0",
+                    "fps" to "30",
+                    "rotate" to "0"
+                )
+
+                // Dispatch each control through the central handler so prefs are re-written
+                defaults.forEach { (k, v) ->
+                    try { onControlCommand(k, v, now) } catch (e: Exception) { onLog("Error applying default $k=$v: ${e.message}") }
+                }
+            } catch (e: Exception) {
+                onLog("Error applying defaults after reset for $cameraId: ${e.message}")
+            }
+        } catch (e: Exception) {
+            onLog("Error resetting prefs for $cameraId: ${e.message}")
+        }
+    }
+
+
     fun setAppInForeground(foreground: Boolean) {
         appInForeground = foreground
     }
@@ -993,7 +1067,7 @@ class StreamingServerHelper(
 
     private data class InfoSize(val w: Int, val h: Int)
 
-    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val maxZoom: Float)
+    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val minZoom: Float?, val maxZoom: Float?)
 
     private data class CameraInfoSource(
         val id: String,
@@ -1031,6 +1105,18 @@ class StreamingServerHelper(
                         put("label", camera.label)
                         put("hasFlash", camera.hasFlash)
                         put("sensorOrientation", camera.sensorOrientation)
+                        try {
+                            put("zoom", JSONObject().apply {
+                                try {
+                                    if (camera.minZoom != null) put("min", String.format(Locale.US, "%.1f", camera.minZoom))
+                                    else put("min", JSONObject.NULL)
+                                } catch (_: Exception) { try { put("min", JSONObject.NULL) } catch (_: Exception) {} }
+                                try {
+                                    if (camera.maxZoom != null) put("max", String.format(Locale.US, "%.1f", camera.maxZoom))
+                                    else put("max", JSONObject.NULL)
+                                } catch (_: Exception) { try { put("max", JSONObject.NULL) } catch (_: Exception) {} }
+                            })
+                        } catch (_: Exception) {}
                         put("sizes", JSONArray().apply {
                             camera.sizes.forEach { size ->
                                 put(JSONObject().apply {
@@ -1046,8 +1132,6 @@ class StreamingServerHelper(
                                 lensMap.forEach { (k, v) -> put(k, v) }
                             })
                         }
-                        // Expose reported max digital zoom for the camera (float)
-                        try { put("maxZoom", camera.maxZoom) } catch (_: Exception) {}
                     })
                 }
             })
@@ -1097,7 +1181,9 @@ class StreamingServerHelper(
             val map = mutableMapOf<String, String>()
 
             // Zoom: prefer token-specific key, then fallback to physical id key
-            val zoomVal = prefStringFallback("1.0", "zoom_$id", "zoom_$physical") ?: "1.0"
+            // Default to the camera-reported minZoom when no saved preference exists
+            val defaultMin = String.format(Locale.US, "%.1f", cam.minZoom ?: 1.0f)
+            val zoomVal = prefStringFallback(defaultMin, "zoom_$id", "zoom_$physical") ?: defaultMin
             map["zoom"] = zoomVal
 
             // Exposure
@@ -1167,7 +1253,45 @@ class StreamingServerHelper(
         val encCaps = H264HardwareEncoder.caps()
         val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         return try {
-            cameraInfoSources(cm).map { source ->
+            val sources = cameraInfoSources(cm)
+
+            // Sensor size varies between physical lenses (e.g. ultra-wide sensors are often
+            // smaller than the main sensor), so a simple focal-length ratio (e.g. 2.22/4.38 = 0.51)
+            // understates how wide the ultra-wide lens actually is. The OEM camera HAL derives its
+            // zoom ratio from the *effective* focal length (focal length normalized by sensor
+            // width), which accounts for this. We replicate that here: effectiveFocal = focal_mm / sensorWidth_mm.
+            fun sensorWidthMm(s: CameraInfoSource): Float? = try {
+                val sz = s.sizesCharacteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+                    ?: s.characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+                sz?.width?.takeIf { it > 0f }
+            } catch (_: Exception) { null }
+
+            fun focalLengthsOf(s: CameraInfoSource): FloatArray? = try {
+                s.sizesCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    ?: s.characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            } catch (_: Exception) { null }
+
+            // Effective (sensor-normalized) focal length for a source; larger = narrower FOV = more "zoomed in"
+            fun effectiveFocal(s: CameraInfoSource): Float? {
+                val fl = focalLengthsOf(s)?.takeIf { it.isNotEmpty() } ?: return null
+                val sw = sensorWidthMm(s) ?: return null
+                val f = fl.maxOrNull() ?: return null
+                return f / sw
+            }
+
+            // Group by logical camera id: only lenses within the same logical multi-camera group
+            // (e.g. main + ultra-wide under logical "0") share a common zoom slider / 1.0x reference.
+            val groupMaxEffectiveFocal: Map<String, Float?> = sources.groupBy { it.logicalId }
+                .mapValues { (_, group) -> group.mapNotNull { effectiveFocal(it) }.maxOrNull() }
+
+            // Fallback: plain focal-length ratio within the same logical group (used only if
+            // sensor physical size isn't available on this device).
+            val groupMaxRawFocal: Map<String, Float?> = sources.groupBy { it.logicalId }
+                .mapValues { (_, group) ->
+                    group.mapNotNull { focalLengthsOf(it)?.maxOrNull() }.maxOrNull()
+                }
+
+            sources.map { source ->
                 val ch = source.sizesCharacteristics
                 val label = cameraLabel(source)
                 val set = LinkedHashSet<Pair<Int, Int>>()
@@ -1193,13 +1317,82 @@ class StreamingServerHelper(
                     source.characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
                 val sensorOrientation = (ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
                     ?: source.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)) ?: 0
-                // Max digital zoom (fallback to 1.0 if unavailable)
-                val maxZoom = try {
-                    (ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+                // Gather zoom-related characteristics and compute fallbacks
+                val (minZoom, maxZoom) = try {
+                    val rangeRaw = ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                        ?: source.characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                    val focalLensRaw = focalLengthsOf(source)
+                    val scalerMaxRaw = ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
                         ?: source.characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
-                        ?: 1.0f).toFloat()
-                } catch (_: Exception) { 1.0f }
-                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, maxZoom)
+
+                    val thisEffectiveFocal = effectiveFocal(source)
+                    val groupMaxEff = groupMaxEffectiveFocal[source.logicalId]
+                    val thisRawFocalMax = focalLensRaw?.maxOrNull()
+                    val groupMaxRaw = groupMaxRawFocal[source.logicalId]
+
+                    // Preferred: sensor-size-normalized ratio (matches how the camera HAL derives
+                    // its multi-camera zoom ratio). Falls back to a plain focal-length ratio
+                    // (within the same logical group) if sensor physical size isn't reported.
+                    val focalDerivedMin: Float? = try {
+                        when {
+                            thisEffectiveFocal != null && groupMaxEff != null && groupMaxEff > 0f ->
+                                (thisEffectiveFocal / groupMaxEff).coerceAtLeast(0.05f)
+                            thisRawFocalMax != null && groupMaxRaw != null && groupMaxRaw > 0f ->
+                                (thisRawFocalMax / groupMaxRaw).coerceAtLeast(0.05f)
+                            else -> null
+                        }
+                    } catch (_: Exception) { null }
+
+                    val computedMin: Float? = try {
+                        when {
+                            // If the camera reports a zoom range, prefer its lower bound,
+                            // but allow a focal-derived min if it suggests a smaller (sub-1.0) min zoom.
+                            rangeRaw != null -> {
+                                val reported = rangeRaw.lower.toFloat()
+                                if (focalDerivedMin != null && focalDerivedMin < reported) focalDerivedMin else reported
+                            }
+                            // Otherwise use focal-derived min if available
+                            focalDerivedMin != null -> focalDerivedMin
+                            else -> null
+                        }
+                    } catch (_: Exception) { null }
+
+                    val computedMax: Float? = try {
+                        when {
+                            // If the scaler reports a max digital zoom, trust it directly (no artificial cap)
+                            scalerMaxRaw != null -> try { (scalerMaxRaw).toFloat() } catch (_: Exception) { null }
+                            // Otherwise derive from the same sensor-normalized ratio, inverted
+                            thisEffectiveFocal != null && groupMaxEff != null && thisEffectiveFocal > 0f ->
+                                (groupMaxEff / thisEffectiveFocal).coerceAtLeast(1.0f)
+                            thisRawFocalMax != null && groupMaxRaw != null && thisRawFocalMax > 0f ->
+                                (groupMaxRaw / thisRawFocalMax).coerceAtLeast(1.0f)
+                            else -> null
+                        }
+                    } catch (_: Exception) { null }
+
+                    // Detailed debug log to help trace why min/max were chosen
+                    // Apply rounding policy: min -> floor to 1 decimal, max -> ceil to 1 decimal
+                    fun roundDown1(v: Float) = floor(v * 10f) / 10f
+                    fun roundUp1(v: Float) = ceil(v * 10f) / 10f
+
+                    var roundedMin: Float? = null
+                    var roundedMax: Float? = null
+                    try {
+                        val focalStr = focalLensRaw?.joinToString(",") ?: "<none>"
+                        roundedMin = computedMin?.let { roundDown1(it) }
+                        roundedMax = computedMax?.let { roundUp1(it) } ?: scalerMaxRaw?.let { try { roundUp1((it).toFloat()) } catch (_: Exception) { null } }
+
+                        val minStr = roundedMin?.toString() ?: "<unknown>"
+                        val maxStr = roundedMax?.toString() ?: "<none>"
+                        val reportedLower = try { rangeRaw?.lower?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
+                        val reportedUpper = try { rangeRaw?.upper?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
+
+                        onLog("Camera ${source.id} zoom info: CONTROL_ZOOM_RATIO_RANGE=[$reportedLower,$reportedUpper], LENS_INFO_AVAILABLE_FOCAL_LENGTHS=$focalStr, effectiveFocal=${thisEffectiveFocal ?: "<none>"}, groupMaxEffectiveFocal=${groupMaxEff ?: "<none>"}, focalDerivedMin=${focalDerivedMin ?: "<none>"}, computedMinZoom=$minStr, computedMaxZoom=$maxStr")
+                    } catch (_: Exception) {}
+
+                    Pair(roundedMin, roundedMax)
+                } catch (_: Exception) { Pair(null, null) }
+                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom)
             }
         } catch (_: Exception) {
             emptyList()
