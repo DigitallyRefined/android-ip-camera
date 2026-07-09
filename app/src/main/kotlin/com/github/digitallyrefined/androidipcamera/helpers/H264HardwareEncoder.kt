@@ -5,7 +5,6 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
-import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.Surface
@@ -34,6 +33,9 @@ class H264HardwareEncoder(
     @Volatile private var running = true
     private var thread: Thread? = null
     private var semiPlanar = true   // byte-buffer layout: NV12 (interleaved UV) vs I420 (planar U then V)
+    private val parameterSets = H264ParameterSetCache()
+    private val accessUnitAssembler = H264AccessUnitAssembler()
+    private var partialFlags = 0
 
     init {
         val colorFormat = if (useSurface) MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
@@ -44,9 +46,6 @@ class H264HardwareEncoder(
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             try { setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) } catch (_: Exception) {}
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
-            }
         }
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         if (useSurface) inputSurface = codec.createInputSurface()
@@ -208,14 +207,36 @@ class H264HardwareEncoder(
         try {
             while (running) {
                 val idx = synchronized(codecLock) { codec.dequeueOutputBuffer(info, 10000) }
-                if (idx >= 0) {
-                    val buf = synchronized(codecLock) { codec.getOutputBuffer(idx) }
-                    if (buf != null && info.size > 0) {
-                        buf.position(info.offset); buf.limit(info.offset + info.size)
-                        val data = ByteArray(info.size); buf.get(data)
-                        onNal(data, (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0)
+                if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val format = synchronized(codecLock) { codec.outputFormat }
+                    cacheCodecSpecificData(format)
+                } else if (idx >= 0) {
+                    var prepared: H264ParameterSetCache.AccessUnit? = null
+                    try {
+                        val buf = synchronized(codecLock) { codec.getOutputBuffer(idx) }
+                        if (buf != null && info.size > 0) {
+                            buf.position(info.offset)
+                            buf.limit(info.offset + info.size)
+                            val data = ByteArray(info.size)
+                            buf.get(data)
+
+                            partialFlags = partialFlags or info.flags
+                            val isPartial = (info.flags and MediaCodec.BUFFER_FLAG_PARTIAL_FRAME) != 0
+                            val accessUnit = accessUnitAssembler.append(data, isPartial)
+                            if (accessUnit != null) {
+                                val flags = partialFlags
+                                partialFlags = 0
+                                prepared = parameterSets.prepare(
+                                    accessUnit,
+                                    (flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                                )
+                            }
+                        }
+                    } finally {
+                        synchronized(codecLock) { codec.releaseOutputBuffer(idx, false) }
                     }
-                    synchronized(codecLock) { codec.releaseOutputBuffer(idx, false) }
+                    // Never retain a MediaCodec output buffer while network work is scheduled.
+                    prepared?.let { onNal(it.bytes, it.isKeyframe) }
                 }
             }
         } catch (e: Exception) {
@@ -223,13 +244,31 @@ class H264HardwareEncoder(
         }
     }
 
+    private fun cacheCodecSpecificData(format: MediaFormat) {
+        for (key in arrayOf("csd-0", "csd-1")) {
+            try {
+                val source = format.getByteBuffer(key)?.duplicate() ?: continue
+                val data = ByteArray(source.remaining())
+                source.get(data)
+                parameterSets.prepare(data, false)
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to read $key: ${e.message}")
+            }
+        }
+        if (!parameterSets.hasCompleteParameters()) {
+            Log.w(TAG, "Output format did not contain complete AVC SPS/PPS")
+        }
+    }
+
     fun stop() {
+        running = false
+        try { thread?.join(500) } catch (_: Exception) {}
         synchronized(codecLock) {
-            running = false
-            try { thread?.join(500) } catch (_: Exception) {}
             try { codec.stop() } catch (_: Exception) {}
             try { codec.release() } catch (_: Exception) {}
             try { inputSurface?.release() } catch (_: Exception) {}
+            accessUnitAssembler.reset()
+            partialFlags = 0
         }
     }
 

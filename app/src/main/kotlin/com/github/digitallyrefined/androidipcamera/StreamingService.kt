@@ -479,7 +479,7 @@ class StreamingService : LifecycleService() {
         val enc = H264HardwareEncoder(sz.width, sz.height, fpsCoerced, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k -> h264StreamingEncoder?.broadcastH264(d, k) }
         h264StreamingEncoder?.setEncoder(enc)
         streamingServerHelper?.resetH264Wait()
-        return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height).also { it.start(); glPipe = it }
+        return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also { it.start(); glPipe = it }
     }
 
     private fun applyStored(b: CaptureBackend) {

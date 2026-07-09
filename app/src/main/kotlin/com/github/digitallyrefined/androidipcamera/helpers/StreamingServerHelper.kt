@@ -38,6 +38,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.KeyStore
+import java.security.SecureRandom
 import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -81,9 +82,12 @@ class StreamingServerHelper(
     private var isStarting = false
     private val clients = CopyOnWriteArrayList<Client>()
     private val h264Clients = CopyOnWriteArrayList<Client>()  // raw H.264 (/h264) viewers
+    private val audioClients = CopyOnWriteArrayList<Socket>()
     private val failedAttempts = ConcurrentHashMap<String, FailedAttempt>()
     @Volatile
     private var appInForeground: Boolean = true
+    @Volatile
+    private var serverGeneration: Long = 0
 
     // SECURITY: Rate limiting constants (only for unauthenticated connections)
     private val MAX_FAILED_ATTEMPTS = 5  // 5 failed attempts allowed
@@ -100,7 +104,7 @@ class StreamingServerHelper(
     fun getH264Clients(): List<Client> = h264Clients.toList()
     fun resetH264Wait() { h264Clients.forEach { it.waitingKey = true } }  // resync viewers at next keyframe
     fun removeH264Client(client: Client) {
-        h264Clients.remove(client)
+        if (!h264Clients.remove(client)) return
         try { client.socket.close() } catch (_: Exception) {}
         onClientDisconnected()
     }
@@ -128,16 +132,15 @@ class StreamingServerHelper(
         }
 
     fun stopServer() {
-        serverJob?.cancel()
-        serverSocket?.close()
-        clients.forEach { client ->
-            try {
-                client.socket.close()
-            } catch (e: Exception) {
-                // Ignore close errors
-            }
+        synchronized(this) {
+            serverGeneration++
+            isStarting = false
+            serverJob?.cancel()
+            serverSocket?.close()
+            serverJob = null
+            serverSocket = null
         }
-        clients.clear()
+        closeClientConnection()
     }
 
     private fun isRateLimited(clientIp: String): Boolean {
@@ -174,6 +177,7 @@ class StreamingServerHelper(
     }
 
     fun startStreamingServer() {
+        val generation: Long
         // Prevent concurrent starts
         synchronized(this) {
             if (isStarting) {
@@ -186,6 +190,8 @@ class StreamingServerHelper(
             }
 
             isStarting = true
+            serverGeneration++
+            generation = serverGeneration
         }
 
         // Show toast when starting server
@@ -218,6 +224,7 @@ class StreamingServerHelper(
                 } catch (e: Exception) {
                     // Ignore cancellation exceptions
                 }
+                closeClientConnection()
                 // Small delay to ensure port is released
                 try {
                     Thread.sleep(500)
@@ -229,12 +236,20 @@ class StreamingServerHelper(
 
         synchronized(this) {
               serverJob = CoroutineScope(Dispatchers.IO).launch {
+              var localServerSocket: ServerSocket? = null
               try {
                   val prefs = PreferenceManager.getDefaultSharedPreferences(context)
                   val secureStorage = SecureStorage(context)
                   val certificatePath = prefs.getString("certificate_path", null)
 
-                  val rawPassword = secureStorage.getSecureString(SecureStorage.KEY_CERT_PASSWORD, null)
+                  var rawPassword = secureStorage.getSecureString(SecureStorage.KEY_CERT_PASSWORD, null)
+                  if (certificatePath == null && rawPassword.isNullOrEmpty()) {
+                      rawPassword = generateCertificatePassword()
+                      if (!secureStorage.putSecureString(SecureStorage.KEY_CERT_PASSWORD, rawPassword)) {
+                          onLog("Unable to store the generated certificate password")
+                          return@launch
+                      }
+                  }
                   val certificatePassword = rawPassword?.let {
                       if (it.isEmpty()) null else it.toCharArray()
                   }
@@ -248,7 +263,8 @@ class StreamingServerHelper(
                       try {
                           val personalCertFile = File(context.filesDir, "personal_certificate.p12")
                           if (!personalCertFile.exists()) {
-                              // Try to copy from assets first
+                              // Preserve compatibility with packaged certificates, then generate a
+                              // device-local one when the upstream source tree has no certificate asset.
                               try {
                                   context.assets.open("personal_certificate.p12").use { input ->
                                       personalCertFile.outputStream().use { output ->
@@ -256,14 +272,17 @@ class StreamingServerHelper(
                                       }
                                   }
                               } catch (assetException: Exception) {
-                                  // Certificate not in assets - provide helpful error
-                                  Handler(Looper.getMainLooper()).post {
-                                      onLog("Certificate not found.")
-                                      Toast.makeText(context,
-                                          "Certificate missing, reset app to generate a new certificate",
-                                          Toast.LENGTH_LONG).show()
+                                  val password = rawPassword
+                                  if (password.isNullOrEmpty() ||
+                                      CertificateHelper.generateCertificate(context, password) == null) {
+                                      Handler(Looper.getMainLooper()).post {
+                                          onLog("Certificate generation failed")
+                                          Toast.makeText(context,
+                                              "Unable to generate TLS certificate",
+                                              Toast.LENGTH_LONG).show()
+                                      }
+                                      return@launch
                                   }
-                                  return@launch
                               }
                           }
                           finalCertificatePath = personalCertFile.absolutePath
@@ -288,7 +307,7 @@ class StreamingServerHelper(
                   val tlsVersionPref = prefs.getString("tls_version", "1.3") ?: "1.3"
                   val useTLS = tlsVersionPref != "disabled"
 
-                  serverSocket = if (useTLS) {
+                  val createdServerSocket = if (useTLS) {
                       try {
                           // Determine which certificate file to use
                           val certFile = if (certificatePath != null) {
@@ -307,16 +326,17 @@ class StreamingServerHelper(
                               File(finalCertificatePath!!)
                           }
 
-                          // Try TLS versions with fallback
-                          val tlsVersionsToTry = when (tlsVersionPref) {
-                              "1.3" -> listOf("TLSv1.3", "TLSv1.2")
-                              "1.2" -> listOf("TLSv1.2")
-                              else -> listOf("TLSv1.3", "TLSv1.2")
+                          // Android 10 introduced the platform TLS 1.3 implementation. Older
+                          // Android versions use their platform TLS 1.2 provider instead.
+                          val tlsVersionsToTry = when {
+                              tlsVersionPref == "1.2" -> listOf("TLSv1.2")
+                              android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q ->
+                                  listOf("TLSv1.3")
+                              else -> listOf("TLSv1.2")
                           }
 
                           var sslServerSocket: SSLServerSocket? = null
                           var lastError: Exception? = null
-                          var actualTlsVersionUsed: String? = null
 
                           for (tlsVersion in tlsVersionsToTry) {
                               try {
@@ -329,7 +349,7 @@ class StreamingServerHelper(
                                       val sslContext = try {
                                           SSLContext.getInstance(tlsVersion)
                                       } catch (e: Exception) {
-                                          // TLS version not supported, try next
+                                          // The selected TLS version is unavailable.
                                           lastError = e
                                           continue
                                       }
@@ -342,7 +362,6 @@ class StreamingServerHelper(
                                           // Don't restrict cipher suites - let the system negotiate
                                           soTimeout = 30000
                                       }
-                                      actualTlsVersionUsed = tlsVersion
                                       onLog("Server started with TLS $tlsVersion")
                                       break
                                   }
@@ -352,24 +371,10 @@ class StreamingServerHelper(
                               }
                           }
 
-                          if (sslServerSocket == null) {
-                              // Both TLS versions failed, disable TLS
-                              prefs.edit().putString("tls_version", "disabled").apply()
-                              throw lastError ?: IOException("Failed to create SSL server socket with any TLS version")
-                          }
+                          val readyServerSocket = sslServerSocket
+                              ?: throw lastError ?: IOException("Failed to create SSL server socket with any TLS version")
 
-                          // Update preference if we fell back to a different version
-                          if (actualTlsVersionUsed != null && tlsVersionPref != actualTlsVersionUsed) {
-                              val newPrefValue = when (actualTlsVersionUsed) {
-                                  "TLSv1.3" -> "1.3"
-                                  "TLSv1.2" -> "1.2"
-                                  else -> "disabled"
-                              }
-                              prefs.edit().putString("tls_version", newPrefValue).apply()
-                              onLog("Updated TLS version preference to $actualTlsVersionUsed (fallback)")
-                          }
-
-                          sslServerSocket
+                          readyServerSocket
                       } catch (keystoreException: Exception) {
                           Handler(Looper.getMainLooper()).post {
                               onLog("Certificate loading failed: ${keystoreException.message}")
@@ -400,26 +405,36 @@ class StreamingServerHelper(
                           return@launch
                       }
                   }
+                  localServerSocket = createdServerSocket
+                  val published = synchronized(this@StreamingServerHelper) {
+                      if (generation != serverGeneration || !isActive) false
+                      else {
+                          serverSocket = createdServerSocket
+                          true
+                      }
+                  }
+                  if (!published) return@launch
+
                   onLog("Server started on port $streamPort (${if (useTLS) "HTTPS" else "HTTP"})")
                   // Clear the starting flag now that server is running
                   synchronized(this@StreamingServerHelper) {
-                      isStarting = false
+                      if (generation == serverGeneration) isStarting = false
                   }
                   Handler(Looper.getMainLooper()).post {
                       Toast.makeText(context, "Server started", Toast.LENGTH_SHORT).show()
                   }
                   while (isActive && !Thread.currentThread().isInterrupted) {
                       try {
-                          val socket = serverSocket?.accept() ?: continue
+                          val socket = createdServerSocket.accept()
                           val clientIp = socket.inetAddress.hostAddress
 
                           // Handle each connection in a separate coroutine to avoid blocking the accept loop
                           CoroutineScope(Dispatchers.IO).launch {
-                              handleClientConnection(socket, clientIp)
+                              handleClientConnection(socket, clientIp, generation)
                           }
                       } catch (e: IOException) {
                           // Check if server socket was closed
-                          if (serverSocket == null || serverSocket!!.isClosed) {
+                          if (createdServerSocket.isClosed) {
                               onLog("Server socket closed, stopping server")
                               break
                           }
@@ -429,7 +444,7 @@ class StreamingServerHelper(
                           break
                       } catch (e: Exception) {
                           // Check if server socket was closed
-                          if (serverSocket == null || serverSocket!!.isClosed) {
+                          if (createdServerSocket.isClosed) {
                               onLog("Server socket closed, stopping server")
                               break
                           }
@@ -439,16 +454,17 @@ class StreamingServerHelper(
               } catch (e: IOException) {
                   onLog("Could not start server: ${e.message}")
               } finally {
-                  // Clear the starting flag if server failed to start
+                  try { localServerSocket?.close() } catch (_: IOException) {}
                   synchronized(this@StreamingServerHelper) {
-                      isStarting = false
+                      if (serverSocket === localServerSocket) serverSocket = null
+                      if (generation == serverGeneration) isStarting = false
                   }
               }
             }
         }
     }
 
-    private suspend fun handleClientConnection(socket: Socket, clientIp: String) {
+    private suspend fun handleClientConnection(socket: Socket, clientIp: String, generation: Long) {
         try {
             val outputStream = socket.getOutputStream()
             val writer = PrintWriter(outputStream, true)
@@ -682,6 +698,14 @@ class StreamingServerHelper(
                     try { socket.close() } catch (_: Exception) {}
                     return
                 }
+                val accepted = synchronized(this) {
+                    if (generation != serverGeneration) false
+                    else { audioClients.add(socket); true }
+                }
+                if (!accepted) {
+                    try { socket.close() } catch (_: Exception) {}
+                    return
+                }
                 try {
                     writer.print("HTTP/1.1 200 OK\r\n")
                     writer.print("Connection: keep-alive\r\n")
@@ -770,6 +794,9 @@ class StreamingServerHelper(
                     } finally {
                         try { socket.close() } catch (_: Exception) {}
                     }
+                } finally {
+                    audioClients.remove(socket)
+                    try { socket.close() } catch (_: Exception) {}
                 }
                 return
             }
@@ -791,7 +818,14 @@ class StreamingServerHelper(
                 writer.print("Content-Type: video/h264\r\n\r\n")
                 writer.flush()
                 val client = Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = enableAuth)
-                h264Clients.add(client)
+                val accepted = synchronized(this) {
+                    if (generation != serverGeneration) false
+                    else { h264Clients.add(client); true }
+                }
+                if (!accepted) {
+                    try { socket.close() } catch (_: Exception) {}
+                    return
+                }
                 onClientConnected()  // starts camera + encoder
                 try {
                     while (socket.isConnected && !socket.isClosed) {
@@ -800,9 +834,7 @@ class StreamingServerHelper(
                     }
                 } catch (_: Exception) {
                 } finally {
-                    h264Clients.remove(client)
-                    try { socket.close() } catch (_: Exception) {}
-                    onClientDisconnected()
+                    removeH264Client(client)
                 }
                 return
             }
@@ -822,7 +854,15 @@ class StreamingServerHelper(
                 writer.flush()
 
                 // Add client to list - frames will be sent from MainActivity.processImage()
-                clients.add(Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = enableAuth))
+                val client = Client(socket, outputStream, writer, System.currentTimeMillis(), isAuthenticated = enableAuth)
+                val accepted = synchronized(this) {
+                    if (generation != serverGeneration) false
+                    else { clients.add(client); true }
+                }
+                if (!accepted) {
+                    try { socket.close() } catch (_: Exception) {}
+                    return
+                }
                 onClientConnected()
 
                 // Keep connection alive - frames will be sent from MainActivity.processImage()
@@ -840,14 +880,7 @@ class StreamingServerHelper(
                 } catch (e: IOException) {
                     // Client disconnected
                 } finally {
-                    // Remove client when connection closes
-                    clients.removeIf { it.socket == socket }
-                    try {
-                        socket.close()
-                    } catch (e: Exception) {
-                        // Ignore
-                    }
-                    onClientDisconnected()
+                    removeClient(client)
                 }
             } else {
                 writer.print("HTTP/1.1 404 Not Found\r\n")
@@ -1001,6 +1034,8 @@ class StreamingServerHelper(
 
         synchronized(this) {
             // Get references to close outside synchronized block
+            serverGeneration++
+            isStarting = false
             jobToCancel = serverJob
             socketToClose = serverSocket
             serverSocket = null
@@ -1044,19 +1079,31 @@ class StreamingServerHelper(
     }
 
     fun closeClientConnection() {
-        clients.forEach { client ->
+        val clientsToClose = clients.toList()
+        val h264ClientsToClose = h264Clients.toList()
+        val audioClientsToClose = audioClients.toList()
+        clients.clear()
+        h264Clients.clear()
+        audioClients.clear()
+        (clientsToClose + h264ClientsToClose).forEach { client ->
             try {
                 client.socket.close()
             } catch (e: IOException) {
                 onLog("Error closing client connection: ${e.message}")
             }
         }
-        clients.clear()
-        onClientDisconnected()
+        audioClientsToClose.forEach { socket ->
+            try {
+                socket.close()
+            } catch (e: IOException) {
+                onLog("Error closing audio connection: ${e.message}")
+            }
+        }
+        if (clientsToClose.isNotEmpty() || h264ClientsToClose.isNotEmpty()) onClientDisconnected()
     }
 
     fun removeClient(client: Client) {
-        clients.remove(client)
+        if (!clients.remove(client)) return
         try {
             client.socket.close()
         } catch (e: IOException) {
@@ -1455,6 +1502,14 @@ class StreamingServerHelper(
         bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
     } catch (_: Exception) {
         -1
+    }
+
+    private fun generateCertificatePassword(): String {
+        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        val random = SecureRandom()
+        return buildString(32) {
+            repeat(32) { append(alphabet[random.nextInt(alphabet.length)]) }
+        }
     }
 
     private fun getWifiStrength(): Int = try {
