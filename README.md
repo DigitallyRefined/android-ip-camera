@@ -25,7 +25,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 
 ## Features
 
-* 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/video/m.jpeg`)
+* 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/video/mjpeg`)
 * 📴 Option to turn the display off while streaming
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
@@ -50,7 +50,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
 * **Web Control Panel (`/`)**
   * **Usage:** Open `https://[ip_address]:[port]/` (or `http://...`) in any web browser.
   * **Description:** Serves the built-in control panel, which plays the rear or front camera video stream and allows muting/unmuting audio. Remote controls include: camera section, image rotation, flash light toggle, resolution, zoom, exposure and contrast.
-* **Motion JPEG Video Stream (`/video/m.jpeg`)**
+* **Motion JPEG Video Stream (`/video/mjpeg`)**
   * **Usage:** Open directly in a web browser or configure in external home automation tools (e.g. Home Assistant MJPEG IP Camera).
   * **Format:** `multipart/x-mixed-replace; boundary=frame`
 * **Raw H.264 Video Stream (`/video/h264`)**

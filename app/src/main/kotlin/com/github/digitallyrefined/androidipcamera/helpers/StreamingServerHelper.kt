@@ -458,7 +458,7 @@ class StreamingServerHelper(
 
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
 
-            // Read the request line (e.g., GET /video/m.jpeg HTTP/1.1)
+            // Read the request line (e.g., GET /video/mjpeg HTTP/1.1)
             val requestLine = reader.readLine() ?: return
             val requestParts = requestLine.split(" ")
             if (requestParts.size < 2) return
@@ -807,7 +807,7 @@ class StreamingServerHelper(
                 return
             }
 
-            if (path == "/video/m.jpeg") {
+            if (path == "/video/mjpeg") {
                 // AUTHENTICATED CONNECTION if auth is enabled - No rate limiting, higher connection limits
                 if (handleMaxClients(socket, isAuthenticated = enableAuth)) return
 
