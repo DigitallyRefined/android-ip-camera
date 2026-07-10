@@ -20,8 +20,8 @@ android {
         applicationId "com.github.digitallyrefined.androidipcamera"
         minSdk 24
         targetSdk 34
-        versionCode 70
-        versionName "0.7.0"
+        versionCode 71
+        versionName "0.7.1"
 
         // https://f-droid.org/docs/Reproducible_Builds/#pngs-generated-from-vector-drawables
         vectorDrawables.generatedDensities = []
