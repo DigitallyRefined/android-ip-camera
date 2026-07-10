@@ -1366,8 +1366,7 @@ class StreamingServerHelper(
                     ?: source.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)) ?: 0
                 // Gather zoom-related characteristics and compute fallbacks
                 val (minZoom, maxZoom) = try {
-                    val rangeRaw = ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-                        ?: source.characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                    val rangeRaw = getZoomRatioRangeSafe(ch) ?: getZoomRatioRangeSafe(source.characteristics)
                     val focalLensRaw = focalLengthsOf(source)
                     val scalerMaxRaw = ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
                         ?: source.characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
@@ -1495,6 +1494,26 @@ class StreamingServerHelper(
             ?.takeIf { it.isNotEmpty() }
             ?.joinToString("/") { length -> "${"%.1f".format(length)}mm" }
         return if (focalLengths == null) "$facingLabel $physicalLabel" else "$facingLabel $physicalLabel ($focalLengths)"
+    }
+
+    private fun getZoomRatioRangeSafe(ch: CameraCharacteristics?): android.util.Range<Float>? {
+        if (ch == null) return null
+        return try {
+            @Suppress("UNCHECKED_CAST")
+            val key = try {
+                CameraCharacteristics::class.java.getField("CONTROL_ZOOM_RATIO_RANGE").get(null) as? CameraCharacteristics.Key<android.util.Range<Float>>
+            } catch (e: NoSuchFieldException) {
+                try {
+                    @Suppress("UNCHECKED_CAST")
+                    CameraCharacteristics.Key("android.control.zoomRatioRange", android.util.Range::class.java) as? CameraCharacteristics.Key<android.util.Range<Float>>
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            key?.let { ch.get(it) }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun getBatteryPercent(): Int = try {
