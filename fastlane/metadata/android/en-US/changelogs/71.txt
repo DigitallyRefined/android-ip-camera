@@ -1,0 +1,9 @@
+## What's Changed
+* Fix Android 9 H.264 streaming and server resilience by @sabag in #48
+* Improve control throttling to prevent older requests overwriting newer requests/zooming
+* Improvements to app stability #45
+
+## New Contributors
+* @sabag made their first contribution in #48
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.7.0...v0.7.1
