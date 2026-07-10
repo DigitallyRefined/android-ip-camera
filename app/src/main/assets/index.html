@@ -484,7 +484,9 @@
 
     // Live preview while dragging, but throttled; each request carries an
     // increasing timestamp so the server can drop out-of-order updates.
-    const CONTROL_THROTTLE_MS = 100;
+    // Uses a trailing-throttle strategy: drop intermediate changes during
+    // the throttle window and always send the last value when the window ends.
+    const CONTROL_THROTTLE_MS = 300;
     let lastControlTs = 0;
     function nextControlTs() {
       // Wall-clock based, but never repeats within the same millisecond.
@@ -555,11 +557,12 @@
       const param = el.dataset.control;
       if (!param) return;
       const badge = el.dataset.badge ? getElById(el.dataset.badge) : null;
+
+      // Per-control throttle state
       let lastSentAt = 0;
       let lastSentValue = null;
       let timer = null;
-
-
+      let pendingValue = null;
 
       // Buttons send their configured value immediately on click
       if (el.tagName === 'BUTTON') {
@@ -578,21 +581,34 @@
         return;
       }
 
-      function send() {
-        if (timer) { clearTimeout(timer); timer = null; }
-        const val = el.value;
-        if (val === lastSentValue) return;
+      function dispatchValue(val) {
+        if (val === lastSentValue) {
+          // Update timestamp so subsequent throttles are measured from now
+          lastSentAt = Date.now();
+          return;
+        }
         lastSentValue = val;
         lastSentAt = Date.now();
         sendControl(param, val);
       }
 
-      function schedule() {
-        const wait = CONTROL_THROTTLE_MS - (Date.now() - lastSentAt);
-        if (wait <= 0) {
-          send();
-        } else if (!timer) {
-          timer = setTimeout(send, wait);
+      function scheduleSend() {
+        const now = Date.now();
+        const since = now - lastSentAt;
+        const wait = Math.max(0, CONTROL_THROTTLE_MS - since);
+        if (wait === 0) {
+          const val = pendingValue !== null ? pendingValue : el.value;
+          pendingValue = null;
+          dispatchValue(val);
+        } else {
+          // Always refresh timer so the last value is sent at the end
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            timer = null;
+            const val = pendingValue !== null ? pendingValue : el.value;
+            pendingValue = null;
+            dispatchValue(val);
+          }, wait);
         }
       }
 
@@ -606,9 +622,16 @@
             rotate = ((v % 360) + 360) % 360;
           } catch (_) {}
         }
-        schedule();
+        pendingValue = el.value;
+        scheduleSend();
       });
-      el.addEventListener('change', send); // final value on release
+
+      el.addEventListener('change', () => {
+        // On final change (release), cancel any pending timer and send
+        if (timer) { clearTimeout(timer); timer = null; }
+        pendingValue = null;
+        try { dispatchValue(el.value); } catch (_) { /* swallow */ }
+      });
 
       if (badge) badge.innerText = formatControlValue(el);
     }
