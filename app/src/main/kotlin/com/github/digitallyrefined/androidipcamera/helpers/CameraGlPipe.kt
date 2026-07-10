@@ -21,11 +21,17 @@ import java.util.concurrent.atomic.AtomicBoolean
  * (which the LEGACY HAL drives fine), a GL thread draws it into the encoder's input Surface — no CPU
  * copy, so the HW encoder sustains 1080p30. Hand [surfaceTexture] to Camera1.setPreviewTexture.
  */
-class CameraGlPipe(private val encoderSurface: Surface, private val width: Int, private val height: Int) {
+class CameraGlPipe(
+    private val encoderSurface: Surface,
+    private val width: Int,
+    private val height: Int,
+    targetFps: Int
+) {
     private var thread: Thread? = null
     @Volatile private var running = true
     private val ready = CountDownLatch(1)
     private val frameAvailable = AtomicBoolean(false)
+    private val frameRateLimiter = FrameRateLimiter(targetFps)
 
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
@@ -60,10 +66,13 @@ class CameraGlPipe(private val encoderSurface: Surface, private val width: Int, 
             while (running) {
                 if (frameAvailable.compareAndSet(true, false)) {
                     surfaceTexture.updateTexImage()
-                    surfaceTexture.getTransformMatrix(stMatrix)
-                    drawFrame()
-                    EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, surfaceTexture.timestamp)
-                    EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+                    val timestamp = surfaceTexture.timestamp.takeIf { it > 0L } ?: System.nanoTime()
+                    if (frameRateLimiter.shouldEmit(timestamp)) {
+                        surfaceTexture.getTransformMatrix(stMatrix)
+                        drawFrame()
+                        EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, timestamp)
+                        EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+                    }
                 } else {
                     Thread.sleep(2)
                 }
@@ -157,6 +166,7 @@ class CameraGlPipe(private val encoderSurface: Surface, private val width: Int, 
     fun stop() {
         running = false
         try { thread?.join(500) } catch (_: Exception) {}
+        frameRateLimiter.reset()
     }
 
     companion object { private const val TAG = "CameraGlPipe" }

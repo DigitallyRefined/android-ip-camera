@@ -5,9 +5,11 @@ import android.util.Log
 import android.util.Size
 import androidx.camera.core.ImageProxy
 import androidx.preference.PreferenceManager
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * H.264 streaming encoder implementation.
@@ -20,6 +22,7 @@ class H264StreamingEncoder(
 ) : StreamingEncoder {
     companion object {
         private const val TAG = "H264StreamingEncoder"
+        private const val WRITER_QUEUE_CAPACITY = 30
     }
 
     var h264HardwareEncoder: H264HardwareEncoder? = null
@@ -27,11 +30,21 @@ class H264StreamingEncoder(
     private var glPipe: CameraGlPipe? = null
     private var backend: CaptureBackend? = null
     private var captureRunning = false
+    private val writerGeneration = AtomicLong()
+    private val networkWriter = ThreadPoolExecutor(
+        1,
+        1,
+        30L,
+        TimeUnit.SECONDS,
+        ArrayBlockingQueue(WRITER_QUEUE_CAPACITY),
+        { runnable -> Thread(runnable, "H264NetworkWriter").apply { isDaemon = true } }
+    ).apply { allowCoreThreadTimeOut(true) }
 
     override fun processFrame(image: ImageProxy) {
         try {
             var enc = h264HardwareEncoder
             if (enc == null || enc.width != image.width || enc.height != image.height) {
+                invalidatePendingWrites()
                 enc?.stop()
                 val prefs = PreferenceManager.getDefaultSharedPreferences(context)
                 val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
@@ -71,6 +84,7 @@ class H264StreamingEncoder(
         glPipe = null
         h264HardwareEncoder?.stop()
         h264HardwareEncoder = null
+        invalidatePendingWrites()
         captureRunning = false
     }
 
@@ -83,32 +97,63 @@ class H264StreamingEncoder(
      */
     fun broadcastH264(data: ByteArray, isKey: Boolean) {
         val helper = streamingServerHelper ?: return
-        val list = helper.getH264Clients()
-        if (list.isEmpty()) return
+        val clients = helper.getH264Clients()
+        if (clients.isEmpty()) return
+        val generation = writerGeneration.get()
 
-        // Run network I/O on IO dispatcher to avoid main-thread network operations
-        CoroutineScope(Dispatchers.IO).launch {
-            val toRemove = mutableListOf<StreamingServerHelper.Client>()
-            for (c in list) {
-                try {
-                    if (c.waitingKey) {
-                        if (!isKey) continue
-                        c.waitingKey = false
-                    }
-                    c.outputStream.write(data)
-                    c.outputStream.flush()
-                } catch (e: Exception) {
-                    toRemove.add(c)
-                }
-            }
-            toRemove.forEach { helper.removeH264Client(it) }
+        // One bounded worker preserves access-unit ordering without ever blocking MediaCodec.
+        if (networkWriter.queue.remainingCapacity() == 0) {
+            disconnectStalledClients(helper)
+            return
         }
+        try {
+            // Capture recipients now so queued frames from a disconnected viewer can never be
+            // delivered as a stale burst to a viewer that connects later.
+            networkWriter.execute { writeH264(data, isKey, clients, generation) }
+        } catch (_: RejectedExecutionException) {
+            disconnectStalledClients(helper)
+        }
+    }
+
+    private fun disconnectStalledClients(helper: StreamingServerHelper) {
+        invalidatePendingWrites()
+        val stalled = helper.getH264Clients()
+        Log.w(TAG, "H.264 writer stalled; disconnecting ${stalled.size} client(s)")
+        onLog("H.264 client disconnected because its network writer stalled")
+        stalled.forEach { helper.removeH264Client(it) }
+    }
+
+    private fun writeH264(
+        data: ByteArray,
+        isKey: Boolean,
+        clients: List<StreamingServerHelper.Client>,
+        generation: Long
+    ) {
+        if (generation != writerGeneration.get()) return
+        val helper = streamingServerHelper ?: return
+        val toRemove = mutableListOf<StreamingServerHelper.Client>()
+        for (c in clients) {
+            if (generation != writerGeneration.get()) return
+            try {
+                val wasWaitingForKey = c.waitingKey
+                if (wasWaitingForKey && !isKey) continue
+                c.outputStream.write(data)
+                c.outputStream.flush()
+                // A restart may happen while a socket write is blocked. Never let an access unit
+                // from the old encoder generation mark the new stream as synchronized.
+                if (wasWaitingForKey && generation == writerGeneration.get()) c.waitingKey = false
+            } catch (e: Exception) {
+                toRemove.add(c)
+            }
+        }
+        toRemove.forEach { helper.removeH264Client(it) }
     }
 
     /**
      * Reset H.264 wait state for all clients (called when encoder restarts).
      */
     fun resetWait() {
+        invalidatePendingWrites()
         streamingServerHelper?.resetH264Wait()
     }
 
@@ -128,6 +173,12 @@ class H264StreamingEncoder(
      * Set the H.264 hardware encoder (used by Camera1 backend).
      */
     fun setEncoder(encoder: H264HardwareEncoder) {
+        invalidatePendingWrites()
         h264HardwareEncoder = encoder
+    }
+
+    private fun invalidatePendingWrites() {
+        writerGeneration.incrementAndGet()
+        networkWriter.queue.clear()
     }
 }

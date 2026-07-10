@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="tls_version_entries">
-        <item>TLS 1.3 (Recommended)</item>
+        <item>Automatic (TLS 1.3 on Android 10+, otherwise TLS 1.2)</item>
         <item>TLS 1.2</item>
         <item>TLS Disabled (HTTP only)</item>
     </string-array>
