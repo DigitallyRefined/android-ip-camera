@@ -30,6 +30,8 @@ class H264StreamingEncoder(
     private var glPipe: CameraGlPipe? = null
     private var backend: CaptureBackend? = null
     private var captureRunning = false
+    private var lastFrameTime = 0L
+    private var frameTimestamp = 0L
     private val writerGeneration = AtomicLong()
     private val networkWriter = ThreadPoolExecutor(
         1,
@@ -41,14 +43,28 @@ class H264StreamingEncoder(
     ).apply { allowCoreThreadTimeOut(true) }
 
     override fun processFrame(image: ImageProxy) {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
+        val fpsCoerced = fps.coerceIn(1, 60)
+        val delay = try { 1000L / fpsCoerced } catch (_: Exception) { 33L }
+        val currentTime = System.currentTimeMillis()
+
+        if (currentTime - lastFrameTime < delay) return
+        lastFrameTime = currentTime
+        
+        // Generate regular timestamps for encoder to maintain target FPS
+        if (frameTimestamp == 0L) {
+            frameTimestamp = System.nanoTime() / 1000
+        } else {
+            frameTimestamp += (1_000_000L / fpsCoerced)
+        }
+        
         try {
             var enc = h264HardwareEncoder
             if (enc == null || enc.width != image.width || enc.height != image.height) {
                 invalidatePendingWrites()
                 enc?.stop()
-                val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-                val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
-                val fpsCoerced = fps.coerceIn(1, 60)
+                frameTimestamp = 0L  // Reset timestamp on encoder restart
                 enc = H264HardwareEncoder(
                     image.width,
                     image.height,
@@ -60,7 +76,7 @@ class H264StreamingEncoder(
                 enc.requestKeyFrame()
                 streamingServerHelper?.resetH264Wait()
             }
-            enc.feed(image, image.imageInfo.timestamp / 1000)
+            enc.feed(image, frameTimestamp)
         } catch (e: Exception) {
             Log.e(TAG, "feed: ${e.message}")
         }
@@ -85,6 +101,8 @@ class H264StreamingEncoder(
         h264HardwareEncoder?.stop()
         h264HardwareEncoder = null
         invalidatePendingWrites()
+        frameTimestamp = 0L
+        lastFrameTime = 0L
         captureRunning = false
     }
 

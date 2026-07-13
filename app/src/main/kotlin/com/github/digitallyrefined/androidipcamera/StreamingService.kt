@@ -374,11 +374,21 @@ class StreamingService : LifecycleService() {
     } catch (e: Exception) { true }
 
     /** auto | camerax | camera1. auto → Camera1 on LEGACY HALs (true 1080p), CameraX everywhere else. */
-    private fun chooseApi(): String =
-        when (val pref = PreferenceManager.getDefaultSharedPreferences(this).getString("capture_api", "auto") ?: "auto") {
-            "camerax", "camera1" -> pref
-            else -> if (isLegacy()) "camera1" else "camerax"
+    private fun chooseApi(): String {
+        val pref = PreferenceManager.getDefaultSharedPreferences(this).getString("capture_api", "auto") ?: "auto"
+        if (pref == "camerax" || pref == "camera1") return pref
+        
+        // For H.264 streaming, prefer Camera1 (surface mode, zero-copy, 30fps) over CameraX (byte-buffer, CPU-bound)
+        val hasH264 = h264StreamingEncoder?.hasClients() == true
+        if (hasH264 && !isLegacy()) {
+            // Use Camera1 for H.264 to get surface mode (zero-copy) performance
+            // CameraX byte-buffer mode is CPU-bound and caps at ~10fps on many devices
+            Log.i(TAG, "Choosing Camera1 for H.264 surface mode (30fps)")
+            return "camera1"
         }
+        
+        return if (isLegacy()) "camera1" else "camerax"
+    }
 
     /** Desired stream size from the resolution pref; "auto" → 1080p target (the device gives its best ≤ that). */
     private fun desiredSize(): Size {

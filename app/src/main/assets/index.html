@@ -856,7 +856,7 @@
       }
       // Restore persisted preference where possible; fall back to MJPEG.
       try {
-        const pref = localStorage.getItem('streamMode') || 'mjpeg';
+        const pref = localStorage.getItem('streamMode') || (h264Supported && window.isSecureContext ? 'h264' : 'mjpeg');
         setStreamMode(pref);
       } catch (_) {
         setStreamMode('mjpeg');
