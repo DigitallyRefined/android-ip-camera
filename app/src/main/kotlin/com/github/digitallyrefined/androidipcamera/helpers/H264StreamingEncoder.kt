@@ -5,6 +5,7 @@ import android.util.Log
 import android.util.Size
 import androidx.camera.core.ImageProxy
 import androidx.preference.PreferenceManager
+import kotlinx.coroutines.delay
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
@@ -27,6 +28,7 @@ class H264StreamingEncoder(
 
     var h264HardwareEncoder: H264HardwareEncoder? = null
         private set
+    private val releasingEncoders = java.util.concurrent.CopyOnWriteArrayList<H264HardwareEncoder>()
     private var glPipe: CameraGlPipe? = null
     private var backend: CaptureBackend? = null
     private var captureRunning = false
@@ -41,26 +43,31 @@ class H264StreamingEncoder(
     ).apply { allowCoreThreadTimeOut(true) }
 
     override fun processFrame(image: ImageProxy) {
+        val enc = h264HardwareEncoder
+        if (enc != null && enc.useSurface) {
+            // Already running in surface mode, camera renders directly to it.
+            return
+        }
         try {
-            var enc = h264HardwareEncoder
-            if (enc == null || enc.width != image.width || enc.height != image.height) {
+            var encMutable = enc
+            if (encMutable == null || encMutable.width != image.width || encMutable.height != image.height) {
                 invalidatePendingWrites()
-                enc?.stop()
+                encMutable?.stop()
                 val prefs = PreferenceManager.getDefaultSharedPreferences(context)
                 val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
                 val fpsCoerced = fps.coerceIn(1, 60)
-                enc = H264HardwareEncoder(
+                encMutable = H264HardwareEncoder(
                     image.width,
                     image.height,
                     fpsCoerced,
                     H264HardwareEncoder.bitrateFor(image.width, image.height),
                     false
                 ) { d, k -> broadcastH264(d, k) }
-                h264HardwareEncoder = enc
-                enc.requestKeyFrame()
+                h264HardwareEncoder = encMutable
+                encMutable.requestKeyFrame()
                 streamingServerHelper?.resetH264Wait()
             }
-            enc.feed(image, image.imageInfo.timestamp / 1000)
+            encMutable.feed(image, image.imageInfo.timestamp / 1000)
         } catch (e: Exception) {
             Log.e(TAG, "feed: ${e.message}")
         }
@@ -82,10 +89,35 @@ class H264StreamingEncoder(
         backend = null
         glPipe?.stop()
         glPipe = null
-        h264HardwareEncoder?.stop()
+        h264HardwareEncoder?.let { enc ->
+            enc.stop()
+            if (enc.useSurface && enc.hasSurfaceBeenProvided && !enc.isReleased) {
+                releasingEncoders.add(enc)
+            }
+        }
         h264HardwareEncoder = null
         invalidatePendingWrites()
         captureRunning = false
+    }
+
+    suspend fun awaitRelease() {
+        if (releasingEncoders.isEmpty()) return
+        Log.i(TAG, "Awaiting release of ${releasingEncoders.size} old H.264 hardware encoder(s)")
+        val iterator = releasingEncoders.iterator()
+        while (iterator.hasNext()) {
+            val enc = iterator.next()
+            var attempts = 0
+            while (!enc.isReleased && attempts < 30) {
+                delay(100)
+                attempts++
+            }
+            if (enc.isReleased) {
+                Log.i(TAG, "Old H.264 hardware encoder $enc fully released after ${attempts * 100}ms")
+            } else {
+                Log.w(TAG, "Timeout waiting for old H.264 hardware encoder to release: $enc")
+            }
+            releasingEncoders.remove(enc)
+        }
     }
 
     override fun hasClients(): Boolean {
@@ -169,11 +201,14 @@ class H264StreamingEncoder(
         streamingServerHelper = helper
     }
 
-    /**
-     * Set the H.264 hardware encoder (used by Camera1 backend).
-     */
     fun setEncoder(encoder: H264HardwareEncoder) {
         invalidatePendingWrites()
+        h264HardwareEncoder?.let { old ->
+            old.stop()
+            if (old.useSurface && old.hasSurfaceBeenProvided && !old.isReleased) {
+                releasingEncoders.add(old)
+            }
+        }
         h264HardwareEncoder = encoder
     }
 

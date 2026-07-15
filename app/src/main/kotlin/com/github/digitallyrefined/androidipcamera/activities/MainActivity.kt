@@ -318,30 +318,36 @@ class MainActivity : AppCompatActivity() {
 
             val hasClients = streamingService?.streamingServerHelper?.getClients()?.isNotEmpty() == true
 
-            viewFinder.visibility = if (hasClients) View.VISIBLE else View.INVISIBLE
-            noClientMessage.visibility = if (hasClients) View.GONE else View.VISIBLE
-            rootView.setBackgroundColor(if (hasClients) android.graphics.Color.TRANSPARENT else android.graphics.Color.BLACK)
+            viewFinder.visibility = if (hasClients) View.INVISIBLE else View.VISIBLE
+            noClientMessage.visibility = if (hasClients) View.VISIBLE else View.GONE
+            noClientMessage.text = if (hasClients) "Streaming active - client(s) connected" else ""
+            rootView.setBackgroundColor(if (hasClients) android.graphics.Color.BLACK else android.graphics.Color.TRANSPARENT)
 
             userHiddenPreview = false
             backGestureCallback.isEnabled = false
 
-            if (isBound && hasClients) {
+            if (isBound) {
                 streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
             }
         }
     }
 
     private fun showNoClientMessage(show: Boolean) {
-        noClientMessage.visibility = if (show && !userHiddenPreview) View.VISIBLE else View.GONE
         val rootView = viewBinding.root
         if (show) {
-            viewBinding.viewFinder.visibility = View.INVISIBLE
-            rootView.setBackgroundColor(android.graphics.Color.BLACK)
-        } else {
+            noClientMessage.visibility = View.GONE
             if (!userHiddenPreview) {
                 viewBinding.viewFinder.visibility = View.VISIBLE
                 rootView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
             }
+            if (isBound) {
+                streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+            }
+        } else {
+            noClientMessage.text = "Streaming active - client(s) connected"
+            noClientMessage.visibility = if (!userHiddenPreview) View.VISIBLE else View.GONE
+            viewBinding.viewFinder.visibility = View.INVISIBLE
+            rootView.setBackgroundColor(android.graphics.Color.BLACK)
         }
     }
 

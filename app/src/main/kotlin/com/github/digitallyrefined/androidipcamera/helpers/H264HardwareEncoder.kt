@@ -6,6 +6,8 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import androidx.camera.core.ImageProxy
@@ -23,11 +25,13 @@ class H264HardwareEncoder(
     val height: Int,
     frameRate: Int,
     bitRate: Int,
-    private val useSurface: Boolean,
+    val useSurface: Boolean,
     private val onNal: (ByteArray, Boolean) -> Unit
 ) {
     private val codec: MediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val codecLock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var codecReleased = false
     var inputSurface: Surface? = null
         private set
     @Volatile private var running = true
@@ -36,6 +40,15 @@ class H264HardwareEncoder(
     private val parameterSets = H264ParameterSetCache()
     private val accessUnitAssembler = H264AccessUnitAssembler()
     private var partialFlags = 0
+    private var frameCount = 0
+
+    @Volatile var hasSurfaceBeenProvided = false
+    @Volatile private var isStopped = false
+    @Volatile private var isReleasedByCameraX = false
+
+    /** Exposes the release state of the underlying MediaCodec and input surface. */
+    val isReleased: Boolean
+        get() = codecReleased
 
     init {
         val colorFormat = if (useSurface) MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
@@ -118,6 +131,9 @@ class H264HardwareEncoder(
         copyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
     }
 
+    private var planeRowBuf: ByteArray? = null
+    private var planeDstRowBuf: ByteArray? = null
+
     private fun copyPlane(
         src: ImageProxy.PlaneProxy,
         dst: Image.Plane,
@@ -131,25 +147,41 @@ class H264HardwareEncoder(
         val sPix = src.pixelStride
         val dPix = dst.pixelStride
 
-        val rowBuf = ByteArray(sRow)
+        var rBuf = planeRowBuf
+        if (rBuf == null || rBuf.size < sRow) { rBuf = ByteArray(sRow).also { planeRowBuf = it } }
+
+        var dRBuf: ByteArray? = null
+        if (sPix != 1 || dPix != 1) {
+            dRBuf = planeDstRowBuf
+            if (dRBuf == null || dRBuf.size < dRow) { dRBuf = ByteArray(dRow).also { planeDstRowBuf = it } }
+        }
+
         for (row in 0 until h) {
             sBuf.position(row * sRow)
             val bytesToRead = minOf(sRow, sBuf.remaining())
-            sBuf.get(rowBuf, 0, bytesToRead)
+            sBuf.get(rBuf, 0, bytesToRead)
 
             dBuf.position(row * dRow)
             if (sPix == 1 && dPix == 1) {
                 val bytesToWrite = minOf(w, dBuf.remaining())
-                dBuf.put(rowBuf, 0, bytesToWrite)
-            } else {
-                val rowOffset = row * dRow
+                dBuf.put(rBuf, 0, bytesToWrite)
+            } else if (dRBuf != null) {
+                val limit = minOf(w * dPix, dRow)
+                val bytesToCopy = minOf(limit, dBuf.remaining())
+
+                if (dPix > 1) {
+                    dBuf.get(dRBuf, 0, bytesToCopy)
+                    dBuf.position(row * dRow)
+                }
+
                 for (col in 0 until w) {
-                    val dstIdx = rowOffset + col * dPix
+                    val dstIdx = col * dPix
                     val srcIdx = col * sPix
-                    if (dstIdx < dBuf.capacity() && srcIdx < rowBuf.size) {
-                        dBuf.put(dstIdx, rowBuf[srcIdx])
+                    if (srcIdx < bytesToRead && dstIdx < limit) {
+                        dRBuf[dstIdx] = rBuf[srcIdx]
                     }
                 }
+                dBuf.put(dRBuf, 0, bytesToCopy)
             }
         }
     }
@@ -236,7 +268,13 @@ class H264HardwareEncoder(
                         synchronized(codecLock) { codec.releaseOutputBuffer(idx, false) }
                     }
                     // Never retain a MediaCodec output buffer while network work is scheduled.
-                    prepared?.let { onNal(it.bytes, it.isKeyframe) }
+                    prepared?.let {
+                        val count = ++frameCount
+                        if (count % 30 == 0) {
+                            Log.d(TAG, "Encoded frame: count=$count, size=${it.bytes.size}, isKey=${it.isKeyframe}")
+                        }
+                        onNal(it.bytes, it.isKeyframe)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -261,14 +299,52 @@ class H264HardwareEncoder(
     }
 
     fun stop() {
+        Log.i(TAG, "stop() called for encoder: $this, useSurface=$useSurface, hasSurfaceBeenProvided=$hasSurfaceBeenProvided")
         running = false
         try { thread?.join(500) } catch (_: Exception) {}
+        isStopped = true
+        checkRelease()
+    }
+
+    fun release() {
+        Log.i(TAG, "release() called for encoder: $this, useSurface=$useSurface, hasSurfaceBeenProvided=$hasSurfaceBeenProvided")
+        isReleasedByCameraX = true
+        checkRelease()
+    }
+
+    private fun checkRelease() {
         synchronized(codecLock) {
+            val shouldRelease = when {
+                !useSurface -> true
+                !hasSurfaceBeenProvided && isStopped -> {
+                    Log.i(TAG, "Encoder stopped before surface was provided to CameraX. Releasing immediately: $this")
+                    true
+                }
+                hasSurfaceBeenProvided && isStopped && isReleasedByCameraX -> {
+                    Log.i(TAG, "Encoder stopped and surface released by CameraX. Releasing now: $this")
+                    true
+                }
+                else -> {
+                    Log.i(TAG, "Deferred release conditions not met yet for $this (isStopped=$isStopped, isReleasedByCameraX=$isReleasedByCameraX, hasSurfaceBeenProvided=$hasSurfaceBeenProvided)")
+                    false
+                }
+            }
+            if (shouldRelease) {
+                doRealRelease()
+            }
+        }
+    }
+
+    private fun doRealRelease() {
+        synchronized(codecLock) {
+            if (codecReleased) return
+            codecReleased = true
             try { codec.stop() } catch (_: Exception) {}
             try { codec.release() } catch (_: Exception) {}
             try { inputSurface?.release() } catch (_: Exception) {}
             accessUnitAssembler.reset()
             partialFlags = 0
+            Log.i(TAG, "H264HardwareEncoder resources actually released for: $this")
         }
     }
 

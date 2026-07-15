@@ -49,6 +49,7 @@ class CameraXCapture(
     private val cameraId: String?,
     private val desired: Size,
     private val previewSurfaceProvider: Preview.SurfaceProvider? = null,
+    private val encoderSurfaceProvider: Preview.SurfaceProvider? = null,
     private val onFrame: (ImageProxy) -> Unit
 ) : CaptureBackend {
     @Volatile override var width = desired.width; private set
@@ -62,6 +63,7 @@ class CameraXCapture(
     private var boundSelector: CameraSelector? = null
     private var analysisUseCase: ImageAnalysis? = null
     private var previewUseCase: Preview? = null
+    private var encoderUseCase: Preview? = null
     private var capturing = false
     @Volatile private var released = false
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -116,9 +118,14 @@ class CameraXCapture(
                 physicalCameraId?.let { Camera2Interop.Extender(imageCaptureBuilder).setPhysicalCameraId(it) }
                 imageCapture = imageCaptureBuilder.build()
                 previewSurfaceProvider?.let { pv ->
-                    val previewBuilder = Preview.Builder()
+                    val previewBuilder = Preview.Builder().setResolutionSelector(sel)
                     physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
                     previewUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
+                }
+                encoderSurfaceProvider?.let { pv ->
+                    val previewBuilder = Preview.Builder().setResolutionSelector(sel)
+                    physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
+                    encoderUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
                 boundSelector = logicalCameraId?.let { requestedId ->
                     CameraSelector.Builder()
@@ -142,10 +149,16 @@ class CameraXCapture(
         val analysis = analysisUseCase ?: return
         val cases = mutableListOf<androidx.camera.core.UseCase>()
         previewUseCase?.let { cases.add(it) }
+        encoderUseCase?.let { cases.add(it) }
         cases.add(analysis)
         if (withCapture) imageCapture?.let { cases.add(it) }
         p.unbindAll()
-        camera = p.bindToLifecycle(owner, sel, *cases.toTypedArray())
+        try {
+            camera = p.bindToLifecycle(owner, sel, *cases.toTypedArray())
+        } catch (e: Exception) {
+            Log.e(TAG, "bindToLifecycle failed: ${e.message}")
+            throw e
+        }
         // Re-apply cached controls, since rebinding replaces the camera control.
         val cc = camera?.cameraControl
         if (torchEnabled) try { cc?.enableTorch(true) } catch (_: Exception) {}
