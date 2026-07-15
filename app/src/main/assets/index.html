@@ -1150,6 +1150,10 @@
       // them immediately
       try {
         if (newCameraInfo && newCameraInfo.lensSettings) {
+          // Ensure all values in lensSettings are properly normalized (e.g., string to number)
+          for (const key in newCameraInfo.lensSettings) {
+            newCameraInfo.lensSettings[key] = normalizeValueForKey(key, newCameraInfo.lensSettings[key]);
+          }
           // applyStreamSettings expects camelCase keys (e.g. focusDistance)
           applyStreamSettings(newCameraInfo.lensSettings);
         }
@@ -1180,7 +1184,7 @@
       }
       if (settings.streamRes) desiredResolution = settings.streamRes;
       if (settings.rotate != null) {
-        rotate = settings.rotate;
+        rotate = parseInt(settings.rotate, 10) || 0;
         // Reflect server-provided rotation in the UI
         const el = getElById('rotate');
         const b = getElById('rotateVal');
@@ -1314,7 +1318,13 @@
           if (applySettings) {
             try {
               const cam = cameraList.find(c => c.id === currentCamera);
-              if (cam && cam.lensSettings) applyStreamSettings(cam.lensSettings);
+              if (cam && cam.lensSettings) {
+                // Ensure all values in lensSettings are properly normalized (e.g., string to number)
+                for (const key in cam.lensSettings) {
+                  cam.lensSettings[key] = normalizeValueForKey(key, cam.lensSettings[key]);
+                }
+                applyStreamSettings(cam.lensSettings);
+              }
               // Ensure zoom max and clamps reflect newly applied lens settings
               try { updateZoomMax(); } catch (_) {}
             } catch (_) {}
