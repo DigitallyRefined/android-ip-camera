@@ -9,9 +9,11 @@ import androidx.camera.core.ImageProxy
 import androidx.preference.PreferenceManager
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * MJPEG streaming encoder implementation.
@@ -24,6 +26,22 @@ class MjpegStreamingEncoder(
 ) : StreamingEncoder {
     companion object {
         private const val TAG = "MjpegStreamingEncoder"
+        private const val WRITER_QUEUE_CAPACITY = 3
+    }
+
+    private val writerGeneration = AtomicLong()
+    private val networkWriter = ThreadPoolExecutor(
+        1,
+        1,
+        30L,
+        TimeUnit.SECONDS,
+        ArrayBlockingQueue(WRITER_QUEUE_CAPACITY),
+        { runnable -> Thread(runnable, "MjpegNetworkWriter").apply { isDaemon = true } }
+    ).apply { allowCoreThreadTimeOut(true) }
+
+    private fun invalidatePendingWrites() {
+        writerGeneration.incrementAndGet()
+        networkWriter.queue.clear()
     }
 
     private fun prefStringWithFallback(prefs: android.content.SharedPreferences, vararg keys: String): String? {
@@ -120,24 +138,34 @@ class MjpegStreamingEncoder(
         val helper = streamingServerHelper ?: return
         val clients = helper.getClients()
         if (clients.isEmpty()) return
-        val toRemove = mutableListOf<StreamingServerHelper.Client>()
+        val generation = writerGeneration.get()
 
-        // Perform network I/O on an IO dispatcher to avoid NetworkOnMainThreadException
-        CoroutineScope(Dispatchers.IO).launch {
-            clients.forEach { client ->
-                try {
-                    client.writer.print("--frame\r\n")
-                    client.writer.print("Content-Type: image/jpeg\r\n")
-                    client.writer.print("Content-Length: ${jpegBytes.size}\r\n\r\n")
-                    client.writer.flush()
-                    client.outputStream.write(jpegBytes)
-                    client.outputStream.flush()
-                } catch (e: IOException) {
-                    try { client.socket.close() } catch (_: Exception) {}
-                    toRemove.add(client)
+        if (networkWriter.queue.remainingCapacity() == 0) {
+            return
+        }
+
+        try {
+            networkWriter.execute {
+                if (generation != writerGeneration.get()) return@execute
+                val toRemove = mutableListOf<StreamingServerHelper.Client>()
+                clients.forEach { client ->
+                    if (generation != writerGeneration.get()) return@forEach
+                    try {
+                        client.writer.print("--frame\r\n")
+                        client.writer.print("Content-Type: image/jpeg\r\n")
+                        client.writer.print("Content-Length: ${jpegBytes.size}\r\n\r\n")
+                        client.writer.flush()
+                        client.outputStream.write(jpegBytes)
+                        client.outputStream.flush()
+                    } catch (e: IOException) {
+                        try { client.socket.close() } catch (_: Exception) {}
+                        toRemove.add(client)
+                    }
                 }
+                toRemove.forEach { helper.removeClient(it) }
             }
-            toRemove.forEach { helper.removeClient(it) }
+        } catch (_: RejectedExecutionException) {
+            // Drop frame if rejected
         }
     }
 
@@ -209,6 +237,7 @@ class MjpegStreamingEncoder(
 
     override fun stop() {
         captureRunning = false
+        invalidatePendingWrites()
     }
 
     override fun hasClients(): Boolean {
@@ -300,6 +329,7 @@ class MjpegStreamingEncoder(
      * Update the streaming server helper reference (called after server initialization).
      */
     fun updateServerHelper(helper: StreamingServerHelper) {
+        invalidatePendingWrites()
         streamingServerHelper = helper
     }
 }
