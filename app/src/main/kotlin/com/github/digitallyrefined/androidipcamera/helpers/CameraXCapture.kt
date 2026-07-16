@@ -50,11 +50,14 @@ class CameraXCapture(
     private val desired: Size,
     private val previewSurfaceProvider: Preview.SurfaceProvider? = null,
     private val encoderSurfaceProvider: Preview.SurfaceProvider? = null,
+    private val onEncoderSurfaceFallback: (() -> Unit)? = null,
     private val onFrame: (ImageProxy) -> Unit
 ) : CaptureBackend {
     @Volatile override var width = desired.width; private set
     @Volatile override var height = desired.height; private set
     @Volatile override var ready = false; private set
+    @Volatile var encoderSurfaceBound = false
+        private set
 
     private var provider: ProcessCameraProvider? = null
     private var camera: androidx.camera.core.Camera? = null
@@ -155,9 +158,46 @@ class CameraXCapture(
         p.unbindAll()
         try {
             camera = p.bindToLifecycle(owner, sel, *cases.toTypedArray())
+            if (encoderUseCase != null) {
+                encoderSurfaceBound = true
+            }
         } catch (e: Exception) {
             Log.e(TAG, "bindToLifecycle failed: ${e.message}")
-            throw e
+            if (encoderUseCase != null) {
+                if (previewUseCase != null) {
+                    // Fallback 1: try dropping screen preview to save surface encoder
+                    Log.w(TAG, "Attempting fallback 1: binding without screen preview...")
+                    val casesNoPreview = mutableListOf<androidx.camera.core.UseCase>()
+                    encoderUseCase?.let { casesNoPreview.add(it) }
+                    casesNoPreview.add(analysis)
+                    if (withCapture) imageCapture?.let { casesNoPreview.add(it) }
+                    try {
+                        camera = p.bindToLifecycle(owner, sel, *casesNoPreview.toTypedArray())
+                        encoderSurfaceBound = true
+                        return
+                    } catch (e2: Exception) {
+                        Log.e(TAG, "Fallback 1 rebind failed: ${e2.message}")
+                    }
+                }
+
+                // Fallback 2: drop encoder surface, restore screen preview, switch to software YUV mode
+                Log.w(TAG, "Attempting fallback 2: dropping encoder surface and using software fallback...")
+                encoderSurfaceBound = false
+                val casesNoEncoder = mutableListOf<androidx.camera.core.UseCase>()
+                previewUseCase?.let { casesNoEncoder.add(it) }
+                casesNoEncoder.add(analysis)
+                if (withCapture) imageCapture?.let { casesNoEncoder.add(it) }
+                try {
+                    camera = p.bindToLifecycle(owner, sel, *casesNoEncoder.toTypedArray())
+                    encoderUseCase = null // clear so we don't try it again on subsequent rebinds
+                    onEncoderSurfaceFallback?.invoke()
+                } catch (e3: Exception) {
+                    Log.e(TAG, "Fallback 2 rebind failed: ${e3.message}")
+                    throw e3
+                }
+            } else {
+                throw e
+            }
         }
         // Re-apply cached controls, since rebinding replaces the camera control.
         val cc = camera?.cameraControl

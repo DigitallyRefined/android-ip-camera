@@ -409,6 +409,24 @@ class StreamingService : LifecycleService() {
         false
     }
 
+    private fun cameraHardwareLevel(cameraId: String?): Int? = try {
+        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val want = if (frontFacing) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+        val id = cameraId
+            ?.let { parseCameraToken(it).logicalId }
+            ?.takeIf { it in cm.cameraIdList }
+            ?: cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
+            ?: cm.cameraIdList.firstOrNull()
+        id?.let { cm.getCameraCharacteristics(it).get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) }
+    } catch (_: Exception) { null }
+
+    private fun supportsSurfaceEncoder(): Boolean {
+        if (frontFacing) return false
+        val level = cameraHardwareLevel(selectedCameraId) ?: return false
+        return level == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL ||
+               level == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3
+    }
+
     /** auto | camerax | camera1. auto → Camera1 on LEGACY HALs (true 1080p), CameraX everywhere else. */
     private fun chooseApi(): String =
         when (val pref = PreferenceManager.getDefaultSharedPreferences(this).getString("capture_api", "auto") ?: "auto") {
@@ -472,7 +490,7 @@ class StreamingService : LifecycleService() {
                 val h264 = h264StreamingEncoder
                 var h264SurfaceProvider: Preview.SurfaceProvider? = null
 
-                if (h264 != null && h264.hasClients()) {
+                if (h264 != null && h264.hasClients() && supportsSurfaceEncoder()) {
                     val prefs = PreferenceManager.getDefaultSharedPreferences(this)
                     val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
                     val fpsCoerced = fps.coerceIn(1, 60)
@@ -500,13 +518,20 @@ class StreamingService : LifecycleService() {
                             request.willNotProvideSurface()
                         }
                     }
+                } else if (h264 != null) {
+                    // Fall back to YUV mode immediately (previous method)
+                    h264.setEncoder(null)
                 }
 
                 val showScreenPreview = !hasClients && currentSurfaceProvider != null
                 backend = CameraXCapture(
                     this, this, frontFacing, selectedCameraId, want,
                     if (showScreenPreview) currentSurfaceProvider else null,
-                    h264SurfaceProvider
+                    h264SurfaceProvider,
+                    onEncoderSurfaceFallback = {
+                        Log.i(TAG, "CameraX SurfaceProvider fallback triggered: switching H.264 to software YUV mode")
+                        h264?.setEncoder(null)
+                    }
                 ) { img ->
                     try {
                         val activeEncoders = encoders.filter { it.hasClients() }

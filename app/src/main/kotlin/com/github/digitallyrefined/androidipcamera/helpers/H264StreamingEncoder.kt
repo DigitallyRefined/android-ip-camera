@@ -201,7 +201,10 @@ class H264StreamingEncoder(
         streamingServerHelper = helper
     }
 
-    fun setEncoder(encoder: H264HardwareEncoder) {
+    /**
+     * Set the H.264 hardware encoder (used by Camera1 backend).
+     */
+    fun setEncoder(encoder: H264HardwareEncoder?) {
         invalidatePendingWrites()
         h264HardwareEncoder?.let { old ->
             old.stop()
