@@ -211,6 +211,7 @@ class StreamingService : LifecycleService() {
         }
     }
     fun isCameraRunning() = captureRunning
+    fun hasActiveClients() = encoders.any { it.hasClients() }
     fun switchCamera() {
         selectCamera(!frontFacing, null)
         PreferenceManager.getDefaultSharedPreferences(this).edit()
