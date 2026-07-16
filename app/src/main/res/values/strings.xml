@@ -10,4 +10,5 @@
         <item>1.2</item>
         <item>disabled</item>
     </string-array>
+    <string name="streaming_active">🔴 Streaming active</string>
 </resources>

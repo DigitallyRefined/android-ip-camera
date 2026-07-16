@@ -54,7 +54,8 @@ class MainActivity : AppCompatActivity() {
             }
             streamingService?.onClientDisconnected = {
                 runOnUiThread {
-                    showNoClientMessage(true)
+                    val hasClients = streamingService?.hasActiveClients() == true
+                    showNoClientMessage(!hasClients)
                 }
             }
             streamingService?.onLog = { message ->
@@ -64,13 +65,18 @@ class MainActivity : AppCompatActivity() {
             // Initialize Server
             streamingService?.startStreamingServer()
 
+            // Check current status
+            val hasClients = streamingService?.hasActiveClients() == true
+
             // Set Preview if needed
             if (!userHiddenPreview) {
-                streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+                if (hasClients) {
+                    streamingService?.setPreviewSurface(null)
+                } else {
+                    streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+                }
             }
 
-            // Check current status
-            val hasClients = streamingService?.streamingServerHelper?.getClients()?.isNotEmpty() == true
             showNoClientMessage(!hasClients)
         }
 
@@ -86,8 +92,13 @@ class MainActivity : AppCompatActivity() {
                 if (allPermissionsGranted() && isBound) {
                     // Trigger camera restart in service by re-setting preview or calling explicit method
                     // For now, re-setting preview triggers restart in service if camera was running
-                     if (!userHiddenPreview) {
-                        streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+                    if (!userHiddenPreview) {
+                        val hasClients = streamingService?.hasActiveClients() == true
+                        if (hasClients) {
+                            streamingService?.setPreviewSurface(null)
+                        } else {
+                            streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+                        }
                     }
                 }
             }
@@ -183,7 +194,12 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (isBound && !userHiddenPreview) {
-            streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+            val hasClients = streamingService?.hasActiveClients() == true
+            if (hasClients) {
+                streamingService?.setPreviewSurface(null)
+            } else {
+                streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+            }
         }
         checkNotificationChannelEnabled()
     }
@@ -316,32 +332,42 @@ class MainActivity : AppCompatActivity() {
             hidePreviewButton.visibility = View.VISIBLE
             exitButton.visibility = View.VISIBLE
 
-            val hasClients = streamingService?.streamingServerHelper?.getClients()?.isNotEmpty() == true
+            val hasClients = streamingService?.hasActiveClients() == true
 
-            viewFinder.visibility = if (hasClients) View.VISIBLE else View.INVISIBLE
-            noClientMessage.visibility = if (hasClients) View.GONE else View.VISIBLE
-            rootView.setBackgroundColor(if (hasClients) android.graphics.Color.TRANSPARENT else android.graphics.Color.BLACK)
+            viewFinder.visibility = if (hasClients) View.INVISIBLE else View.VISIBLE
+            noClientMessage.visibility = if (hasClients) View.VISIBLE else View.GONE
+            noClientMessage.text = if (hasClients) getString(R.string.streaming_active) else ""
+            rootView.setBackgroundColor(if (hasClients) android.graphics.Color.BLACK else android.graphics.Color.TRANSPARENT)
 
             userHiddenPreview = false
             backGestureCallback.isEnabled = false
 
-            if (isBound && hasClients) {
-                streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+            if (isBound) {
+                if (hasClients) {
+                    streamingService?.setPreviewSurface(null)
+                } else {
+                    streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+                }
             }
         }
     }
 
     private fun showNoClientMessage(show: Boolean) {
-        noClientMessage.visibility = if (show && !userHiddenPreview) View.VISIBLE else View.GONE
         val rootView = viewBinding.root
         if (show) {
-            viewBinding.viewFinder.visibility = View.INVISIBLE
-            rootView.setBackgroundColor(android.graphics.Color.BLACK)
-        } else {
+            noClientMessage.visibility = View.GONE
             if (!userHiddenPreview) {
                 viewBinding.viewFinder.visibility = View.VISIBLE
                 rootView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
             }
+            if (isBound) {
+                streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
+            }
+        } else {
+            noClientMessage.text = getString(R.string.streaming_active)
+            noClientMessage.visibility = if (!userHiddenPreview) View.VISIBLE else View.GONE
+            viewBinding.viewFinder.visibility = View.INVISIBLE
+            rootView.setBackgroundColor(android.graphics.Color.BLACK)
         }
     }
 

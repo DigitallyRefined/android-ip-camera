@@ -32,6 +32,8 @@ import com.github.digitallyrefined.androidipcamera.helpers.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -71,6 +73,7 @@ class StreamingService : LifecycleService() {
 
     private val snapCache = ConcurrentHashMap<String, ByteArray>()  // latest JPEG per camera (RAM)
     private val snapLock = Any()
+    private val cameraMutex = Mutex()
 
     var onClientConnected: (() -> Unit)? = null
     var onClientDisconnected: (() -> Unit)? = null
@@ -200,9 +203,15 @@ class StreamingService : LifecycleService() {
     // MainActivity attaches PreviewView here; camera restarts when a surface is set while streaming.
     fun setPreviewSurface(surfaceProvider: Preview.SurfaceProvider?) {
         currentSurfaceProvider = surfaceProvider
-        if (encoders.any { it.hasClients() } && chooseApi() == "camerax") launchMain { startCamera() }
+        val shouldRun = encoders.any { it.hasClients() } || currentSurfaceProvider != null
+        if (shouldRun) {
+            launchMain { startCamera() }
+        } else {
+            launchMain { stopCamera() }
+        }
     }
     fun isCameraRunning() = captureRunning
+    fun hasActiveClients() = encoders.any { it.hasClients() }
     fun switchCamera() {
         selectCamera(!frontFacing, null)
         PreferenceManager.getDefaultSharedPreferences(this).edit()
@@ -256,10 +265,29 @@ class StreamingService : LifecycleService() {
             streamingServerHelper = StreamingServerHelper(
                 this,
                 onLog = { Log.i(TAG, "Server: $it"); onLog?.invoke(it) },
-                onClientConnected = { launchMain { onClientConnected?.invoke(); startCameraIfNeeded() } },
+                onClientConnected = {
+                    launchMain {
+                        onClientConnected?.invoke()
+                        if (captureRunning) {
+                            startCamera()
+                        } else {
+                            startCameraIfNeeded()
+                        }
+                    }
+                },
                 onClientDisconnected = {
-                    if (!encoders.any { it.hasClients() })
-                        launchMain { stopCamera(); onClientDisconnected?.invoke() }
+                    launchMain {
+                        onClientDisconnected?.invoke()
+                        if (!encoders.any { it.hasClients() }) {
+                            if (currentSurfaceProvider != null) {
+                                startCamera()
+                            } else {
+                                stopCamera()
+                            }
+                        } else if (captureRunning) {
+                            startCamera()
+                        }
+                    }
                 },
                 onControlCommand = { key, value, ts -> handleRemoteControl(key, value, ts) },
                 onSnapshot = { id -> snapshot(id) }
@@ -271,7 +299,7 @@ class StreamingService : LifecycleService() {
         streamingServerHelper?.startStreamingServer()
     }
 
-    private fun launchMain(block: () -> Unit) { lifecycleScope.launch(Dispatchers.Main) { block() } }
+    private fun launchMain(block: suspend () -> Unit) { lifecycleScope.launch(Dispatchers.Main) { block() } }
 
     // ---------------- camera ----------------
 
@@ -367,11 +395,38 @@ class StreamingService : LifecycleService() {
         val id = selectedCameraId
             ?.let { parseCameraToken(it).logicalId }
             ?.takeIf { it in cm.cameraIdList }
-            ?: cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
+            ?: cm.cameraIdList.firstOrNull { cameraId ->
+                try {
+                    cm.getCameraCharacteristics(cameraId).get(CameraCharacteristics.LENS_FACING) == want
+                } catch (_: Exception) {
+                    false
+                }
+            }
             ?: cm.cameraIdList.first()
         cm.getCameraCharacteristics(id).get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) ==
             CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
-    } catch (e: Exception) { true }
+    } catch (e: Exception) {
+        Log.w(TAG, "isLegacy check failed, defaulting to false (camerax)", e)
+        false
+    }
+
+    private fun cameraHardwareLevel(cameraId: String?): Int? = try {
+        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val want = if (frontFacing) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+        val id = cameraId
+            ?.let { parseCameraToken(it).logicalId }
+            ?.takeIf { it in cm.cameraIdList }
+            ?: cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
+            ?: cm.cameraIdList.firstOrNull()
+        id?.let { cm.getCameraCharacteristics(it).get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) }
+    } catch (_: Exception) { null }
+
+    private fun supportsSurfaceEncoder(): Boolean {
+        if (frontFacing) return false
+        val level = cameraHardwareLevel(selectedCameraId) ?: return false
+        return level == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL ||
+               level == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3
+    }
 
     /** auto | camerax | camera1. auto → Camera1 on LEGACY HALs (true 1080p), CameraX everywhere else. */
     private fun chooseApi(): String =
@@ -401,12 +456,21 @@ class StreamingService : LifecycleService() {
         return Size(minOf(w, caps.maxW), minOf(h, caps.maxH))
     }
 
-    private fun startCameraIfNeeded() { if (!captureRunning) startCamera() }
+    private suspend fun startCameraIfNeeded() { if (!captureRunning) startCamera() }
 
-    private fun startCamera(force: Boolean = false) {
-        if (!allPermissionsGranted()) return
-        if (!force && !encoders.any { it.hasClients() }) return   // else: only for live viewers
+    private suspend fun startCamera(force: Boolean = false) = cameraMutex.withLock {
+        Log.i(TAG, "startCamera() called. force=$force, selectedCameraId=$selectedCameraId, frontFacing=$frontFacing, currentSurfaceProvider=$currentSurfaceProvider, captureRunning=$captureRunning")
+        if (!allPermissionsGranted()) {
+            Log.w(TAG, "startCamera bypassed: permissions not granted")
+            return@withLock
+        }
+        val hasClients = encoders.any { it.hasClients() }
+        if (!force && !hasClients && currentSurfaceProvider == null) {
+            Log.i(TAG, "startCamera bypassed: no force, no clients, and preview surface is null")
+            return@withLock
+        }
         stopCamera()
+        h264StreamingEncoder?.awaitRelease()
         try {
             if (chooseApi() == "camera1") {
                 // Camera1 → GL pipe → surface encoder (true 1920×1080 on legacy HALs).
@@ -423,8 +487,52 @@ class StreamingService : LifecycleService() {
                 Log.i(TAG, "stream ${camId()} api=camera1 ${cap.chosenW}x${cap.chosenH}")
             } else {
                 // CameraX → ImageAnalysis YUV → encoders + optional Preview on the phone.
+                val want = desiredSize()
+                val h264 = h264StreamingEncoder
+                var h264SurfaceProvider: Preview.SurfaceProvider? = null
+
+                if (h264 != null && h264.hasClients() && supportsSurfaceEncoder()) {
+                    val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+                    val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
+                    val fpsCoerced = fps.coerceIn(1, 60)
+                    val enc = H264HardwareEncoder(
+                        want.width,
+                        want.height,
+                        fpsCoerced,
+                        H264HardwareEncoder.bitrateFor(want.width, want.height),
+                        true // useSurface = true
+                    ) { d, k -> h264.broadcastH264(d, k) }
+
+                    h264.setEncoder(enc)
+                    streamingServerHelper?.resetH264Wait()
+
+                    h264SurfaceProvider = Preview.SurfaceProvider { request ->
+                        val surface = enc.inputSurface
+                        if (surface != null && surface.isValid) {
+                            Log.i(TAG, "Providing surface for H.264 encoder: $enc")
+                            enc.hasSurfaceBeenProvided = true
+                            request.provideSurface(surface, ContextCompat.getMainExecutor(this)) { result ->
+                                Log.i(TAG, "H.264 encoder surface released by CameraX (result code: ${result.resultCode}) for: $enc")
+                                enc.release()
+                            }
+                        } else {
+                            request.willNotProvideSurface()
+                        }
+                    }
+                } else if (h264 != null) {
+                    // Fall back to YUV mode immediately (previous method)
+                    h264.setEncoder(null)
+                }
+
+                val showScreenPreview = !hasClients && currentSurfaceProvider != null
                 backend = CameraXCapture(
-                    this, this, frontFacing, selectedCameraId, desiredSize(), currentSurfaceProvider
+                    this, this, frontFacing, selectedCameraId, want,
+                    if (showScreenPreview) currentSurfaceProvider else null,
+                    h264SurfaceProvider,
+                    onEncoderSurfaceFallback = {
+                        Log.i(TAG, "CameraX SurfaceProvider fallback triggered: switching H.264 to software YUV mode")
+                        h264?.setEncoder(null)
+                    }
                 ) { img ->
                     try {
                         val activeEncoders = encoders.filter { it.hasClients() }
@@ -461,7 +569,10 @@ class StreamingService : LifecycleService() {
                     try { kotlinx.coroutines.delay(200) } catch (_: Exception) { break }
                 }
             }
-        } catch (e: Exception) { Log.e(TAG, "startCamera: ${e.message}"); stopCamera() }
+        } catch (e: Exception) {
+            Log.e(TAG, "startCamera failed", e)
+            stopCamera()
+        }
     }
 
     private fun stopCamera() {

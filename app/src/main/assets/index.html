@@ -267,88 +267,90 @@
       </div>
 
       <div class='controls-content'>
-      <div class='setting-group'>
-        <h3>Settings</h3>
-        <label for="cameraSelect">Camera <span class="val-badge" id="cameraFacingBadge">&mdash;</span></label>
-        <div class="camera-controls">
-          <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
-        </div>
-
-        <div>
-          <button id="muteBtn" class="btn btn-action" style="width: 49%;">🔇 Unmute Audio</button>
-          <button id="flashBtn" class="btn btn-action" style="width: 49%;">💡 Flash On</button>
-        </div>
-
-        <div id="audioControls">
-          <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.0s</span></label>
-          <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
-
-          <label for="audioGain">Audio Gain <span class='val-badge' id='audioGainVal'>1.0</span></label>
-          <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='1.0'
-            data-control='audio_gain' data-badge='audioGainVal'>
-        </div>
-
-        <div>
-          <button id="modeMjpegBtn" class="btn btn-action" style="width: 49%;">MJPEG</button>
-          <button id="modeH264Btn" class="btn btn-action" style="width: 49%;">H.264</button>
-        </div>
-
-        <p class="group-title">Camera Control</p>
-
-        <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
-        <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
-
-        <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
-        <input id="zoom" type='range' min='0.1' max='8.0' step='0.1' value='1.0'
-          data-control='zoom' data-badge='zoomVal' data-fmt='suffix' data-suffix='x'>
-
-        <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
-        <input id="exposure" type='range' min='-10' max='10' step='1' value='0'
-          data-control='exposure' data-badge='exposureVal'>
-
-        <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
-        <input id="focusDistance" type='range' min='-0.05' max='1.0' step='0.05' value='-1'
-          data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
-
-        <div style="margin-bottom: 12px">
-          <label for="rotate">Rotation <span class='val-badge' id='rotateVal'>0°</span></label>
-          <input id="rotate" type="range" min="0" max="359" step="1" value="0" data-control="rotate" data-badge="rotateVal" data-fmt="suffix" data-suffix="°" style="margin-bottom: 8px;">
-          <div style="display:flex;gap:8px;margin-bottom:8px;width:100%;">
-            <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0">0°</button>
-            <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90">90°</button>
-            <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180">180°</button>
-            <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270">270°</button>
+        <div class='setting-group'>
+          <h3>Settings</h3>
+          <label for="cameraSelect">Camera <span class="val-badge" id="cameraFacingBadge">&mdash;</span></label>
+          <div class="camera-controls">
+            <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
           </div>
+
+          <div>
+            <button id="muteBtn" class="btn btn-action" style="width: 49%;">🔇 Unmute Audio</button>
+            <button id="flashBtn" class="btn btn-action" style="width: 49%;">💡 Flash On</button>
+          </div>
+
+          <div id="audioControls">
+            <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.5s</span></label>
+            <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
+
+            <label for="audioGain">Audio Gain <span class='val-badge' id='audioGainVal'>1.0</span></label>
+            <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='1.0' data-control='audio_gain'
+              data-badge='audioGainVal'>
+          </div>
+
+          <div>
+            <button id="modeMjpegBtn" class="btn btn-action" style="width: 49%;">MJPEG</button>
+            <button id="modeH264Btn" class="btn btn-action" style="width: 49%;">H.264</button>
+          </div>
+
+          <p class="group-title">Camera Control</p>
+
+          <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
+          <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
+
+          <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
+          <input id="zoom" type='range' min='0.1' max='8.0' step='0.1' value='1.0' data-control='zoom'
+            data-badge='zoomVal' data-fmt='suffix' data-suffix='x'>
+
+          <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
+          <input id="exposure" type='range' min='-10' max='10' step='1' value='0' data-control='exposure'
+            data-badge='exposureVal'>
+
+          <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
+          <input id="focusDistance" type='range' min='-0.05' max='1.0' step='0.05' value='-1'
+            data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
+
+          <div style="margin-bottom: 12px">
+            <label for="rotate">Rotation <span class='val-badge' id='rotateVal'>0°</span></label>
+            <input id="rotate" type="range" min="0" max="359" step="1" value="0" data-control="rotate"
+              data-badge="rotateVal" data-fmt="suffix" data-suffix="°" style="margin-bottom: 8px;">
+            <div style="display:flex;gap:8px;margin-bottom:8px;width:100%;">
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0">0°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90">90°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180">180°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270">270°</button>
+            </div>
+          </div>
+
+          <p class="group-title">Post Processing</p>
+
+          <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
+          <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='1.0' data-control='scale'
+            data-badge='scaleVal' data-fmt='suffix' data-suffix='x' data-setview='original'>
+
+          <label for="contrast">Contrast <span class='val-badge' id='contVal'>0</span></label>
+          <input id="contrast" type='range' min='-50' max='50' step='10' value='0' data-control='contrast'
+            data-badge='contVal'>
+
+          <label for="fps">Frame Rate (fps)</label>
+          <input id="fps" type='number' min='1' max='60' value='30' data-control='fps'>
+
+          <div style="margin-top:12px;">
+            <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
+          </div>
+
+          <p class="group-title">Snapshot</p>
+
+          <label for="snapshotRes">Snapshot Resolution</label>
+          <select id="snapshotRes" style="margin-bottom: 12px" data-control="snapshot_res">
+            <option value="stream">Match stream (fast)</option>
+            <option value="max">Max (full sensor)</option>
+          </select>
+          <button id="snapBtn" class="btn btn-action" onclick="window.open('/video/snapshot','_blank')">📸 Take
+            Snapshot</button>
         </div>
 
-        <p class="group-title">Post Processing</p>
-
-        <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
-        <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='1.0'
-          data-control='scale' data-badge='scaleVal' data-fmt='suffix' data-suffix='x' data-setview='original'>
-
-        <label for="contrast">Contrast <span class='val-badge' id='contVal'>0</span></label>
-        <input id="contrast" type='range' min='-50' max='50' step='10' value='0'
-          data-control='contrast' data-badge='contVal'>
-
-        <label for="fps">Frame Rate (fps)</label>
-        <input id="fps" type='number' min='1' max='60' value='30' data-control='fps'>
-
-        <div style="margin-top:12px;">
-          <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
-        </div>
-
-        <p class="group-title">Snapshot</p>
-
-        <label for="snapshotRes">Snapshot Resolution</label>
-        <select id="snapshotRes" style="margin-bottom: 12px" data-control="snapshot_res">
-          <option value="stream">Match stream (fast)</option>
-          <option value="max">Max (full sensor)</option>
-        </select>
-        <button id="snapBtn" class="btn btn-action" onclick="window.open('/video/snapshot','_blank')">📸 Take Snapshot</button>
-      </div>
-
-      <p class="notice">Some changes will momentarily restart the camera.</p>
+        <p class="notice">Some changes will momentarily restart the camera.</p>
       </div>
     </div>
   </div>
@@ -499,8 +501,8 @@
       try {
         // Update local UI state immediately so the client reflects server-side
         // changes without needing to re-fetch /info.json.
-        try { updateLocalLensSetting(param, val); } catch (_) {}
-        return fetch('/?' + encodeURIComponent(param) + '=' + encodeURIComponent(val) + '&ts=' + nextControlTs()).catch(() => {});
+        try { updateLocalLensSetting(param, val); } catch (_) { }
+        return fetch('/?' + encodeURIComponent(param) + '=' + encodeURIComponent(val) + '&ts=' + nextControlTs()).catch(() => { });
       } catch (_) { /* swallow */ }
     }
 
@@ -531,7 +533,7 @@
       cam.lensSettings = cam.lensSettings || {};
       cam.lensSettings[key] = normalizeValueForKey(key, val);
       // Reflect the change in the visible controls without re-sending to server
-      try { applyStreamSettings(cam.lensSettings); } catch (_) {}
+      try { applyStreamSettings(cam.lensSettings); } catch (_) { }
     }
 
     function formatControlValue(el) {
@@ -539,10 +541,10 @@
       switch (el.dataset.fmt) {
         case 'suffix':
           // Format zoom with one decimal place, keep others as-is
-            if (el.id === 'zoom') {
-              const n = parseFloat(v);
-              return (isFinite(n) ? n.toFixed(1) : v) + (el.dataset.suffix || '');
-            }
+          if (el.id === 'zoom') {
+            const n = parseFloat(v);
+            return (isFinite(n) ? n.toFixed(1) : v) + (el.dataset.suffix || '');
+          }
           return v + (el.dataset.suffix || '');
         case 'focus': {
           const n = parseFloat(v);
@@ -620,7 +622,7 @@
           try {
             const v = parseInt(el.value, 10) || 0;
             rotate = ((v % 360) + 360) % 360;
-          } catch (_) {}
+          } catch (_) { }
         }
         pendingValue = el.value;
         scheduleSend();
@@ -801,7 +803,7 @@
     try {
       // Persisted preference (may throw in some environments)
       streamMode = localStorage.getItem('streamMode') || streamMode;
-    } catch (_) {}
+    } catch (_) { }
     // MJPEG is rotated server-side; the raw H.264 stream isn't, so the H.264 player rotates on
     // draw by (sensorOrientation + rotate), mirroring what the MJPEG encoder bakes in.
     let rotate = 0;
@@ -813,11 +815,11 @@
         if (el) {
           el.value = String(angle);
           // Trigger input/change so other listeners update badges/UI
-          try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
-          try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+          try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) { }
+          try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) { }
         }
         if (badge) badge.textContent = `${angle}°`;
-      } catch (_) {}
+      } catch (_) { }
       rotate = ((angle % 360) + 360) % 360;
     }
 
@@ -854,9 +856,9 @@
           h.title = 'This browser has no WebCodecs H.264 decoder';
         }
       }
-      // Restore persisted preference where possible; fall back to MJPEG.
+      // Restore persisted preference where possible; fall back to highest supported mode.
       try {
-        const pref = localStorage.getItem('streamMode') || 'mjpeg';
+        const pref = localStorage.getItem('streamMode') || (window.isSecureContext && h264Supported ? 'h264' : 'mjpeg');
         setStreamMode(pref);
       } catch (_) {
         setStreamMode('mjpeg');
@@ -867,10 +869,22 @@
       // If H.264 isn't supported or we're not in a secure context, force MJPEG
       if (mode === 'h264' && (!h264Supported || !window.isSecureContext)) mode = 'mjpeg';
       streamMode = mode;
-      try { localStorage.setItem('streamMode', mode); } catch (_) {}
+      try { localStorage.setItem('streamMode', mode); } catch (_) { }
       const mj = getElById('modeMjpegBtn'), h = getElById('modeH264Btn');
       if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
       if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
+
+      if (avDelay && avDelayVal) {
+        const currentVal = avDelay.value;
+        const prevDefault = mode === 'h264' ? '2.5' : '2.3';
+        if (currentVal === prevDefault) {
+          const defaultVal = mode === 'h264' ? '2.3' : '2.5';
+          avDelay.value = defaultVal;
+          avDelayVal.textContent = `${defaultVal}s`;
+          videoDelayMs = parseFloat(defaultVal) * 1000;
+        }
+      }
+
       if (mode === 'mjpeg') {
         stopH264Stream();
         startMjpegStream();
@@ -896,6 +910,7 @@
       h264Abort = controller;
       let configured = false, ts = 0;
       let au = [], auHasVcl = false, auKey = false;
+      const h264Queue = [];
       const decoder = new VideoDecoder({
         output: (frame) => {
           try {
@@ -934,8 +949,17 @@
         let len = au.reduce((a, n) => a + 4 + n.length, 0);
         const data = new Uint8Array(len); let o = 0;
         for (const n of au) { data[o + 3] = 1; o += 4; data.set(n, o); o += n.length; }  // 00 00 00 01 start code
-        try { decoder.decode(new EncodedVideoChunk({ type: auKey ? 'key' : 'delta', timestamp: ts, data })); ts += 33333; }
-        catch (e) { console.error('decode:', e); }
+        const effDelay = (audioEl && !audioEl.muted) ? videoDelayMs : 0;
+        if (effDelay === 0 && !h264Queue.length) {
+          try { decoder.decode(new EncodedVideoChunk({ type: auKey ? 'key' : 'delta', timestamp: ts, data })); ts += 33333; }
+          catch (e) { console.error('decode:', e); }
+        } else {
+          h264Queue.push({
+            receiveTime: performance.now(),
+            type: auKey ? 'key' : 'delta',
+            data: data
+          });
+        }
         au = []; auHasVcl = false; auKey = false;
       };
       const onNal = (nal) => {
@@ -950,6 +974,28 @@
         au.push(nal.slice());
         if (isVcl) { auHasVcl = true; if (type === 5) auKey = true; }
       };
+      function playLoop() {
+        if (controller.signal.aborted) return;
+        const now = performance.now();
+        const effDelay = (audioEl && !audioEl.muted) ? videoDelayMs : 0;
+        while (h264Queue.length && h264Queue[0].receiveTime <= now - effDelay) {
+          const item = h264Queue.shift();
+          try {
+            decoder.decode(new EncodedVideoChunk({ type: item.type, timestamp: ts, data: item.data }));
+            ts += 33333;
+          } catch (e) { console.error('decode:', e); }
+        }
+        if (h264Queue.length > 300) {
+          const keyframeIdx = h264Queue.findIndex((item, index) => index > 0 && item.type === 'key');
+          if (keyframeIdx !== -1) {
+            h264Queue.splice(0, keyframeIdx);
+          } else {
+            h264Queue.length = 0;
+          }
+        }
+        requestAnimationFrame(playLoop);
+      }
+      requestAnimationFrame(playLoop);
       let resp;
       try { resp = await fetch(baseUrl() + '/video/h264', { signal: controller.signal }); } catch (_) { return; }
       const reader = resp.body.getReader();
@@ -1045,7 +1091,7 @@
             const label = f === 'front' ? 'Front' : (f === 'back' ? 'Back' : (fallback.facing || '\u2014'));
             badge.textContent = label;
           }
-        } catch (_) {}
+        } catch (_) { }
       }
     }
 
@@ -1064,7 +1110,7 @@
           zoomEl.value = zoomEl.max;
           const b = getElById('zoomVal'); if (b) b.textContent = formatControlValue(zoomEl);
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     function renderCameraControls() {
@@ -1150,10 +1196,14 @@
       // them immediately
       try {
         if (newCameraInfo && newCameraInfo.lensSettings) {
+          // Ensure all values in lensSettings are properly normalized (e.g., string to number)
+          for (const key in newCameraInfo.lensSettings) {
+            newCameraInfo.lensSettings[key] = normalizeValueForKey(key, newCameraInfo.lensSettings[key]);
+          }
           // applyStreamSettings expects camelCase keys (e.g. focusDistance)
           applyStreamSettings(newCameraInfo.lensSettings);
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     function setView(mode) {
@@ -1180,11 +1230,11 @@
       }
       if (settings.streamRes) desiredResolution = settings.streamRes;
       if (settings.rotate != null) {
-        rotate = settings.rotate;
+        rotate = parseInt(settings.rotate, 10) || 0;
         // Reflect server-provided rotation in the UI
         const el = getElById('rotate');
         const b = getElById('rotateVal');
-        try { if (el) el.value = String(rotate); if (b) b.textContent = `${rotate}°`; } catch (_) {}
+        try { if (el) el.value = String(rotate); if (b) b.textContent = `${rotate}°`; } catch (_) { }
       }
       // Snapshot resolution: prefer server setting, otherwise default to 'stream'.
       // Some older clients/servers use 'match' to mean the stream — normalize it to server value 'stream'.
@@ -1296,7 +1346,7 @@
 
       if (overlay) {
         const hasStatus = (batteryEl && batteryEl.style.display !== 'none') ||
-                          (wifiEl && wifiEl.style.display !== 'none');
+          (wifiEl && wifiEl.style.display !== 'none');
         overlay.style.display = hasStatus ? 'flex' : 'none';
       }
     }
@@ -1314,10 +1364,16 @@
           if (applySettings) {
             try {
               const cam = cameraList.find(c => c.id === currentCamera);
-              if (cam && cam.lensSettings) applyStreamSettings(cam.lensSettings);
+              if (cam && cam.lensSettings) {
+                // Ensure all values in lensSettings are properly normalized (e.g., string to number)
+                for (const key in cam.lensSettings) {
+                  cam.lensSettings[key] = normalizeValueForKey(key, cam.lensSettings[key]);
+                }
+                applyStreamSettings(cam.lensSettings);
+              }
               // Ensure zoom max and clamps reflect newly applied lens settings
-              try { updateZoomMax(); } catch (_) {}
-            } catch (_) {}
+              try { updateZoomMax(); } catch (_) { }
+            } catch (_) { }
           }
           updateStatusOverlay(data);
         })
