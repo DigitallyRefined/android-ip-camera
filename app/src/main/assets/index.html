@@ -854,9 +854,9 @@
           h.title = 'This browser has no WebCodecs H.264 decoder';
         }
       }
-      // Restore persisted preference where possible; fall back to MJPEG.
+      // Restore persisted preference where possible; fall back to highest supported mode.
       try {
-        const pref = localStorage.getItem('streamMode') || 'mjpeg';
+        const pref = localStorage.getItem('streamMode') || (window.isSecureContext && h264Supported ? 'h264' : 'mjpeg');
         setStreamMode(pref);
       } catch (_) {
         setStreamMode('mjpeg');
