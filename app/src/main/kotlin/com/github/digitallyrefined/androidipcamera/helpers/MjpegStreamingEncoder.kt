@@ -98,7 +98,7 @@ class MjpegStreamingEncoder(
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
             var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height, quality)
             val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0
-            if (needsTransform && !DeviceMemoryHelper.skipBitmapTransforms(context)) {
+            if (needsTransform) {
                 jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality)
             }
             broadcastJpeg(jpegBytes)
@@ -143,7 +143,7 @@ class MjpegStreamingEncoder(
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
             var jpegBytes = convertNV21toJPEG(nv21, width, height, quality)
             val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0
-            if (needsTransform && !DeviceMemoryHelper.skipBitmapTransforms(context)) {
+            if (needsTransform) {
                 jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality)
             }
             broadcastJpeg(jpegBytes)
@@ -228,17 +228,6 @@ class MjpegStreamingEncoder(
                 } else {
                     false
                 }
-            }
-            "rotate" -> {
-                val angle = value.toIntOrNull() ?: return false
-                val norm = ((angle % 360) + 360) % 360
-                val camId = prefs.getString("camera_id", null)
-                camId?.let {
-                    prefs.edit().putInt("camera_rotate_$it", norm).apply()
-                    val phys = it.substringAfter(':', it)
-                    if (phys.isNotBlank() && phys != it) prefs.edit().putInt("camera_rotate_$phys", norm).apply()
-                }
-                true
             }
             "audio_gain" -> {
                 val gain = value.toFloatOrNull() ?: return false

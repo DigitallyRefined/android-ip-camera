@@ -51,7 +51,4 @@ object DeviceMemoryHelper {
             isLowRamDevice(context) || isUnderMemoryPressure() -> 70
             else -> 80
         }
-
-    fun skipBitmapTransforms(context: Context): Boolean =
-        isSevereMemoryPressure() || (isLowRamDevice(context) && isUnderMemoryPressure())
 }
