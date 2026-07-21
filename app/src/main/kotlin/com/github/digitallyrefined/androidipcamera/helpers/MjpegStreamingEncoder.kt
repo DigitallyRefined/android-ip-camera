@@ -1,5 +1,6 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -26,18 +27,21 @@ class MjpegStreamingEncoder(
 ) : StreamingEncoder {
     companion object {
         private const val TAG = "MjpegStreamingEncoder"
-        private const val WRITER_QUEUE_CAPACITY = 3
     }
 
+    private val writerQueueCapacity = DeviceMemoryHelper.mjpegWriterQueueCapacity(context)
     private val writerGeneration = AtomicLong()
     private val networkWriter = ThreadPoolExecutor(
         1,
         1,
         30L,
         TimeUnit.SECONDS,
-        ArrayBlockingQueue(WRITER_QUEUE_CAPACITY),
+        ArrayBlockingQueue(writerQueueCapacity),
         { runnable -> Thread(runnable, "MjpegNetworkWriter").apply { isDaemon = true } }
     ).apply { allowCoreThreadTimeOut(true) }
+
+    private var nv21Buffer: ByteArray? = null
+    private var nv21RowBuffer: ByteArray? = null
 
     private fun invalidatePendingWrites() {
         writerGeneration.incrementAndGet()
@@ -55,78 +59,99 @@ class MjpegStreamingEncoder(
     private var captureRunning = false
 
     override fun processFrame(image: ImageProxy) {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-        val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
-        val fpsCoerced = fps.coerceIn(1, 60)
-        val delay = try { 1000L / fpsCoerced } catch (_: Exception) { 33L }
-        val currentTime = System.currentTimeMillis()
+        try {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
+            val fpsCoerced = fps.coerceIn(1, 60)
+            val delay = try { 1000L / fpsCoerced } catch (_: Exception) { 33L }
+            val currentTime = System.currentTimeMillis()
 
-        if (currentTime - lastFrameTime < delay) return
-        lastFrameTime = currentTime
+            if (currentTime - lastFrameTime < delay) return
+            lastFrameTime = currentTime
 
-        val autoRotation = image.imageInfo.rotationDegrees
-        val camId = prefs.getString("camera_id", null)
-        val rotation = if (camId != null) {
-            val phys = camId.substringAfter(':', camId)
-            when {
-                prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
-                prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
-                else -> 0
+            val autoRotation = image.imageInfo.rotationDegrees
+            val camId = prefs.getString("camera_id", null)
+            val rotation = if (camId != null) {
+                val phys = camId.substringAfter(':', camId)
+                when {
+                    prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
+                    prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
+                    else -> 0
+                }
+            } else 0
+            val totalRotation = (autoRotation + rotation) % 360
+            val scaleFactor = if (camId != null) {
+                val phys = camId.substringAfter(':', camId)
+                prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
+            } else 1.0f
+            val contrastValue = if (camId != null) {
+                val phys = camId.substringAfter(':', camId)
+                prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
+            } else 0
+
+            val nv21 = convertYUV420toNV21(image, nv21Buffer, nv21RowBuffer).also {
+                nv21Buffer = it
+                if (nv21RowBuffer == null || nv21RowBuffer!!.size < image.planes[0].rowStride) {
+                    nv21RowBuffer = ByteArray(image.planes[0].rowStride)
+                }
             }
-        } else 0
-        val totalRotation = (autoRotation + rotation) % 360
-        val scaleFactor = if (camId != null) {
-            val phys = camId.substringAfter(':', camId)
-            prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
-        } else 1.0f
-        val contrastValue = if (camId != null) {
-            val phys = camId.substringAfter(':', camId)
-            prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
-        } else 0
-
-        val nv21 = convertYUV420toNV21(image)
-        var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height)
-        if (totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0) {
-            jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue)
+            val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
+            var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height, quality)
+            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0
+            if (needsTransform && !DeviceMemoryHelper.skipBitmapTransforms(context)) {
+                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality)
+            }
+            broadcastJpeg(jpegBytes)
+        } catch (e: OutOfMemoryError) {
+            handleOutOfMemory("processFrame")
+        } catch (e: Exception) {
+            Log.e(TAG, "processFrame: ${e.message}")
         }
-        broadcastJpeg(jpegBytes)
     }
 
     /** Camera1 preview callback path (NV21 bytes, no ImageProxy). */
     fun processNv21Frame(nv21: ByteArray, width: Int, height: Int, rotationDegrees: Int) {
         if (!hasClients()) return
-        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-        val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
-        val fpsCoerced = fps.coerceIn(1, 60)
-        val delay = try { 1000L / fpsCoerced } catch (_: Exception) { 33L }
-        val currentTime = System.currentTimeMillis()
-        if (currentTime - lastFrameTime < delay) return
-        lastFrameTime = currentTime
+        try {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
+            val fpsCoerced = fps.coerceIn(1, 60)
+            val delay = try { 1000L / fpsCoerced } catch (_: Exception) { 33L }
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastFrameTime < delay) return
+            lastFrameTime = currentTime
 
-        val camId = prefs.getString("camera_id", null)
-        val rotation = if (camId != null) {
-            val phys = camId.substringAfter(':', camId)
-            when {
-                prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
-                prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
-                else -> 0
+            val camId = prefs.getString("camera_id", null)
+            val rotation = if (camId != null) {
+                val phys = camId.substringAfter(':', camId)
+                when {
+                    prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
+                    prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
+                    else -> 0
+                }
+            } else 0
+            val totalRotation = (rotationDegrees + rotation) % 360
+            val scaleFactor = if (camId != null) {
+                val phys = camId.substringAfter(':', camId)
+                prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
+            } else 1.0f
+            val contrastValue = if (camId != null) {
+                val phys = camId.substringAfter(':', camId)
+                prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
+            } else 0
+
+            val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
+            var jpegBytes = convertNV21toJPEG(nv21, width, height, quality)
+            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0
+            if (needsTransform && !DeviceMemoryHelper.skipBitmapTransforms(context)) {
+                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality)
             }
-        } else 0
-        val totalRotation = (rotationDegrees + rotation) % 360
-        val scaleFactor = if (camId != null) {
-            val phys = camId.substringAfter(':', camId)
-            prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
-        } else 1.0f
-        val contrastValue = if (camId != null) {
-            val phys = camId.substringAfter(':', camId)
-            prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
-        } else 0
-
-        var jpegBytes = convertNV21toJPEG(nv21, width, height)
-        if (totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0) {
-            jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue)
+            broadcastJpeg(jpegBytes)
+        } catch (e: OutOfMemoryError) {
+            handleOutOfMemory("processNv21Frame")
+        } catch (e: Exception) {
+            Log.e(TAG, "processNv21Frame: ${e.message}")
         }
-        broadcastJpeg(jpegBytes)
     }
 
     // Latest JPEG sent to clients, so a "match stream" snapshot can reuse it without a camera rebind.
@@ -157,7 +182,15 @@ class MjpegStreamingEncoder(
                         client.writer.flush()
                         client.outputStream.write(jpegBytes)
                         client.outputStream.flush()
+                        client.markWriteSuccess()
                     } catch (e: IOException) {
+                        try { client.socket.close() } catch (_: Exception) {}
+                        toRemove.add(client)
+                    } catch (e: java.net.SocketTimeoutException) {
+                        // Handle slow network - client is not reading fast enough
+                        try { client.socket.close() } catch (_: Exception) {}
+                        toRemove.add(client)
+                    } catch (e: Exception) {
                         try { client.socket.close() } catch (_: Exception) {}
                         toRemove.add(client)
                     }
@@ -244,17 +277,43 @@ class MjpegStreamingEncoder(
         return streamingServerHelper?.getClients()?.isNotEmpty() == true
     }
 
-    /**
-     * Apply image transformations (rotation, scaling, contrast) to JPEG bytes.
-     */
+    /** Called by [StreamingService] when Android reports low memory. */
+    fun onMemoryPressure(severe: Boolean) {
+        invalidatePendingWrites()
+        lastJpeg = null
+        nv21Buffer = null
+        nv21RowBuffer = null
+        if (severe) {
+            DeviceMemoryHelper.updateMemoryPressure(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+        }
+    }
+
+    private fun handleOutOfMemory(source: String) {
+        Log.e(TAG, "Out of memory in $source")
+        onMemoryPressure(severe = true)
+        try {
+            System.gc()
+        } catch (_: Exception) {
+        }
+    }
+
     private fun applyTransformations(
         jpegBytes: ByteArray,
         rotation: Int,
         scaleFactor: Float,
-        contrastValue: Int
+        contrastValue: Int,
+        jpegQuality: Int
     ): ByteArray {
+        var bitmap: Bitmap? = null
         try {
-            var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+            val decodeOptions = BitmapFactory.Options().apply {
+                inPreferredConfig = if (DeviceMemoryHelper.isUnderMemoryPressure()) {
+                    Bitmap.Config.RGB_565
+                } else {
+                    Bitmap.Config.ARGB_8888
+                }
+            }
+            bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions)
             if (bitmap != null) {
                 val matrix = Matrix()
 
@@ -278,8 +337,8 @@ class MjpegStreamingEncoder(
                     bitmap = transformedBitmap
                 }
 
-                // Apply Contrast if needed
-                if (contrastValue != 0) {
+                // Contrast allocates another full-size bitmap — skip under memory pressure.
+                if (contrastValue != 0 && !DeviceMemoryHelper.isUnderMemoryPressure()) {
                     val contrastFactor = 1.0f + (contrastValue / 100.0f)
 
                     val contrastColorMatrix = android.graphics.ColorMatrix().apply {
@@ -307,15 +366,20 @@ class MjpegStreamingEncoder(
 
                 // Convert back to JPEG bytes
                 val outputStream = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, outputStream)
                 val result = outputStream.toByteArray()
                 bitmap.recycle()
+                bitmap = null
                 outputStream.close()
                 return result
             }
+        } catch (e: OutOfMemoryError) {
+            handleOutOfMemory("applyTransformations")
         } catch (e: Exception) {
             Log.e(TAG, "Error transforming image: ${e.message}")
             // Continue with original image if transforming image fails
+        } finally {
+            bitmap?.recycle()
         }
         return jpegBytes
     }

@@ -23,7 +23,6 @@ class H264StreamingEncoder(
 ) : StreamingEncoder {
     companion object {
         private const val TAG = "H264StreamingEncoder"
-        private const val WRITER_QUEUE_CAPACITY = 30
     }
 
     var h264HardwareEncoder: H264HardwareEncoder? = null
@@ -33,12 +32,13 @@ class H264StreamingEncoder(
     private var backend: CaptureBackend? = null
     private var captureRunning = false
     private val writerGeneration = AtomicLong()
+    private val writerQueueCapacity = DeviceMemoryHelper.h264WriterQueueCapacity(context)
     private val networkWriter = ThreadPoolExecutor(
         1,
         1,
         30L,
         TimeUnit.SECONDS,
-        ArrayBlockingQueue(WRITER_QUEUE_CAPACITY),
+        ArrayBlockingQueue(writerQueueCapacity),
         { runnable -> Thread(runnable, "H264NetworkWriter").apply { isDaemon = true } }
     ).apply { allowCoreThreadTimeOut(true) }
 
