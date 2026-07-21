@@ -8,4 +8,4 @@ guava = "33.6.0-jre"
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
 
 [plugins]
-kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version = "2.4.0" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version = "2.4.10" }
