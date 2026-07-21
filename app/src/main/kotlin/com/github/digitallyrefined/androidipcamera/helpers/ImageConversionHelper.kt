@@ -7,14 +7,16 @@ import androidx.camera.core.ImageProxy
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
-fun convertYUV420toNV21(image: ImageProxy): ByteArray {
+fun convertYUV420toNV21(image: ImageProxy, reuse: ByteArray? = null, reuseRow: ByteArray? = null): ByteArray {
     val crop: Rect = image.cropRect
     val format: Int = image.format
     val width: Int = crop.width()
     val height: Int = crop.height()
     val planes: Array<ImageProxy.PlaneProxy> = image.planes
-    val data = ByteArray(width * height * ImageFormat.getBitsPerPixel(format) / 8)
-    val rowData = ByteArray(planes[0].rowStride)
+    val requiredSize = width * height * ImageFormat.getBitsPerPixel(format) / 8
+    val data = if (reuse != null && reuse.size == requiredSize) reuse else ByteArray(requiredSize)
+    val rowStride = planes[0].rowStride
+    val rowData = if (reuseRow != null && reuseRow.size >= rowStride) reuseRow else ByteArray(rowStride)
 
     var channelOffset = 0
     var outputStride = 1

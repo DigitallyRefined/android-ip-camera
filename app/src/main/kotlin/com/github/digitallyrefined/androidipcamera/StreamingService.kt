@@ -724,7 +724,14 @@ class StreamingService : LifecycleService() {
         val latch = CountDownLatch(1); val out = arrayOfNulls<ByteArray>(1)
         launchMain { b.captureStill { out[0] = it; latch.countDown() } }
         try { latch.await(8, TimeUnit.SECONDS) } catch (_: Exception) {}
-        out[0]?.let { snapCache[key] = it }
+        out[0]?.let { 
+            val maxSize = DeviceMemoryHelper.maxSnapshotBytes(this@StreamingService)
+            if (it.size <= maxSize) {
+                snapCache[key] = it
+            } else {
+                Log.w(TAG, "Snapshot too large to cache (${it.size} bytes > $maxSize), skipping cache")
+            }
+        }
         return out[0]
     }
 
