@@ -68,6 +68,13 @@ class H264StreamingEncoder(
                 streamingServerHelper?.resetH264Wait()
             }
             encMutable.feed(image, image.imageInfo.timestamp / 1000)
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "processFrame OOM: ${e.message}")
+            invalidatePendingWrites()
+            h264HardwareEncoder?.stop()
+            h264HardwareEncoder = null
+            DeviceMemoryHelper.updateMemoryPressure(android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+            try { System.gc() } catch (_: Exception) {}
         } catch (e: Exception) {
             Log.e(TAG, "feed: ${e.message}")
         }
