@@ -538,6 +538,10 @@ class StreamingService : LifecycleService() {
                         val activeEncoders = encoders.filter { it.hasClients() }
                         if (activeEncoders.isEmpty()) return@CameraXCapture
                         activeEncoders.forEach { it.processFrame(img) }
+                    } catch (e: OutOfMemoryError) {
+                        Log.e(TAG, "ImageAnalysis OOM — dropping frame: ${e.message}")
+                        DeviceMemoryHelper.updateMemoryPressure(android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+                        try { System.gc() } catch (_: Exception) {}
                     } finally {
                         img.close()
                     }
