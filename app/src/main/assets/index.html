@@ -418,7 +418,7 @@
 
     function updateFlashButton() {
       if (!flashBtn) return;
-      const currentCameraInfo = cameraList.find(camera => camera.id === currentCamera);
+      const currentCameraInfo = selectedCameraInfo();
       const hasFlash = currentCameraInfo?.hasFlash || false;
       flashBtn.style.display = hasFlash ? 'inline-block' : 'none';
       if (hasFlash) {
