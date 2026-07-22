@@ -79,8 +79,8 @@ object CertificateHelper {
         val validityEnd = Date(now.time + CERT_VALIDITY_DAYS * 24 * 60 * 60 * 1000L)
 
         // Create X500 name for subject and issuer (self-signed)
-        val subject = X500Name("CN=localhost, O=Personal IP Camera, OU=Home, L=Home, ST=Personal, C=US")
-        
+        val subject = X500Name("CN=localhost, O=Android IP Camera, OU=Home, L=Home, ST=Personal, C=US")
+
         // Generate serial number
         val serialNumber = BigInteger(160, SecureRandom())
 
@@ -100,7 +100,7 @@ object CertificateHelper {
 
         val certHolder: X509CertificateHolder = certBuilder.build(contentSigner)
         val certConverter = JcaX509CertificateConverter()
-        
+
         return certConverter.getCertificate(certHolder)
     }
 
@@ -110,7 +110,7 @@ object CertificateHelper {
     fun certificateExists(context: Context): Boolean {
         val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(context)
         val certificatePath = prefs.getString("certificate_path", null)
-        
+
         // If custom certificate path is set, certificate exists
         if (certificatePath != null) {
             return true
