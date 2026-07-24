@@ -156,13 +156,30 @@ class CameraXCapture(
         cases.add(analysis)
         if (withCapture) imageCapture?.let { cases.add(it) }
         p.unbindAll()
-        try {
-            camera = p.bindToLifecycle(owner, sel, *cases.toTypedArray())
-            if (encoderUseCase != null) {
-                encoderSurfaceBound = true
+        // On slow HALs (e.g. Exynos 7420) the previous camera close() can take 400ms–6s.
+        // bindToLifecycle() may fail if the HAL hasn't finished tearing down. Retry a few
+        // times with a short delay before falling back to degraded surface combinations.
+        val maxRetries = 3
+        var lastException: Exception? = null
+        for (attempt in 1..maxRetries) {
+            try {
+                camera = p.bindToLifecycle(owner, sel, *cases.toTypedArray())
+                if (encoderUseCase != null) {
+                    encoderSurfaceBound = true
+                }
+                lastException = null
+                break
+            } catch (e: Exception) {
+                lastException = e
+                if (attempt < maxRetries) {
+                    Log.w(TAG, "bindToLifecycle failed (attempt $attempt/$maxRetries): ${e.message}; retrying in 500ms...")
+                    Thread.sleep(500)
+                } else {
+                    Log.e(TAG, "bindToLifecycle failed after $maxRetries attempts: ${e.message}")
+                }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "bindToLifecycle failed: ${e.message}")
+        }
+        if (lastException != null) {
             if (encoderUseCase != null) {
                 if (previewUseCase != null) {
                     // Fallback 1: try dropping screen preview to save surface encoder
@@ -196,7 +213,7 @@ class CameraXCapture(
                     throw e3
                 }
             } else {
-                throw e
+                throw lastException
             }
         }
         // Re-apply cached controls, since rebinding replaces the camera control.

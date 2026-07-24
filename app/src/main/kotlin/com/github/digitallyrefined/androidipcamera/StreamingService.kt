@@ -74,6 +74,8 @@ class StreamingService : LifecycleService() {
     private val snapCache = ConcurrentHashMap<String, ByteArray>()  // latest JPEG per camera (RAM)
     private val snapLock = Any()
     private val cameraMutex = Mutex()
+    private var pendingStartJob: kotlinx.coroutines.Job? = null
+    @Volatile private var cameraCloseStartTime: Long = 0L
 
     var onClientConnected: (() -> Unit)? = null
     var onClientDisconnected: (() -> Unit)? = null
@@ -205,7 +207,7 @@ class StreamingService : LifecycleService() {
         currentSurfaceProvider = surfaceProvider
         val shouldRun = encoders.any { it.hasClients() } || currentSurfaceProvider != null
         if (shouldRun) {
-            launchMain { startCamera() }
+            debouncedStartCamera()
         } else {
             launchMain { stopCamera() }
         }
@@ -217,7 +219,7 @@ class StreamingService : LifecycleService() {
         PreferenceManager.getDefaultSharedPreferences(this).edit()
             .putString(PREF_CAMERA_ID, camId())
             .apply()
-        if (captureRunning) launchMain { startCamera() }
+        if (captureRunning) debouncedStartCamera(force = true)
     }
 
     fun getLocalIpAddress(): String {
@@ -269,7 +271,7 @@ class StreamingService : LifecycleService() {
                     launchMain {
                         onClientConnected?.invoke()
                         if (captureRunning) {
-                            startCamera()
+                            debouncedStartCamera()
                         } else {
                             startCameraIfNeeded()
                         }
@@ -280,12 +282,12 @@ class StreamingService : LifecycleService() {
                         onClientDisconnected?.invoke()
                         if (!encoders.any { it.hasClients() }) {
                             if (currentSurfaceProvider != null) {
-                                startCamera()
+                                debouncedStartCamera()
                             } else {
                                 stopCamera()
                             }
                         } else if (captureRunning) {
-                            startCamera()
+                            debouncedStartCamera()
                         }
                     }
                 },
@@ -458,6 +460,25 @@ class StreamingService : LifecycleService() {
 
     private suspend fun startCameraIfNeeded() { if (!captureRunning) startCamera() }
 
+    /**
+     * Debounced camera restart. Coalesces rapid [startCamera] calls (e.g. when a settings
+     * change fires both a resolution and a camera-restart broadcast) into a single restart
+     * after [delayMs]. Immediate restarts (force=true) bypass the debounce.
+     */
+    private fun debouncedStartCamera(force: Boolean = false, delayMs: Long = 300) {
+        if (force) {
+            pendingStartJob?.cancel()
+            pendingStartJob = null
+            launchMain { startCamera(force = true) }
+            return
+        }
+        pendingStartJob?.cancel()
+        pendingStartJob = lifecycleScope.launch(Dispatchers.Main) {
+            kotlinx.coroutines.delay(delayMs)
+            startCamera()
+        }
+    }
+
     private suspend fun startCamera(force: Boolean = false) = cameraMutex.withLock {
         Log.i(TAG, "startCamera() called. force=$force, selectedCameraId=$selectedCameraId, frontFacing=$frontFacing, currentSurfaceProvider=$currentSurfaceProvider, captureRunning=$captureRunning")
         if (!allPermissionsGranted()) {
@@ -580,7 +601,12 @@ class StreamingService : LifecycleService() {
     }
 
     private fun stopCamera() {
+        cameraCloseStartTime = System.currentTimeMillis()
         backend?.stop(); backend = null
+        val closeDuration = System.currentTimeMillis() - cameraCloseStartTime
+        if (closeDuration > 1000) {
+            Log.w(TAG, "Camera close took ${closeDuration}ms — HAL is slow to release resources")
+        }
         glPipe?.stop(); glPipe = null
         encoders.forEach { it.stop() }
         captureRunning = false
@@ -838,7 +864,7 @@ class StreamingService : LifecycleService() {
                     .apply()
                 launchMain {
                     if (captureRunning) {
-                        startCamera()
+                        debouncedStartCamera(force = true)
                         if (keepTorchOn) backend?.setTorch(true)
                     }
                 }
@@ -846,10 +872,10 @@ class StreamingService : LifecycleService() {
             "resolution" -> {
                 if (value in listOf("low", "medium", "high")) {
                     prefs.edit().putString("camera_resolution", value).apply()
-                    launchMain { if (captureRunning) startCamera() }
+                    debouncedStartCamera()
                 } else if (value == "auto" || value == "max" || Regex("\\d+x\\d+").matches(value)) {
                     prefs.edit().putString("stream_res", if (value == "max") "auto" else value).apply()
-                    launchMain { if (captureRunning) startCamera() }
+                    debouncedStartCamera()
                 }
             }
             "rotate" -> {
@@ -873,7 +899,7 @@ class StreamingService : LifecycleService() {
             "api" -> {
                 if (value in listOf("auto", "camerax", "camera1")) {
                     prefs.edit().putString("capture_api", value).apply()
-                    launchMain { if (captureRunning) startCamera() }
+                    debouncedStartCamera()
                 }
             }
         }
