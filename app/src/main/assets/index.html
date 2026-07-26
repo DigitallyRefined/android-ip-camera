@@ -1183,6 +1183,15 @@
       updateCameraSelectValue();
       populateResolutions();
       updateZoomMax();
+
+      // Front-facing cameras are slower on H.264 for most Android devices,
+      // so automatically switch to MJPEG when selecting a front camera.
+      // Switch back to H.264 for rear cameras when available.
+      if (newCameraInfo && newCameraInfo.facing === 'front' && streamMode !== 'mjpeg') {
+        setStreamMode('mjpeg');
+      } else if (newCameraInfo && newCameraInfo.facing === 'back' && streamMode === 'mjpeg' && h264Supported && window.isSecureContext) {
+        setStreamMode('h264');
+      }
       // If the next camera has no flash, reflect the forced-off state immediately.
       if (torchState === 'on' && newCameraInfo && !newCameraInfo.hasFlash) {
         try {
