@@ -3,7 +3,7 @@
 [![downloads](https://img.shields.io/github/downloads/DigitallyRefined/android-ip-camera/total.svg)](https://github.com/DigitallyRefined/android-ip-camera/releases)
 [![downloads](https://img.shields.io/github/downloads/DigitallyRefined/android-ip-camera/latest/total.svg)](https://github.com/DigitallyRefined/android-ip-camera/releases)
 
-An Android MJPEG / H.264 IP Camera app
+An Android H.264 / MJPEG IP Camera app
 
 ![Desktop Browser](screenshot.webp)
 
@@ -25,7 +25,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 
 ## Features
 
-* 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/video/mjpeg`)
+* 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a camera for [Frigate](https://github.com/blakeblackshear/frigate) or a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/video/mjpeg`)
 * 📴 Option to turn the display off while streaming
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
@@ -40,6 +40,34 @@ If you are planning to run this 24/7, please make sure that your phone does not 
 Some models include an option to only charge to 80%, make sure this is enabled where possible.
 
 Note: running at a higher image quality may cause some phones to over heat, which can also damage the battery.
+
+## Frigate config
+
+Use the example config below to add your phones camera to [Frigate](https://github.com/blakeblackshear/frigate), optionally uncommenting the audio lines (if required) & update the `rtsp` stream:
+
+```yaml
+go2rtc:
+  streams:
+    android-cam-video:
+      - "https://[ip_address]:4444/video/h264"
+    # android-cam-audio:
+    #   - "https://[ip_address]:4444/audio"
+    # android-cam:
+    #  - ffmpeg:android-cam-video#video=copy
+    #  - ffmpeg:android-cam-audio#audio=copy
+
+cameras:
+  android-cam:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/android-cam-video # or android-cam
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+            - record
+    #        - audio
+```
 
 ## Server URL Paths & Remote Control API
 
@@ -86,6 +114,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `focus_distance=<0..1|-1>`: Set manual focus distance (0..1). Use `-1` to restore autofocus.
   * `snapshot_res=<max|stream>`: Choose snapshot resolution for the selected camera (`max` for full sensor, `stream` to match current stream resolution).
   * `rotate=<degrees>`: Rotate preview/snapshot (persisted per-camera).
+  * `mirror=<true|false>`: Mirror the video.
   * `api=<auto|camerax|camera1>`: Prefer capture API implementation.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
 
