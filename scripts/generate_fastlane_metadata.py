@@ -80,6 +80,9 @@ def paragraphs_to_html(lines):
         result.append("<p>" + " ".join(buf).strip() + "</p>\n\n")
     return "".join(result)
 
+def md_links_to_html(text):
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+
 def extract_full_description(readme):
     features = section_lines(readme, "Features")
     warnings = section_lines(readme, "Warning")
@@ -288,8 +291,8 @@ def main():
     full_desc = extract_full_description(readme)
 
     write_file(out_dir / "title.txt", title)
-    write_file(out_dir / "short_description.txt", short_desc[:80])
-    write_file(out_dir / "full_description.txt", full_desc[:4000])
+    write_file(out_dir / "short_description.txt", md_links_to_html(short_desc[:80]))
+    write_file(out_dir / "full_description.txt", md_links_to_html(full_desc[:4000]))
 
     # Extract versionName and format as 9-digit code (0.2.2 -> 000002002)
     version_code = extract_version_name_as_code(str(build_gradle_path)) or "000000001"
