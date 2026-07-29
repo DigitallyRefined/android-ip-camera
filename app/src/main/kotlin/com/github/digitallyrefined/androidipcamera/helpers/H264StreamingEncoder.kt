@@ -67,7 +67,17 @@ class H264StreamingEncoder(
                 encMutable.requestKeyFrame()
                 streamingServerHelper?.resetH264Wait()
             }
-            encMutable.feed(image, image.imageInfo.timestamp / 1000)
+            val mirror = run {
+                val p = PreferenceManager.getDefaultSharedPreferences(context)
+                val camId = p.getString("camera_id", null) ?: return@run false
+                val phys = camId.substringAfter(':', camId)
+                when {
+                    p.contains("mirror_$camId") -> p.getString("mirror_$camId", null)?.toBoolean() ?: false
+                    p.contains("mirror_$phys") -> p.getString("mirror_$phys", null)?.toBoolean() ?: false
+                    else -> false
+                }
+            }
+            encMutable.feed(image, image.imageInfo.timestamp / 1000, mirror)
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "processFrame OOM: ${e.message}")
             invalidatePendingWrites()

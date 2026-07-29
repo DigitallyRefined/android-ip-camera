@@ -88,6 +88,10 @@ class MjpegStreamingEncoder(
                 val phys = camId.substringAfter(':', camId)
                 prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
             } else 0
+            val mirror = if (camId != null) {
+                val phys = camId.substringAfter(':', camId)
+                prefStringWithFallback(prefs, "mirror_$camId", "mirror_$phys")?.toBoolean() ?: false
+            } else false
 
             val nv21 = convertYUV420toNV21(image, nv21Buffer, nv21RowBuffer).also {
                 nv21Buffer = it
@@ -97,9 +101,9 @@ class MjpegStreamingEncoder(
             }
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
             var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height, quality)
-            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0
+            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror
             if (needsTransform) {
-                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality)
+                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality, mirror)
             }
             broadcastJpeg(jpegBytes)
         } catch (e: OutOfMemoryError) {
@@ -139,12 +143,16 @@ class MjpegStreamingEncoder(
                 val phys = camId.substringAfter(':', camId)
                 prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
             } else 0
+            val mirror = if (camId != null) {
+                val phys = camId.substringAfter(':', camId)
+                prefStringWithFallback(prefs, "mirror_$camId", "mirror_$phys")?.toBoolean() ?: false
+            } else false
 
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
             var jpegBytes = convertNV21toJPEG(nv21, width, height, quality)
-            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0
+            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror
             if (needsTransform) {
-                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality)
+                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality, mirror)
             }
             broadcastJpeg(jpegBytes)
         } catch (e: OutOfMemoryError) {
@@ -249,6 +257,19 @@ class MjpegStreamingEncoder(
                 Log.i(TAG, "Remote Control: Contrast set to $contrast (software-based)")
                 true
             }
+            "mirror" -> {
+                if (value in listOf("true", "false")) {
+                    val camId = prefs.getString("camera_id", null)
+                    camId?.let {
+                        prefs.edit().putString("mirror_$it", value).apply()
+                        val phys = it.substringAfter(':', it)
+                        if (phys.isNotBlank() && phys != it) prefs.edit().putString("mirror_$phys", value).apply()
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
             else -> false
         }
     }
@@ -291,7 +312,8 @@ class MjpegStreamingEncoder(
         rotation: Int,
         scaleFactor: Float,
         contrastValue: Int,
-        jpegQuality: Int
+        jpegQuality: Int,
+        mirror: Boolean = false
     ): ByteArray {
         var bitmap: Bitmap? = null
         try {
@@ -305,6 +327,12 @@ class MjpegStreamingEncoder(
             bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions)
             if (bitmap != null) {
                 val matrix = Matrix()
+
+                // Apply Mirror (horizontal flip) before rotation
+                if (mirror) {
+                    matrix.postScale(-1f, 1f)
+                    matrix.postTranslate(bitmap.width.toFloat(), 0f)
+                }
 
                 // Apply Rotation
                 if (rotation != 0) {

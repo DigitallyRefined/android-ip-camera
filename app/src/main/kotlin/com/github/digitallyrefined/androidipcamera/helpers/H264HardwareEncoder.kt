@@ -85,7 +85,7 @@ class H264HardwareEncoder(
     private var yuv: ByteArray? = null
 
     /** Convert one analyzer frame to the encoder's YUV layout and feed it. Drops the frame if no input buffer is free. */
-    fun feed(image: ImageProxy, ptsUs: Long) {
+    fun feed(image: ImageProxy, ptsUs: Long, mirror: Boolean = false) {
         if (useSurface) return
         synchronized(codecLock) {
             if (!running) return
@@ -93,16 +93,18 @@ class H264HardwareEncoder(
                 val idx = codec.dequeueInputBuffer(2000)
                 if (idx < 0) return
 
-                // Modern and safe path: use getInputImage(idx) which respects hardware strides/padding
+                // Always use getInputImage for proper stride handling; when mirror is needed
+                // we copy source pixels in reversed column order instead of post-mirroring.
                 val dstImage = codec.getInputImage(idx)
                 if (dstImage != null) {
-                    copyYuv(image, dstImage)
+                    if (mirror) mirroredCopyYuv(image, dstImage)
+                    else copyYuv(image, dstImage)
                     val size = width * height * 3 / 2
                     codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
                     return
                 }
 
-                // Fallback for legacy / safety
+                // Fallback for legacy / safety (only reached if getInputImage returns null)
                 val buf = codec.getInputBuffer(idx)
                 if (buf == null) { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0); return }
                 val size = width * height * 3 / 2
@@ -113,6 +115,40 @@ class H264HardwareEncoder(
                 codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
             } catch (e: Exception) {
                 if (running) Log.e(TAG, "feed: ${e.message}")
+            }
+        }
+    }
+
+    private fun mirrorYuvArray(arr: ByteArray, w: Int, h: Int) {
+        val rowBuf = ByteArray(w)
+        val ySize = w * h
+        for (row in 0 until h) {
+            val off = row * w
+            System.arraycopy(arr, off, rowBuf, 0, w)
+            for (col in 0 until w) arr[off + col] = rowBuf[w - 1 - col]
+        }
+        val cw = w / 2; val ch = h / 2
+        val uvBuf = ByteArray(if (semiPlanar) w else cw)
+        var off = ySize
+        if (semiPlanar) {
+            for (row in 0 until ch) {
+                System.arraycopy(arr, off, uvBuf, 0, w)
+                for (col in 0 until cw) {
+                    arr[off + col * 2] = uvBuf[(cw - 1 - col) * 2]
+                    arr[off + col * 2 + 1] = uvBuf[(cw - 1 - col) * 2 + 1]
+                }
+                off += w
+            }
+        } else {
+            for (row in 0 until ch) {
+                System.arraycopy(arr, off, uvBuf, 0, cw)
+                for (col in 0 until cw) arr[off + col] = uvBuf[cw - 1 - col]
+                off += cw
+            }
+            for (row in 0 until ch) {
+                System.arraycopy(arr, off, uvBuf, 0, cw)
+                for (col in 0 until cw) arr[off + col] = uvBuf[cw - 1 - col]
+                off += cw
             }
         }
     }
@@ -129,6 +165,18 @@ class H264HardwareEncoder(
         val uvH = src.height / 2
         copyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
         copyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
+    }
+
+    /** Like [copyYuv] but copies source pixels in reversed column order to achieve a horizontal
+     *  mirror. Uses the [getInputImage] path so codec stride/padding requirements are met. */
+    private fun mirroredCopyYuv(src: ImageProxy, dst: Image) {
+        val srcPlanes = src.planes
+        val dstPlanes = dst.planes
+        mirroredCopyPlane(srcPlanes[0], dstPlanes[0], src.width, src.height)
+        val uvW = src.width / 2
+        val uvH = src.height / 2
+        mirroredCopyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
+        mirroredCopyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
     }
 
     private var planeRowBuf: ByteArray? = null
@@ -177,6 +225,61 @@ class H264HardwareEncoder(
                 for (col in 0 until w) {
                     val dstIdx = col * dPix
                     val srcIdx = col * sPix
+                    if (srcIdx < bytesToRead && dstIdx < limit) {
+                        dRBuf[dstIdx] = rBuf[srcIdx]
+                    }
+                }
+                dBuf.put(dRBuf, 0, bytesToCopy)
+            }
+        }
+    }
+
+    /** Like [copyPlane] but copies source pixels in reversed column order to mirror horizontally. */
+    private fun mirroredCopyPlane(
+        src: ImageProxy.PlaneProxy,
+        dst: Image.Plane,
+        w: Int,
+        h: Int
+    ) {
+        val sBuf = src.buffer
+        val dBuf = dst.buffer
+        val sRow = src.rowStride
+        val dRow = dst.rowStride
+        val sPix = src.pixelStride
+        val dPix = dst.pixelStride
+
+        var rBuf = planeRowBuf
+        if (rBuf == null || rBuf.size < sRow) { rBuf = ByteArray(sRow).also { planeRowBuf = it } }
+
+        var dRBuf: ByteArray? = null
+        if (sPix != 1 || dPix != 1) {
+            dRBuf = planeDstRowBuf
+            if (dRBuf == null || dRBuf.size < dRow) { dRBuf = ByteArray(dRow).also { planeDstRowBuf = it } }
+        }
+
+        for (row in 0 until h) {
+            sBuf.position(row * sRow)
+            val bytesToRead = minOf(sRow, sBuf.remaining())
+            sBuf.get(rBuf, 0, bytesToRead)
+
+            dBuf.position(row * dRow)
+            if (sPix == 1 && dPix == 1) {
+                val bytesToWrite = minOf(w, dBuf.remaining())
+                for (i in 0 until bytesToWrite) {
+                    dBuf.put(rBuf[bytesToWrite - 1 - i])
+                }
+            } else if (dRBuf != null) {
+                val limit = minOf(w * dPix, dRow)
+                val bytesToCopy = minOf(limit, dBuf.remaining())
+
+                if (dPix > 1) {
+                    dBuf.get(dRBuf, 0, bytesToCopy)
+                    dBuf.position(row * dRow)
+                }
+
+                for (col in 0 until w) {
+                    val dstIdx = col * dPix
+                    val srcIdx = (w - 1 - col) * sPix
                     if (srcIdx < bytesToRead && dstIdx < limit) {
                         dRBuf[dstIdx] = rBuf[srcIdx]
                     }
@@ -269,10 +372,6 @@ class H264HardwareEncoder(
                     }
                     // Never retain a MediaCodec output buffer while network work is scheduled.
                     prepared?.let {
-                        val count = ++frameCount
-                        if (count % 30 == 0) {
-                            Log.d(TAG, "Encoded frame: count=$count, size=${it.bytes.size}, isKey=${it.isKeyframe}")
-                        }
                         onNal(it.bytes, it.isKeyframe)
                     }
                 }

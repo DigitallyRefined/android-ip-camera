@@ -1035,6 +1035,7 @@ class StreamingServerHelper(
                 "camera_rotate_$cameraId", "camera_rotate_$physical",
                 "stream_scale_$cameraId", "stream_scale_$physical",
                 "camera_contrast_$cameraId", "camera_contrast_$physical",
+                "mirror_$cameraId", "mirror_$physical",
                 "snapshot_res_$cameraId", "snapshot_res_$physical"
             )
             keys.forEach { k -> if (prefs.contains(k)) editor.remove(k) }
@@ -1056,6 +1057,7 @@ class StreamingServerHelper(
                     "focus_distance" to "-1",
                     "scale" to "1.0",
                     "contrast" to "0",
+                    "mirror" to "false",
                     "fps" to "30",
                     "rotate" to "0"
                 )
@@ -1301,6 +1303,10 @@ class StreamingServerHelper(
             // Contrast
             val contrastVal = prefStringFallback("0", "camera_contrast_$id", "camera_contrast_$physical") ?: "0"
             map["contrast"] = contrastVal
+
+            // Mirror
+            val mirrorVal = prefStringFallback("false", "mirror_$id", "mirror_$physical") ?: "false"
+            map["mirror"] = mirrorVal
 
             // Snapshot resolution optional (per-camera)
             val snapshot = prefStringFallback(null, "snapshot_res_$id", "snapshot_res_$physical")

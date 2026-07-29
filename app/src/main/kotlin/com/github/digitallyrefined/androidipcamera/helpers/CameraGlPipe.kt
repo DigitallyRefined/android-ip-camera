@@ -23,9 +23,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class CameraGlPipe(
     private val encoderSurface: Surface,
-    private val width: Int,
-    private val height: Int,
-    targetFps: Int
+    val width: Int,
+    val height: Int,
+    targetFps: Int,
+    /** When true, [setDefaultBufferSize] uses a standard camera-compatible size instead of
+     *  [width]×[height]. This prevents aspect-ratio mismatches when CameraX selects a different
+     *  output resolution than the pipe surface size. Should be `true` for CameraX, `false` for
+     *  Camera1 (where the pipe dimensions already match the camera output). */
+    private val standardBuffer: Boolean = false
 ) {
     private var thread: Thread? = null
     @Volatile private var running = true
@@ -38,7 +43,10 @@ class CameraGlPipe(
     private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var texId = 0
     private var program = 0
-    private var aPos = 0; private var aTex = 0; private var uST = 0
+    private var aPos = 0; private var aTex = 0; private var uST = 0; private var uMirror = 0
+    @Volatile var mirror = false
+    @Volatile var frameWidth: Int = 0
+    @Volatile var frameHeight: Int = 0
     lateinit var surfaceTexture: SurfaceTexture
         private set
     lateinit var inputSurface: Surface
@@ -59,7 +67,11 @@ class CameraGlPipe(
             initEgl()
             texId = createOesTexture()
             program = buildProgram()
-            surfaceTexture = SurfaceTexture(texId).also { it.setDefaultBufferSize(width, height) }
+            // When standardBuffer is set (CameraX path) use a camera-compatible size so the
+            // camera's output aspect ratio matches the pipe surface (avoids stretching when
+            // CameraX picks a resolution that doesn't match the desired output size).
+            val (bufW, bufH) = if (standardBuffer) standardBufferSize() else (width to height)
+            surfaceTexture = SurfaceTexture(texId).also { it.setDefaultBufferSize(bufW, bufH) }
             surfaceTexture.setOnFrameAvailableListener { frameAvailable.set(true) }
             inputSurface = Surface(surfaceTexture)
             ready.countDown()
@@ -89,6 +101,31 @@ class CameraGlPipe(
         GLES20.glViewport(0, 0, width, height)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         GLES20.glUseProgram(program)
+
+        // Use externally-provided frame dimensions (from CameraX Preview use case) to
+        // letterbox when the camera output aspect ratio differs from the pipe surface.
+        var fw = frameWidth; var fh = frameHeight
+        if (fw > 0 && fh > 0) {
+            // The stMatrix may rotate the camera frame (e.g. 90° when the device is held in
+            // portrait). When it does, the effective display dimensions are swapped, so we
+            // must swap the frame width/height to compute the correct viewport adjustment.
+            if (Math.abs(stMatrix[0]) < 0.5f && Math.abs(stMatrix[4]) > 0.5f) {
+                val t = fw; fw = fh; fh = t
+            }
+            val outAspect = width.toFloat() / height.toFloat()
+            val frameAspect = fw.toFloat() / fh.toFloat()
+            var vpW = width; var vpH = height; var vpX = 0; var vpY = 0
+            if (outAspect > frameAspect) {
+                vpW = (height * frameAspect).toInt()
+                vpX = (width - vpW) / 2
+            } else {
+                vpH = (width / frameAspect).toInt()
+                vpY = (height - vpH) / 2
+            }
+            if (vpW < 1) vpW = 1; if (vpH < 1) vpH = 1
+            GLES20.glViewport(vpX, vpY, vpW, vpH)
+        }
+
         quad.position(0)
         GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 16, quad)
         GLES20.glEnableVertexAttribArray(aPos)
@@ -96,6 +133,7 @@ class CameraGlPipe(
         GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 16, quad)
         GLES20.glEnableVertexAttribArray(aTex)
         GLES20.glUniformMatrix4fv(uST, 1, false, stMatrix, 0)
+        GLES20.glUniform1f(uMirror, if (mirror) 1f else 0f)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -133,8 +171,8 @@ class CameraGlPipe(
         val vs = "attribute vec4 aPos; attribute vec4 aTex; uniform mat4 uST; varying vec2 vTex;\n" +
                  "void main(){ gl_Position = aPos; vTex = (uST * aTex).xy; }"
         val fs = "#extension GL_OES_EGL_image_external : require\n" +
-                 "precision mediump float; varying vec2 vTex; uniform samplerExternalOES sTex;\n" +
-                 "void main(){ gl_FragColor = texture2D(sTex, vTex); }"
+                 "precision mediump float; varying vec2 vTex; uniform samplerExternalOES sTex; uniform float uMirror;\n" +
+                 "void main(){ vec2 tc = vec2(mix(vTex.x, 1.0 - vTex.x, uMirror), vTex.y); gl_FragColor = texture2D(sTex, tc); }"
         val p = GLES20.glCreateProgram()
         GLES20.glAttachShader(p, compile(GLES20.GL_VERTEX_SHADER, vs))
         GLES20.glAttachShader(p, compile(GLES20.GL_FRAGMENT_SHADER, fs))
@@ -142,6 +180,7 @@ class CameraGlPipe(
         aPos = GLES20.glGetAttribLocation(p, "aPos")
         aTex = GLES20.glGetAttribLocation(p, "aTex")
         uST = GLES20.glGetUniformLocation(p, "uST")
+        uMirror = GLES20.glGetUniformLocation(p, "uMirror")
         return p
     }
 
@@ -167,6 +206,18 @@ class CameraGlPipe(
         running = false
         try { thread?.join(500) } catch (_: Exception) {}
         frameRateLimiter.reset()
+    }
+
+    /** Returns a standard camera-compatible buffer size matching the output aspect ratio. */
+    private fun standardBufferSize(): Pair<Int, Int> {
+        val aspect = width.toFloat() / height.toFloat()
+        return if (aspect >= 1.5f) { // 16:9-ish
+            // 1280x720 is widely supported by modern cameras; if the requested size is smaller
+            // than that, use 640x360 (same 16:9 ratio, less likely to be rejected by the HAL).
+            if (width >= 1280) 1280 to 720 else 640 to 360
+        } else { // 4:3-ish
+            if (width >= 640) 640 to 480 else 320 to 240
+        }
     }
 
     companion object { private const val TAG = "CameraGlPipe" }

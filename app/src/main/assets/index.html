@@ -322,6 +322,11 @@
             </div>
           </div>
 
+          <label>
+            <input type="checkbox" id="mirrorCheckbox" onchange="sendControl('mirror', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
+            <span style="vertical-align:middle;">Mirror</span>
+          </label>
+
           <p class="group-title">Post Processing</p>
 
           <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
@@ -1278,6 +1283,11 @@
         contrast.value = settings.contrast;
         if (contVal) contVal.textContent = settings.contrast;
       }
+      const mirrorEl = getElById('mirrorCheckbox');
+      if (mirrorEl && settings.mirror !== undefined) {
+        mirrorEl.checked = settings.mirror === 'true';
+      }
+
       const fps = getElById('fps');
       if (fps && settings.fps) {
         fps.value = settings.fps;

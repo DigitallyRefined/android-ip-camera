@@ -62,7 +62,8 @@ class StreamingService : LifecycleService() {
     private val encoders: List<StreamingEncoder>
         get() = listOfNotNull(h264StreamingEncoder, mjpegStreamingEncoder)
 
-    @Volatile private var glPipe: CameraGlPipe? = null
+    @Volatile private var glPipe: CameraGlPipe? = null          // Camera1 H.264 GL pipe
+    @Volatile private var cameraXGlPipe: CameraGlPipe? = null   // CameraX H.264 GL pipe
     @Volatile private var backend: CaptureBackend? = null   // CameraXCapture (default) or Camera1Capture (legacy)
     @Volatile private var captureRunning = false
 
@@ -527,14 +528,21 @@ class StreamingService : LifecycleService() {
                     h264.setEncoder(enc)
                     streamingServerHelper?.resetH264Wait()
 
+                    // Route CameraX frames through a GL pipe so mirror can be applied
+                    // without restarting the camera (the pipe reads mirror on each frame).
+                    val pipe = CameraGlPipe(enc.inputSurface!!, want.width, want.height, fpsCoerced, standardBuffer = true).also {
+                        it.mirror = readMirrorPref()
+                        it.start()
+                        cameraXGlPipe = it
+                    }
+
                     h264SurfaceProvider = Preview.SurfaceProvider { request ->
-                        val surface = enc.inputSurface
+                        val surface = pipe.inputSurface
                         if (surface != null && surface.isValid) {
-                            Log.i(TAG, "Providing surface for H.264 encoder: $enc")
+                            Log.i(TAG, "Providing CameraX H.264 surface via GL pipe (mirror=${pipe.mirror})")
                             enc.hasSurfaceBeenProvided = true
                             request.provideSurface(surface, ContextCompat.getMainExecutor(this)) { result ->
-                                Log.i(TAG, "H.264 encoder surface released by CameraX (result code: ${result.resultCode}) for: $enc")
-                                enc.release()
+                                Log.i(TAG, "CameraX H.264 surface released by CameraX (result code: ${result.resultCode})")
                             }
                         } else {
                             request.willNotProvideSurface()
@@ -556,6 +564,9 @@ class StreamingService : LifecycleService() {
                     }
                 ) { img ->
                     try {
+                        cameraXGlPipe?.let { pipe ->
+                            pipe.frameWidth = img.width; pipe.frameHeight = img.height
+                        }
                         val activeEncoders = encoders.filter { it.hasClients() }
                         if (activeEncoders.isEmpty()) return@CameraXCapture
                         activeEncoders.forEach { it.processFrame(img) }
@@ -607,12 +618,25 @@ class StreamingService : LifecycleService() {
         if (closeDuration > 1000) {
             Log.w(TAG, "Camera close took ${closeDuration}ms — HAL is slow to release resources")
         }
+        cameraXGlPipe?.stop(); cameraXGlPipe = null
         glPipe?.stop(); glPipe = null
         encoders.forEach { it.stop() }
         captureRunning = false
     }
 
-    /** Surface-mode encoder + GL pipe, shared by both backends (CameraX Preview / Camera1 preview). */
+    private fun readMirrorPref(): Boolean {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val id = camId()
+        if (id == null) return false
+        val phys = id.substringAfter(':', id)
+        return when {
+            prefs.contains("mirror_$id") -> prefs.getString("mirror_$id", null)?.toBoolean() ?: false
+            prefs.contains("mirror_$phys") -> prefs.getString("mirror_$phys", null)?.toBoolean() ?: false
+            else -> false
+        }
+    }
+
+    /** Surface-mode encoder + GL pipe, used by Camera1 H.264. */
     private fun newPipe(sz: Size): CameraGlPipe {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
@@ -620,7 +644,11 @@ class StreamingService : LifecycleService() {
         val enc = H264HardwareEncoder(sz.width, sz.height, fpsCoerced, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k -> h264StreamingEncoder?.broadcastH264(d, k) }
         h264StreamingEncoder?.setEncoder(enc)
         streamingServerHelper?.resetH264Wait()
-        return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also { it.start(); glPipe = it }
+        return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also {
+            it.mirror = readMirrorPref()
+            it.start()
+            glPipe = it
+        }
     }
 
     private fun applyStored(b: CaptureBackend) {
@@ -895,6 +923,15 @@ class StreamingService : LifecycleService() {
                 // Persist contrast per-camera
                 prefs.edit().putString("camera_contrast_$id", value).apply()
                 if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("camera_contrast_$physicalId", value).apply()
+            }
+            "mirror" -> {
+                if (value in listOf("true", "false")) {
+                    prefs.edit().putString("mirror_$id", value).apply()
+                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("mirror_$physicalId", value).apply()
+                    val enabled = value == "true"
+                    glPipe?.mirror = enabled
+                    cameraXGlPipe?.mirror = enabled
+                }
             }
             "api" -> {
                 if (value in listOf("auto", "camerax", "camera1")) {
