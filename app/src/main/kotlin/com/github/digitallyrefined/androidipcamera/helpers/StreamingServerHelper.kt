@@ -67,8 +67,13 @@ class StreamingServerHelper(
         val writer: PrintWriter,
         val connectedAt: Long = System.currentTimeMillis(),
         val isAuthenticated: Boolean = false,
-        @Volatile var waitingKey: Boolean = true // H.264: skip frames until first keyframe
-    )
+        @Volatile var waitingKey: Boolean = true, // H.264: skip frames until first keyframe
+        @Volatile var lastSuccessfulWriteMs: Long = System.currentTimeMillis()
+    ) {
+        fun markWriteSuccess() {
+            lastSuccessfulWriteMs = System.currentTimeMillis()
+        }
+    }
 
     private data class FailedAttempt(
         var count: Int = 0,
@@ -98,7 +103,10 @@ class StreamingServerHelper(
     private val MAX_CONNECTION_DURATION_MS = 30 * 60 * 1000L // 30 minutes max per connection (unauthenticated)
     private val MAX_AUTHENTICATED_CONNECTION_DURATION_MS = 24 * 60 * 60 * 1000L // 24 hours for authenticated users
     private val CONNECTION_READ_TIMEOUT_MS = 30 * 1000 // 30 seconds read timeout
-    private val SOCKET_TIMEOUT_MS = 60 * 1000 // 60 seconds socket timeout
+    private val SOCKET_TIMEOUT_MS = 60_000 // 60 seconds socket timeout
+    /** Disconnect streaming clients whose writes have not completed within this window. */
+    private val STALE_WRITE_TIMEOUT_MS = 15_000L
+    private val CONNECTION_CLEANUP_INTERVAL_MS = 60_000L
 
     fun getClients(): List<Client> = clients.toList()
     fun getH264Clients(): List<Client> = h264Clients.toList()
@@ -423,8 +431,14 @@ class StreamingServerHelper(
                   Handler(Looper.getMainLooper()).post {
                       Toast.makeText(context, "Server started", Toast.LENGTH_SHORT).show()
                   }
+                  var lastConnectionCleanupMs = 0L
                   while (isActive && !Thread.currentThread().isInterrupted) {
                       try {
+                          val now = System.currentTimeMillis()
+                          if (now - lastConnectionCleanupMs >= CONNECTION_CLEANUP_INTERVAL_MS) {
+                              cleanupExpiredConnections()
+                              lastConnectionCleanupMs = now
+                          }
                           val socket = createdServerSocket.accept()
                           val clientIp = socket.inetAddress.hostAddress
 
@@ -469,8 +483,16 @@ class StreamingServerHelper(
             val outputStream = socket.getOutputStream()
             val writer = PrintWriter(outputStream, true)
 
-            // Configure socket timeouts for security
+            // Configure socket timeouts for security and faster detection of stalled clients
             socket.soTimeout = SOCKET_TIMEOUT_MS
+            socket.keepAlive = true
+            try {
+                socket.tcpNoDelay = true
+                if (DeviceMemoryHelper.isLowRamDevice(context)) {
+                    socket.sendBufferSize = 32 * 1024
+                }
+            } catch (_: Exception) {
+            }
 
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
 
@@ -757,7 +779,17 @@ class StreamingServerHelper(
                                 pcmBuffer
                             }
 
-                            writeChunk(outputStream, processedBuffer, read)
+                            try {
+                                writeChunk(outputStream, processedBuffer, read)
+                            } catch (e: java.net.SocketTimeoutException) {
+                                // Handle slow network - client is not reading fast enough
+                                onLog("Audio stream timeout: ${e.message}")
+                                break
+                            } catch (e: IOException) {
+                                // Network error - client disconnected or network issue
+                                onLog("Audio stream IO error: ${e.message}")
+                                break
+                            }
                         }
                     } finally {
                         try {
@@ -811,7 +843,7 @@ class StreamingServerHelper(
 
             if (path == "/video/h264") {
                 // Raw Annex-B H.264 elementary stream (hardware-encoded). Browser plays via jMuxer.
-                if (handleMaxClients(socket, isAuthenticated = enableAuth)) return
+                if (handleMaxH264Clients(socket, isAuthenticated = enableAuth)) return
                 writer.print("HTTP/1.1 200 OK\r\n")
                 writer.print("Connection: keep-alive\r\n")
                 writer.print("Cache-Control: no-cache, no-store, must-revalidate\r\n")
@@ -953,6 +985,23 @@ class StreamingServerHelper(
     fun handleMaxClients(socket: Socket, isAuthenticated: Boolean = false): Boolean {
         val maxAllowed = if (isAuthenticated) maxAuthenticatedClients else maxClients
         if (clients.size >= maxAllowed) {
+            socket.getOutputStream().writer().use { writer ->
+                writer.write("HTTP/1.1 503 Service Unavailable\r\n")
+                writer.write("Retry-After: 30\r\n") // 30 seconds
+                writer.write("Connection: close\r\n\r\n")
+                writer.flush()
+            }
+            socket.close()
+            // Add small delay to prevent rapid reconnection loops
+            Thread.sleep(100)
+            return true
+        }
+        return false
+    }
+
+    fun handleMaxH264Clients(socket: Socket, isAuthenticated: Boolean = false): Boolean {
+        val maxAllowed = if (isAuthenticated) maxAuthenticatedClients else maxClients
+        if (h264Clients.size >= maxAllowed) {
             socket.getOutputStream().writer().use { writer ->
                 writer.write("HTTP/1.1 503 Service Unavailable\r\n")
                 writer.write("Retry-After: 30\r\n") // 30 seconds

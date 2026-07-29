@@ -23,7 +23,6 @@ class H264StreamingEncoder(
 ) : StreamingEncoder {
     companion object {
         private const val TAG = "H264StreamingEncoder"
-        private const val WRITER_QUEUE_CAPACITY = 30
     }
 
     var h264HardwareEncoder: H264HardwareEncoder? = null
@@ -33,12 +32,13 @@ class H264StreamingEncoder(
     private var backend: CaptureBackend? = null
     private var captureRunning = false
     private val writerGeneration = AtomicLong()
+    private val writerQueueCapacity = DeviceMemoryHelper.h264WriterQueueCapacity(context)
     private val networkWriter = ThreadPoolExecutor(
         1,
         1,
         30L,
         TimeUnit.SECONDS,
-        ArrayBlockingQueue(WRITER_QUEUE_CAPACITY),
+        ArrayBlockingQueue(writerQueueCapacity),
         { runnable -> Thread(runnable, "H264NetworkWriter").apply { isDaemon = true } }
     ).apply { allowCoreThreadTimeOut(true) }
 
@@ -68,6 +68,13 @@ class H264StreamingEncoder(
                 streamingServerHelper?.resetH264Wait()
             }
             encMutable.feed(image, image.imageInfo.timestamp / 1000)
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "processFrame OOM: ${e.message}")
+            invalidatePendingWrites()
+            h264HardwareEncoder?.stop()
+            h264HardwareEncoder = null
+            DeviceMemoryHelper.updateMemoryPressure(android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+            try { System.gc() } catch (_: Exception) {}
         } catch (e: Exception) {
             Log.e(TAG, "feed: ${e.message}")
         }
