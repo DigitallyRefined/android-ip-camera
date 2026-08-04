@@ -89,6 +89,10 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Listen to the live microphone audio.
   * **Format:** `audio/wav` chunked transfer-encoding (WAV container, 16-bit PCM mono, 44.1kHz).
     * **VLC/MPV:** Run `vlc https://[ip_address]:[port]/audio` or `mpv https://[ip_address]:[port]/audio`.
+* **Raw Audio Stream (`/audio/raw`)**
+  * **Usage:** Listen to the raw (unprocessed) microphone source, bypassing any system audio processing (e.g. noise suppression, echo cancellation, AGC). On Android 7.0+ (API 24+) this uses the `UNPROCESSED` audio source; on older devices it falls back to the standard microphone.
+  * **Format:** `audio/wav` chunked transfer-encoding (WAV container, 16-bit PCM mono, 44.1kHz).
+    * **VLC/MPV:** Run `vlc https://[ip_address]:[port]/audio/raw` or `mpv https://[ip_address]:[port]/audio/raw`.
 * **Still Snapshot (`/video/snapshot`)**
   * **Usage:** Fetch a single high-resolution image.
   * **Format:** `image/jpeg`
