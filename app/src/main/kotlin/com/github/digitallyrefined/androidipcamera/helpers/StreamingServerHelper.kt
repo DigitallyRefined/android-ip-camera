@@ -9,6 +9,7 @@ import android.hardware.camera2.CameraManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -1495,20 +1496,22 @@ class StreamingServerHelper(
                 } catch (_: Exception) { Pair(null, null) }
                 InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom)
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             emptyList()
         }
     }
 
     private fun cameraInfoSources(cm: CameraManager): List<CameraInfoSource> {
         val sources = mutableListOf<CameraInfoSource>()
-        val allPhysicalIds = cm.cameraIdList.flatMap { logicalId ->
-            try {
-                cm.getCameraCharacteristics(logicalId).physicalCameraIds
-            } catch (_: Exception) {
-                emptySet()
-            }
-        }.toSet()
+        val allPhysicalIds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            cm.cameraIdList.flatMap { logicalId ->
+                try {
+                    cm.getCameraCharacteristics(logicalId).physicalCameraIds
+                } catch (_: Throwable) {
+                    emptySet()
+                }
+            }.toSet()
+        } else emptySet()
         cm.cameraIdList.forEachIndexed { i, logicalId ->
             if (logicalId in allPhysicalIds) return@forEachIndexed
             val logical = cm.getCameraCharacteristics(logicalId)
@@ -1517,15 +1520,17 @@ class StreamingServerHelper(
                 CameraCharacteristics.LENS_FACING_BACK -> "back"
                 else -> "external"
             }
-            val physicalIds = logical.physicalCameraIds
-                .filter { it != logicalId }
-                .sorted()
+            val physicalIds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                logical.physicalCameraIds
+                    .filter { it != logicalId }
+                    .sorted()
+            } else emptyList()
 
             if (physicalIds.isNotEmpty()) {
                 physicalIds.forEach { physicalId ->
                     val physical = try {
                         cm.getCameraCharacteristics(physicalId)
-                    } catch (_: Exception) {
+                    } catch (_: Throwable) {
                         logical
                     }
                     sources.add(CameraInfoSource("$logicalId:$physicalId", logicalId, physicalId, facing, logical, physical, i))

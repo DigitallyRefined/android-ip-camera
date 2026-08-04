@@ -331,8 +331,10 @@ class StreamingService : LifecycleService() {
             // Search for the logical camera that has this physical ID
             cm.cameraIdList.firstOrNull { logicalId ->
                 try {
-                    cm.getCameraCharacteristics(logicalId).physicalCameraIds.contains(token.logicalId)
-                } catch (_: Exception) { false }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        cm.getCameraCharacteristics(logicalId).physicalCameraIds.contains(token.logicalId)
+                    } else false
+                } catch (_: Throwable) { false }
             } ?: token.logicalId
         }
 
@@ -350,12 +352,14 @@ class StreamingService : LifecycleService() {
                 null
             }
             // On older devices, physical IDs might be valid camera IDs themselves
+            val hasPhysicalCameraIds = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                ch.physicalCameraIds.contains(actualPhysicalId)
             val physicalMatches = actualPhysicalId == null ||
-                ch.physicalCameraIds.contains(actualPhysicalId) ||
+                hasPhysicalCameraIds ||
                 cm.cameraIdList.contains(actualPhysicalId)
             physicalMatches && ch.get(CameraCharacteristics.LENS_FACING) == want
         }
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
         null
     }
 
@@ -737,8 +741,10 @@ class StreamingService : LifecycleService() {
                 // Search for the logical camera that has this physical ID
                 cm.cameraIdList.firstOrNull { logicalId ->
                     try {
-                        cm.getCameraCharacteristics(logicalId).physicalCameraIds.contains(token.logicalId)
-                    } catch (_: Exception) { false }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            cm.getCameraCharacteristics(logicalId).physicalCameraIds.contains(token.logicalId)
+                        } else false
+                    } catch (_: Throwable) { false }
                 } ?: token.logicalId
             }
 
@@ -753,7 +759,9 @@ class StreamingService : LifecycleService() {
                     null
                 }
 
-                if (actualPhysicalId != null && !ch.physicalCameraIds.contains(actualPhysicalId)) {
+                val hasPhysicalCameraIds = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                    ch.physicalCameraIds.contains(actualPhysicalId)
+                if (actualPhysicalId != null && !hasPhysicalCameraIds) {
                     null
                 } else {
                     // On older devices, the physical camera is also a top-level camera ID;
@@ -774,7 +782,7 @@ class StreamingService : LifecycleService() {
             } else {
                 null
             }
-        } catch (_: Exception) { null }
+        } catch (_: Throwable) { null }
     }
 
     /** Take one still from [b] (the backend autofocuses internally). Blocks the caller on a latch. */
