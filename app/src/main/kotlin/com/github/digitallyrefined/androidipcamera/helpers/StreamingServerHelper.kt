@@ -711,7 +711,7 @@ class StreamingServerHelper(
                 return
             }
 
-            if (path == "/audio") {
+            if (path == "/audio" || path == "/audio/raw") {
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                     writer.print("HTTP/1.1 403 Forbidden\r\n")
                     writer.print("Content-Type: text/plain\r\n")
@@ -747,8 +747,17 @@ class StreamingServerHelper(
                         throw IOException("Invalid AudioRecord buffer size: $minBuffer")
                     }
                     val bufferSize = minBuffer * 2
+                    val audioSource = if (path == "/audio/raw") {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                            MediaRecorder.AudioSource.UNPROCESSED
+                        } else {
+                            MediaRecorder.AudioSource.MIC
+                        }
+                    } else {
+                        MediaRecorder.AudioSource.MIC
+                    }
                     val audioRecord = AudioRecord(
-                        MediaRecorder.AudioSource.MIC,
+                        audioSource,
                         sampleRate,
                         channelConfig,
                         audioFormat,
