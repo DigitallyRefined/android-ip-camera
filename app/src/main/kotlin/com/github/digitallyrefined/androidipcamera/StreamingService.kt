@@ -43,6 +43,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+/** (success, httpStatusLine, jsonBody) */
+private typealias RecordingResponse = Triple<Boolean, String, String>
+
 /**
  * Two backends behind CaptureBackend, auto-picked by hardware level (override via api pref):
  *   CameraX (global default) — ImageAnalysis YUV -> encoder + ImageCapture full-res stills.
@@ -66,6 +69,7 @@ class StreamingService : LifecycleService() {
     @Volatile private var cameraXGlPipe: CameraGlPipe? = null   // CameraX H.264 GL pipe
     @Volatile private var backend: CaptureBackend? = null   // CameraXCapture (default) or Camera1Capture (legacy)
     @Volatile private var captureRunning = false
+    @Volatile private var localRecorder: LocalRecorder? = null
 
     @Volatile private var frontFacing = false             // false = back camera (read across threads)
     @Volatile private var selectedCameraId: String? = null
@@ -173,6 +177,7 @@ class StreamingService : LifecycleService() {
         super.onDestroy()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
             try { unregisterReceiver(notificationChannelReceiver) } catch (_: Exception) {}
+        safeStopRecording()
         stopCamera()
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
@@ -214,7 +219,7 @@ class StreamingService : LifecycleService() {
         }
     }
     fun isCameraRunning() = captureRunning
-    fun hasActiveClients() = encoders.any { it.hasClients() }
+    fun hasActiveClients() = encoders.any { it.hasClients() } || localRecorder?.isRecording == true
     fun switchCamera() {
         selectCamera(!frontFacing, null)
         PreferenceManager.getDefaultSharedPreferences(this).edit()
@@ -281,7 +286,7 @@ class StreamingService : LifecycleService() {
                 onClientDisconnected = {
                     launchMain {
                         onClientDisconnected?.invoke()
-                        if (!encoders.any { it.hasClients() }) {
+                        if (hasActiveClients()) {
                             if (currentSurfaceProvider != null) {
                                 debouncedStartCamera()
                             } else {
@@ -293,7 +298,10 @@ class StreamingService : LifecycleService() {
                     }
                 },
                 onControlCommand = { key, value, ts -> handleRemoteControl(key, value, ts) },
-                onSnapshot = { id -> snapshot(id) }
+                onSnapshot = { id -> snapshot(id) },
+                onRecordStart = { startRecording() },
+                onRecordStop = { stopRecording() },
+                onRecordStatus = { getRecordingStatus() }
             )
             // Initialize encoders with the streaming server helper
             h264StreamingEncoder = H264StreamingEncoder(this, streamingServerHelper!!) { Log.i(TAG, "H264: $it"); onLog?.invoke(it) }
@@ -517,7 +525,7 @@ class StreamingService : LifecycleService() {
                 val h264 = h264StreamingEncoder
                 var h264SurfaceProvider: Preview.SurfaceProvider? = null
 
-                if (h264 != null && h264.hasClients() && supportsSurfaceEncoder()) {
+                if (h264 != null && (h264.hasClients() || localRecorder?.isRecording == true) && supportsSurfaceEncoder()) {
                     val prefs = PreferenceManager.getDefaultSharedPreferences(this)
                     val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
                     val fpsCoerced = fps.coerceIn(1, 60)
@@ -571,9 +579,14 @@ class StreamingService : LifecycleService() {
                         cameraXGlPipe?.let { pipe ->
                             pipe.frameWidth = img.width; pipe.frameHeight = img.height
                         }
+                        val recording = localRecorder?.isRecording == true
                         val activeEncoders = encoders.filter { it.hasClients() }
-                        if (activeEncoders.isEmpty()) return@CameraXCapture
-                        activeEncoders.forEach { it.processFrame(img) }
+                        if (recording && h264StreamingEncoder != null) {
+                            h264StreamingEncoder?.processFrame(img)
+                            activeEncoders.filter { it != h264StreamingEncoder }.forEach { it.processFrame(img) }
+                        } else if (activeEncoders.isNotEmpty()) {
+                            activeEncoders.forEach { it.processFrame(img) }
+                        }
                     } catch (e: OutOfMemoryError) {
                         Log.e(TAG, "ImageAnalysis OOM — dropping frame: ${e.message}")
                         DeviceMemoryHelper.updateMemoryPressure(android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
@@ -616,6 +629,7 @@ class StreamingService : LifecycleService() {
     }
 
     private fun stopCamera() {
+        safeStopRecording()
         cameraCloseStartTime = System.currentTimeMillis()
         backend?.stop(); backend = null
         val closeDuration = System.currentTimeMillis() - cameraCloseStartTime
@@ -957,6 +971,99 @@ class StreamingService : LifecycleService() {
         }
     }
 
+
+    // ---------------- local recording ----------------
+
+    fun startRecording(): RecordingResponse {
+        if (localRecorder?.isRecording == true) return Triple(false, "409 Conflict",
+            """{"error":"already_recording","message":"Recording is already in progress","uri":"${localRecorder?.recordingLocation() ?: ""}"}"""
+        )
+
+        // Ensure camera and H.264 encoder are started on demand
+        if (!captureRunning || !hasActiveClients()) {
+            val latch = CountDownLatch(1)
+            launchMain {
+                startCamera(force = true)
+                latch.countDown()
+            }
+            try { latch.await(3, TimeUnit.SECONDS) } catch (_: Exception) {}
+        }
+
+        var enc = h264StreamingEncoder?.h264HardwareEncoder
+        var attempts = 0
+        while (enc == null && attempts < 20) {
+            try { Thread.sleep(100) } catch (_: Exception) {}
+            enc = h264StreamingEncoder?.h264HardwareEncoder
+            attempts++
+        }
+
+        if (enc == null) {
+            return Triple(false, "503 Service Unavailable",
+                """{"error":"no_encoder","message":"Failed to initialize H.264 encoder"}"""
+            )
+        }
+
+        return try {
+            val recorder = LocalRecorder(this, enc.width, enc.height)
+            recorder.start()
+            enc.onRecordFrame = { bytes, isKey, pts -> recorder.feedFrame(bytes, isKey, pts) }
+            enc.requestKeyFrame()
+            localRecorder = recorder
+            Triple(true, "201 Created", recorder.statusJson())
+        } catch (e: Exception) {
+            Log.e(TAG, "startRecording failed", e)
+            Triple(false, "500 Internal Server Error",
+                """{"error":"start_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
+            )
+        }
+    }
+
+    fun stopRecording(): RecordingResponse {
+        val recorder = localRecorder ?: return Triple(false, "409 Conflict",
+            """{"error":"not_recording","message":"No recording is in progress"}"""
+        )
+        return try {
+            h264StreamingEncoder?.h264HardwareEncoder?.onRecordFrame = null
+            val finalStatus = recorder.statusJson()
+            recorder.stop()
+            localRecorder = null
+
+            // If no remote network streaming clients are connected, update camera state
+            if (!encoders.any { it.hasClients() }) {
+                launchMain {
+                    if (currentSurfaceProvider != null) {
+                        debouncedStartCamera()
+                    } else {
+                        stopCamera()
+                    }
+                }
+            }
+            Triple(true, "200 OK", finalStatus)
+        } catch (e: Exception) {
+            Log.e(TAG, "stopRecording failed", e)
+            localRecorder = null
+            Triple(false, "500 Internal Server Error",
+                """{"error":"stop_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
+            )
+        }
+    }
+
+    fun getRecordingStatus(): String {
+        return localRecorder?.statusJson()
+            ?: """{"recording":false}"""
+    }
+
+    /** Safely stops any active recording (used in stopCamera/onDestroy safety nets). */
+    private fun safeStopRecording() {
+        try {
+            h264StreamingEncoder?.h264HardwareEncoder?.onRecordFrame = null
+            localRecorder?.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "safeStopRecording: ${e.message}")
+        } finally {
+            localRecorder = null
+        }
+    }
 
     private fun generateRandomPassword(): String {
         val r = SecureRandom()
