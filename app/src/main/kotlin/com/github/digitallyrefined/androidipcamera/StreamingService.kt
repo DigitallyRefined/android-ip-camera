@@ -104,6 +104,7 @@ class StreamingService : LifecycleService() {
         const val ACTION_STOP_SERVICE = "com.github.digitallyrefined.androidipcamera.STOP_SERVICE"
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
+        const val ACTION_START_SERVER = "com.github.digitallyrefined.androidipcamera.START_SERVER"
     }
 
     inner class LocalBinder : Binder() { fun getService(): StreamingService = this@StreamingService }
@@ -115,6 +116,9 @@ class StreamingService : LifecycleService() {
             ACTION_STOP_SERVICE -> { handleStopService(); return START_NOT_STICKY }
             ACTION_RESTART_NOTIFICATION -> startForegroundService()
             ACTION_RESTART_SERVER -> restartServer()
+            // Cold start with no activity bound (e.g. from BootReceiver): the activity normally
+            // calls startStreamingServer() after binding, so start it here instead.
+            ACTION_START_SERVER -> startStreamingServer()
         }
         return super.onStartCommand(intent, flags, startId)
     }

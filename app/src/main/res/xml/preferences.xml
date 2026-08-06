@@ -2,6 +2,14 @@
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <PreferenceCategory
+        android:title="Startup">
+        <CheckBoxPreference
+            android:key="start_on_boot"
+            android:title="Start on boot"
+            android:summary="Start the camera server automatically after the device restarts"
+            android:defaultValue="false" />
+    </PreferenceCategory>
+    <PreferenceCategory
         android:title="Authentication">
         <CheckBoxPreference
             android:key="enable_auth"
