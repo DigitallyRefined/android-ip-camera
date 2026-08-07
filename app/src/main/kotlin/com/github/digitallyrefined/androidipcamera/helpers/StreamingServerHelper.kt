@@ -784,22 +784,38 @@ class StreamingServerHelper(
                         throw IOException("Invalid AudioRecord buffer size: $minBuffer")
                     }
                     val bufferSize = minBuffer * 2
-                    val audioSource = if (path == "/audio/raw") {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                            MediaRecorder.AudioSource.UNPROCESSED
-                        } else {
-                            MediaRecorder.AudioSource.MIC
+                    val rawAudio = path == "/audio/raw"
+                    // UNPROCESSED is a hint; many HALs (especially on API 24-28) don't
+                    // implement it and the AudioRecord ctor throws IllegalArgumentException.
+                    // Fall back to the plain MIC source in that case.
+                    val audioRecord = if (rawAudio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        try {
+                            AudioRecord(
+                                MediaRecorder.AudioSource.UNPROCESSED,
+                                sampleRate,
+                                channelConfig,
+                                audioFormat,
+                                bufferSize
+                            )
+                        } catch (e: IllegalArgumentException) {
+                            onLog("UNPROCESSED audio source unsupported, falling back to MIC")
+                            AudioRecord(
+                                MediaRecorder.AudioSource.MIC,
+                                sampleRate,
+                                channelConfig,
+                                audioFormat,
+                                bufferSize
+                            )
                         }
                     } else {
-                        MediaRecorder.AudioSource.MIC
+                        AudioRecord(
+                            MediaRecorder.AudioSource.MIC,
+                            sampleRate,
+                            channelConfig,
+                            audioFormat,
+                            bufferSize
+                        )
                     }
-                    val audioRecord = AudioRecord(
-                        audioSource,
-                        sampleRate,
-                        channelConfig,
-                        audioFormat,
-                        bufferSize
-                    )
 
                     val wavHeader = createWavHeader(
                         sampleRate = sampleRate,

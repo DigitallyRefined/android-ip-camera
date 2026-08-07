@@ -381,15 +381,21 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "MainActivity"
         private const val STREAM_PORT = 4444
         private const val REQUEST_CODE_PERMISSIONS = 10
-        private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(
+        private val REQUIRED_PERMISSIONS = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
                 Manifest.permission.CAMERA,
                 Manifest.permission.POST_NOTIFICATIONS
             )
-        } else {
-            arrayOf(
+            // WRITE_EXTERNAL_STORAGE is required on API 24-28 for the legacy
+            // local MP4 recording path (scoped storage / MediaStore used on 29+).
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> arrayOf(
                 Manifest.permission.CAMERA,
                 Manifest.permission.READ_EXTERNAL_STORAGE
+            )
+            else -> arrayOf(
+                Manifest.permission.CAMERA,
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
             )
         }
         private val OPTIONAL_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
