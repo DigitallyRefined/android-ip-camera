@@ -60,7 +60,10 @@ class StreamingServerHelper(
     private val onClientConnected: () -> Unit = {},
     private val onClientDisconnected: () -> Unit = {},
     private val onControlCommand: (String, String, Long) -> Unit = { _, _, _ -> },
-    private val onSnapshot: (String) -> ByteArray? = { null }
+    private val onSnapshot: (String) -> ByteArray? = { null },
+    private val onRecordStart: () -> Triple<Boolean, String, String> = { Triple(false, "503 Service Unavailable", """{"error":"unavailable"}""") },
+    private val onRecordStop: () -> Triple<Boolean, String, String> = { Triple(false, "409 Conflict", """{"error":"not_recording"}""") },
+    private val onRecordStatus: () -> String = { """{"recording":false}""" }
 ) {
     data class Client(
         val socket: Socket,
@@ -679,6 +682,40 @@ class StreamingServerHelper(
                 } else {
                     writer.print("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\nno frame"); writer.flush()
                 }
+                try { socket.close() } catch (_: Exception) {}
+                return
+            }
+
+            // ---- Recording endpoints ----
+            if (path == "/record/start" && requestParts[0] == "POST") {
+                val (_, status, json) = onRecordStart()
+                writer.print("HTTP/1.1 $status\r\n")
+                writer.print("Content-Type: application/json\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print(json)
+                writer.flush()
+                try { socket.close() } catch (_: Exception) {}
+                return
+            }
+
+            if (path == "/record/stop" && requestParts[0] == "POST") {
+                val (_, status, json) = onRecordStop()
+                writer.print("HTTP/1.1 $status\r\n")
+                writer.print("Content-Type: application/json\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print(json)
+                writer.flush()
+                try { socket.close() } catch (_: Exception) {}
+                return
+            }
+
+            if (path == "/record/status") {
+                val json = onRecordStatus()
+                writer.print("HTTP/1.1 200 OK\r\n")
+                writer.print("Content-Type: application/json\r\n")
+                writer.print("Connection: close\r\n\r\n")
+                writer.print(json)
+                writer.flush()
                 try { socket.close() } catch (_: Exception) {}
                 return
             }

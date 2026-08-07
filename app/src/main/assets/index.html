@@ -351,8 +351,10 @@
             <option value="stream">Match stream (fast)</option>
             <option value="max">Max (full sensor)</option>
           </select>
-          <button id="snapBtn" class="btn btn-action" onclick="window.open('/video/snapshot','_blank')">📸 Take
-            Snapshot</button>
+          <div style="display:flex; gap:8px; margin-bottom:8px;">
+            <button id="recordToggleBtn" class="btn btn-action" style="flex:1; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
+            <button id="snapBtn" class="btn btn-action" style="flex:1; min-width:0; margin-bottom:0;" onclick="window.open('/video/snapshot','_blank')">📸 Take Snapshot</button>
+          </div>
         </div>
 
         <p class="notice">Some changes will momentarily restart the camera.</p>
@@ -878,6 +880,9 @@
       const mj = getElById('modeMjpegBtn'), h = getElById('modeH264Btn');
       if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
       if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
+
+      const recordToggleBtn = getElById('recordToggleBtn');
+      if (recordToggleBtn) recordToggleBtn.style.display = (mode === 'h264') ? 'block' : 'none';
 
       if (avDelay && avDelayVal) {
         const currentVal = avDelay.value;
@@ -1406,6 +1411,52 @@
           }
         });
     }
+
+    let isRecording = false;
+    function updateRecordingUi(statusData) {
+      const toggleBtn = getElById('recordToggleBtn');
+      isRecording = !!(statusData && statusData.recording);
+      if (isRecording) {
+        const secs = Math.floor((statusData.durationMs || 0) / 1000);
+        const mins = Math.floor(secs / 60);
+        const remSecs = secs % 60;
+        const timeStr = `${mins}:${remSecs < 10 ? '0' : ''}${remSecs}`;
+        if (toggleBtn) {
+          toggleBtn.textContent = `⏹️ ${timeStr}`;
+          toggleBtn.style.background = '#d32f2f';
+          toggleBtn.style.borderColor = '#b71c1c';
+        }
+      } else {
+        if (toggleBtn) {
+          toggleBtn.textContent = '🔴 Record';
+          toggleBtn.style.background = '';
+          toggleBtn.style.borderColor = '';
+        }
+      }
+    }
+
+    function checkRecordingStatus() {
+      fetch('/record/status')
+        .then(r => r.json())
+        .then(data => updateRecordingUi(data))
+        .catch(() => {});
+    }
+
+    function toggleRecording() {
+      const url = isRecording ? '/record/stop' : '/record/start';
+      fetch(url, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          if (data.error) {
+            alert('Recording Message: ' + (data.message || data.error));
+          }
+          checkRecordingStatus();
+        })
+        .catch(err => alert('Failed to send recording command: ' + err));
+    }
+
+    setInterval(checkRecordingStatus, 3000);
+    checkRecordingStatus();
   </script>
 </body>
 
