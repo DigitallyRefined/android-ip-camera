@@ -28,10 +28,11 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a camera for [Frigate](https://github.com/blakeblackshear/frigate) or a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/video/mjpeg`)
 * 📴 Option to turn the display off while streaming
 * 🤳 Switch between the main or selfie camera
-* 🎛️ Remote web interface with controls for camera section, image rotation, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
+* 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
 * 🛂 Username and password protection
 * 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS
+* 🥾 Optional start on boot
 
 ## ⚠️ Warning
 
@@ -101,6 +102,22 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
 * **Device Info and Capabilities JSON (`/info.json`)**
   * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, Wi-Fi signal strength and individual camera len settings.
   * **Format:** `application/json`
+* **Start Recording (`/record/start`, POST)**
+  * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running.
+  * **Responses:**
+    * `201 Created`: Recording started; returns the recording status JSON.
+    * `409 Conflict`: `{"error":"already_recording", ...}` — a recording is already in progress.
+    * `503 Service Unavailable`: `{"error":"no_encoder", ...}` — failed to initialize the H.264 encoder.
+    * `500 Internal Server Error`: `{"error":"start_failed", ...}` — recording failed to start.
+* **Stop Recording (`/record/stop`, POST)**
+  * **Usage:** Stop the in-progress local MP4 recording and finalize the file.
+  * **Responses:**
+    * `200 OK`: Recording stopped; returns the final recording status JSON.
+    * `409 Conflict`: `{"error":"not_recording", ...}` — no recording is in progress.
+    * `500 Internal Server Error`: `{"error":"stop_failed", ...}` — failed to finalize the recording.
+* **Recording Status (`/record/status`)**
+  * **Usage:** Query whether a local MP4 recording is currently active.
+  * **Format:** `application/json` — `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>}` (or `{"recording":false}` when idle).
 
 ### 🎛️ Remote Control Commands
 
@@ -138,8 +155,9 @@ The app uses the following permissions to function:
 * **Microphone (`android.permission.RECORD_AUDIO`):** Required to record and stream audio. (Requested optionally at runtime; streaming works without audio if denied).
 * **Notifications (`android.permission.POST_NOTIFICATIONS`):** Required on Android 13+ to post a persistent foreground service notification, keeping the background streaming server running reliably.
 * **Network (`android.permission.INTERNET`, `android.permission.ACCESS_NETWORK_STATE`):** Required to host the server and stream data to your browser/connected clients.
-* **Storage (`android.permission.READ_EXTERNAL_STORAGE`):** Required on older Android versions to load custom TLS/HTTPS certificates from file storage.
-* **Wi-Fi & Location (`android.permission.ACCESS_WIFI_STATE`, `android.permission.ACCESS_FINE_LOCATION`, `android.permission.NEARBY_WIFI_DEVICES`):** Used optionally to read the current Wi-Fi network's connection signal strength so it can be displayed in the web control panel overlay. If not granted, the Wi-Fi icon will be hidden.
+* **Storage (`android.permission.READ_EXTERNAL_STORAGE`, `android.permission.WRITE_EXTERNAL_STORAGE`):** Required on older Android versions to load custom TLS/HTTPS certificates from file storage and to save locally recorded MP4 files (`WRITE_EXTERNAL_STORAGE` only applies to Android 9 / API 28 and below; on newer versions recordings are saved to app-specific storage without extra permissions).
+* **Wi-Fi & Location (`android.permission.ACCESS_WIFI_STATE`, `android.permission.ACCESS_FINE_LOCATION`, `android.permission.ACCESS_COARSE_LOCATION`, `android.permission.NEARBY_WIFI_DEVICES`):** Used optionally to read the current Wi-Fi network's connection signal strength so it can be displayed in the web control panel overlay. If not granted, the Wi-Fi icon will be hidden. (Location permissions only apply to Android 12L / API 32 and below.)
+* **Start on boot (`android.permission.RECEIVE_BOOT_COMPLETED`):** Allows the app to optionally start streaming automatically when the device boots. This feature is off by default and must be enabled in the app settings.
 
 <details>
 <summary>Reproducible builds</summary>
