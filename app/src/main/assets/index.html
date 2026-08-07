@@ -351,15 +351,10 @@
             <option value="stream">Match stream (fast)</option>
             <option value="max">Max (full sensor)</option>
           </select>
-          <button id="snapBtn" class="btn btn-action" onclick="window.open('/video/snapshot','_blank')">📸 Take
-            Snapshot</button>
-
-          <p class="group-title">Local Recording</p>
           <div style="display:flex; gap:8px; margin-bottom:8px;">
-            <button id="recordStartBtn" class="btn btn-action" style="flex:1; background:#d32f2f; border-color:#b71c1c; margin-bottom:0;" onclick="toggleRecording(true)">🔴 Record</button>
-            <button id="recordStopBtn" class="btn btn-action" style="flex:1; background:#333; border-color:#555; margin-bottom:0;" onclick="toggleRecording(false)">⏹️ Stop</button>
+            <button id="recordToggleBtn" class="btn btn-action" style="flex:1; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
+            <button id="snapBtn" class="btn btn-action" style="flex:1; min-width:0; margin-bottom:0;" onclick="window.open('/video/snapshot','_blank')">📸 Take Snapshot</button>
           </div>
-          <div id="recordStatusBadge" style="font-size:12px; color:#aaa; text-align:center; margin-bottom:12px;">Status: Stopped</div>
         </div>
 
         <p class="notice">Some changes will momentarily restart the camera.</p>
@@ -885,6 +880,9 @@
       const mj = getElById('modeMjpegBtn'), h = getElById('modeH264Btn');
       if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
       if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
+
+      const recordToggleBtn = getElById('recordToggleBtn');
+      if (recordToggleBtn) recordToggleBtn.style.display = (mode === 'h264') ? 'block' : 'none';
 
       if (avDelay && avDelayVal) {
         const currentVal = avDelay.value;
@@ -1416,23 +1414,24 @@
 
     let isRecording = false;
     function updateRecordingUi(statusData) {
-      const startBtn = getElById('recordStartBtn');
-      const stopBtn = getElById('recordStopBtn');
-      const statusBadge = getElById('recordStatusBadge');
-      if (!statusBadge) return;
+      const toggleBtn = getElById('recordToggleBtn');
       isRecording = !!(statusData && statusData.recording);
       if (isRecording) {
         const secs = Math.floor((statusData.durationMs || 0) / 1000);
         const mins = Math.floor(secs / 60);
         const remSecs = secs % 60;
         const timeStr = `${mins}:${remSecs < 10 ? '0' : ''}${remSecs}`;
-        statusBadge.innerHTML = `<span style="color:#ff5252;font-weight:bold;">🔴 Recording (${timeStr})</span>`;
-        if (startBtn) startBtn.style.opacity = '0.5';
-        if (stopBtn) stopBtn.style.background = '#d32f2f';
+        if (toggleBtn) {
+          toggleBtn.textContent = `⏹️ ${timeStr}`;
+          toggleBtn.style.background = '#d32f2f';
+          toggleBtn.style.borderColor = '#b71c1c';
+        }
       } else {
-        statusBadge.innerHTML = '<span style="color:#aaa;">Status: Stopped</span>';
-        if (startBtn) startBtn.style.opacity = '1';
-        if (stopBtn) stopBtn.style.background = '#333';
+        if (toggleBtn) {
+          toggleBtn.textContent = '🔴 Record';
+          toggleBtn.style.background = '';
+          toggleBtn.style.borderColor = '';
+        }
       }
     }
 
@@ -1443,8 +1442,8 @@
         .catch(() => {});
     }
 
-    function toggleRecording(start) {
-      const url = start ? '/record/start' : '/record/stop';
+    function toggleRecording() {
+      const url = isRecording ? '/record/stop' : '/record/start';
       fetch(url, { method: 'POST' })
         .then(r => r.json())
         .then(data => {
