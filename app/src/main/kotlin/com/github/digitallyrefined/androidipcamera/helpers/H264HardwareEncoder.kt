@@ -42,6 +42,9 @@ class H264HardwareEncoder(
     private var partialFlags = 0
     private var frameCount = 0
 
+    /** Optional recording callback. Called with (annexBBytes, isKeyframe, presentationTimeUs). */
+    @Volatile var onRecordFrame: ((ByteArray, Boolean, Long) -> Unit)? = null
+
     @Volatile var hasSurfaceBeenProvided = false
     @Volatile private var isStopped = false
     @Volatile private var isReleasedByCameraX = false
@@ -339,6 +342,7 @@ class H264HardwareEncoder(
 
     private fun drainLoop() {
         val info = MediaCodec.BufferInfo()
+        var partialPtsUs = 0L
         try {
             while (running) {
                 val idx = synchronized(codecLock) { codec.dequeueOutputBuffer(info, 10000) }
@@ -355,6 +359,7 @@ class H264HardwareEncoder(
                             val data = ByteArray(info.size)
                             buf.get(data)
 
+                            if (partialFlags == 0) partialPtsUs = info.presentationTimeUs
                             partialFlags = partialFlags or info.flags
                             val isPartial = (info.flags and MediaCodec.BUFFER_FLAG_PARTIAL_FRAME) != 0
                             val accessUnit = accessUnitAssembler.append(data, isPartial)
@@ -372,6 +377,7 @@ class H264HardwareEncoder(
                     }
                     // Never retain a MediaCodec output buffer while network work is scheduled.
                     prepared?.let {
+                        onRecordFrame?.invoke(it.bytes, it.isKeyframe, partialPtsUs)
                         onNal(it.bytes, it.isKeyframe)
                     }
                 }
