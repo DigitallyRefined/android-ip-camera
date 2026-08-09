@@ -164,10 +164,19 @@ class MjpegStreamingEncoder(
 
     // Latest JPEG sent to clients, so a "match stream" snapshot can reuse it without a camera rebind.
     @Volatile private var lastJpeg: ByteArray? = null
+    @Volatile private var lastJpegAtMs: Long = 0L
     fun lastFrame(): ByteArray? = lastJpeg
+
+    /** Most recent streamed frame, but only if it's no older than [maxAgeMs] (0 = any age). */
+    fun lastFrameFresh(maxAgeMs: Long): ByteArray? {
+        val jpeg = lastJpeg ?: return null
+        val age = System.currentTimeMillis() - lastJpegAtMs
+        return if (age in 0..maxAgeMs) jpeg else null
+    }
 
     private fun broadcastJpeg(jpegBytes: ByteArray) {
         lastJpeg = jpegBytes
+        lastJpegAtMs = System.currentTimeMillis()
         val helper = streamingServerHelper ?: return
         val clients = helper.getClients()
         if (clients.isEmpty()) return
