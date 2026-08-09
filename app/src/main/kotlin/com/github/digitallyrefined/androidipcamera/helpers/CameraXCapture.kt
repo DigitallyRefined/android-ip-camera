@@ -1,6 +1,9 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
@@ -30,13 +33,18 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
  * Global/modern backend (CameraX). The live stream is fed from ImageAnalysis (YUV → encoder) — it
  * reliably honours the requested resolution (Preview-to-a-custom-Surface picks tiny sizes on some
- * legacy HALs, and Preview is screen-capped anyway). ImageCapture gives full-resolution stills.
+ * legacy HALs, and Preview is screen-capped anyway). Full-res stills come from ImageCapture
+ * (co-bound so no per-shot rebind); if the HAL never completes a takePicture, the freshest analysis
+ * frame is encoded as a guaranteed fallback. Some HALs fail to configure any session containing a
+ * still surface ("Unable to configure camera ... TimeoutException") — that wedge is detected by the
+ * service via [hasProducedFrame] and it falls back to the Camera1 backend.
  * On a strong CPU this runs at the camera's frame rate; on weak/legacy chips the YUV→NV12 copy is
  * the bottleneck (~12fps) — which is why the service auto-prefers Camera1 on LEGACY hardware.
  *
@@ -62,13 +70,16 @@ class CameraXCapture(
     private var provider: ProcessCameraProvider? = null
     private var camera: androidx.camera.core.Camera? = null
     private var imageCapture: ImageCapture? = null
-    // Kept so a still can briefly rebind ImageCapture on demand (see captureStill).
+    // Always co-bound with the stream so a still snaps straight from the bound use case (no rebind).
     private var boundSelector: CameraSelector? = null
     private var analysisUseCase: ImageAnalysis? = null
     private var previewUseCase: Preview? = null
     private var encoderUseCase: Preview? = null
-    private var capturing = false
     @Volatile private var released = false
+    /** True once the analysis stream has delivered at least one frame. The service uses this to spot
+     *  a session that bound but never configured (no frames ever arrive) and fall back to Camera1. */
+    @Volatile var hasProducedFrame = false
+        private set
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var torchEnabled = false
     // Cached camera controls, re-applied after a rebind (which replaces the camera control).
@@ -78,6 +89,17 @@ class CameraXCapture(
     @Volatile private var manualFocus: Float? = null
     private val main = ContextCompat.getMainExecutor(ctx)
     private val analysisExec = Executors.newSingleThreadExecutor()
+
+    // Latest analysis frame in NV21, so a still can fall back to it when the HAL's takePicture()
+    // stalls or the camera is mid-restart — a guaranteed JPEG beats a 503.
+    private val nv21Lock = Any()
+    private var nv21Buffer: ByteArray? = null
+    private var nv21RowBuffer: ByteArray? = null
+    @Volatile private var latestNv21: ByteArray? = null
+    @Volatile private var latestNv21W = 0
+    @Volatile private var latestNv21H = 0
+    @Volatile private var latestNv21Rotation = 0
+    @Volatile private var latestNv21AtMs = 0L
 
     private val logicalCameraId: String? = cameraId?.substringBefore(':')
     private val physicalCameraId: String? = cameraId
@@ -112,12 +134,32 @@ class CameraXCapture(
                     Log.i(TAG, "AE fps range $it (auto within range)")
                 }
                 analysisUseCase = aBuilder.build()
-                    .also { a -> a.setAnalyzer(analysisExec) { img -> width = img.width; height = img.height; onFrame(img) } }
-                // ImageCapture is NOT bound during streaming: co-binding a MAXIMUM still stream forces the
-                // HAL to cap ImageAnalysis at preview size. It is bound on demand in captureStill() instead,
-                // so the live analysis stream can use the full sensor resolution.
+                    .also { a -> a.setAnalyzer(analysisExec) { img ->
+                        width = img.width; height = img.height
+                        hasProducedFrame = true
+                        try {
+                            val crop = img.cropRect
+                            val nv21 = synchronized(nv21Lock) {
+                                convertYUV420toNV21(img, nv21Buffer, nv21RowBuffer).also {
+                                    nv21Buffer = it
+                                    if (nv21RowBuffer == null || nv21RowBuffer!!.size < img.planes[0].rowStride) {
+                                        nv21RowBuffer = ByteArray(img.planes[0].rowStride)
+                                    }
+                                }
+                            }
+                            latestNv21 = nv21
+                            latestNv21W = crop.width(); latestNv21H = crop.height()
+                            latestNv21Rotation = img.imageInfo.rotationDegrees
+                            latestNv21AtMs = System.currentTimeMillis()
+                        } catch (e: Exception) { Log.e(TAG, "frame cache: ${e.message}") }
+                        onFrame(img)
+                    } }
+                // ImageCapture stays co-bound from start(): a still then snaps straight from the bound
+                // use case, avoiding the per-shot unbind/rebind that hangs the session configuration on
+                // some HALs. MINIMIZE_LATENCY captures from the repeating stream instead of asking the
+                // HAL to reconfigure the session for a full-sensor still surface.
                 val imageCaptureBuilder = ImageCapture.Builder()
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)   // full-res stills
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                 physicalCameraId?.let { Camera2Interop.Extender(imageCaptureBuilder).setPhysicalCameraId(it) }
                 imageCapture = imageCaptureBuilder.build()
                 previewSurfaceProvider?.let { pv ->
@@ -137,15 +179,17 @@ class CameraXCapture(
                         }
                         .build()
                 } ?: if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
-                rebind(withCapture = false)
+                rebind()
                 ready = true
                 Log.i(TAG, "bound desired ${desired.width}x${desired.height} front=$front cameraId=${cameraId ?: "default"}")
             } catch (e: Exception) { Log.e(TAG, "start: ${e.message}") }
         }, main)
     }
 
-    /** (Re)bind the streaming use cases on the main thread; [withCapture] adds ImageCapture for a still. */
-    private fun rebind(withCapture: Boolean) {
+    /** (Re)bind the streaming use cases on the main thread. ImageCapture is always co-bound so a still
+     *  can snap directly from the already-bound use case — never a per-shot unbind/rebind cycle (which
+     *  hangs the session configuration on some HALs). */
+    private fun rebind() {
         if (released) return
         val p = provider ?: return
         val sel = boundSelector ?: return
@@ -154,19 +198,17 @@ class CameraXCapture(
         previewUseCase?.let { cases.add(it) }
         encoderUseCase?.let { cases.add(it) }
         cases.add(analysis)
-        if (withCapture) imageCapture?.let { cases.add(it) }
+        imageCapture?.let { cases.add(it) }
         p.unbindAll()
         // On slow HALs (e.g. Exynos 7420) the previous camera close() can take 400ms–6s.
         // bindToLifecycle() may fail if the HAL hasn't finished tearing down. Retry a few
-        // times with a short delay before falling back to degraded surface combinations.
+        // times before falling back to degraded surface combinations.
         val maxRetries = 3
         var lastException: Exception? = null
         for (attempt in 1..maxRetries) {
             try {
                 camera = p.bindToLifecycle(owner, sel, *cases.toTypedArray())
-                if (encoderUseCase != null) {
-                    encoderSurfaceBound = true
-                }
+                encoderSurfaceBound = encoderUseCase != null && cases.any { it === encoderUseCase }
                 lastException = null
                 break
             } catch (e: Exception) {
@@ -180,40 +222,33 @@ class CameraXCapture(
             }
         }
         if (lastException != null) {
-            if (encoderUseCase != null) {
-                if (previewUseCase != null) {
-                    // Fallback 1: try dropping screen preview to save surface encoder
-                    Log.w(TAG, "Attempting fallback 1: binding without screen preview...")
-                    val casesNoPreview = mutableListOf<androidx.camera.core.UseCase>()
-                    encoderUseCase?.let { casesNoPreview.add(it) }
-                    casesNoPreview.add(analysis)
-                    if (withCapture) imageCapture?.let { casesNoPreview.add(it) }
-                    try {
-                        camera = p.bindToLifecycle(owner, sel, *casesNoPreview.toTypedArray())
-                        encoderSurfaceBound = true
-                        return
-                    } catch (e2: Exception) {
-                        Log.e(TAG, "Fallback 1 rebind failed: ${e2.message}")
-                    }
-                }
-
-                // Fallback 2: drop encoder surface, restore screen preview, switch to software YUV mode
-                Log.w(TAG, "Attempting fallback 2: dropping encoder surface and using software fallback...")
-                encoderSurfaceBound = false
-                val casesNoEncoder = mutableListOf<androidx.camera.core.UseCase>()
-                previewUseCase?.let { casesNoEncoder.add(it) }
-                casesNoEncoder.add(analysis)
-                if (withCapture) imageCapture?.let { casesNoEncoder.add(it) }
+            // Co-binding the encoder surface with a still stream can exceed some HALs' concurrent-stream
+            // limit. Rather than lose the camera, shed the encoder surface / screen preview and keep
+            // ImageAnalysis + ImageCapture (software YUV stream, full-res stills intact).
+            if (encoderUseCase != null || previewUseCase != null) {
+                Log.w(TAG, "Attempting fallback: dropping encoder surface / preview...")
                 try {
-                    camera = p.bindToLifecycle(owner, sel, *casesNoEncoder.toTypedArray())
-                    encoderUseCase = null // clear so we don't try it again on subsequent rebinds
+                    encoderUseCase = null
+                    previewUseCase = null
+                    encoderSurfaceBound = false
+                    p.unbindAll()
+                    camera = p.bindToLifecycle(owner, sel, analysis, imageCapture ?: throw RuntimeException("ImageCapture not initialized"))
                     onEncoderSurfaceFallback?.invoke()
-                } catch (e3: Exception) {
-                    Log.e(TAG, "Fallback 2 rebind failed: ${e3.message}")
-                    throw e3
+                } catch (e: Exception) {
+                    Log.e(TAG, "fallback rebind failed: ${e.message}")
+                    throw e
                 }
             } else {
-                throw lastException
+                // Last resort: a lone ImageCapture should always be bindable.
+                Log.w(TAG, "Attempting fallback: binding ImageCapture alone...")
+                try {
+                    p.unbindAll()
+                    camera = p.bindToLifecycle(owner, sel, imageCapture ?: throw RuntimeException("ImageCapture not initialized"))
+                    encoderSurfaceBound = false
+                } catch (e: Exception) {
+                    Log.e(TAG, "ImageCapture-alone rebind failed: ${e.message}")
+                    throw e
+                }
             }
         }
         // Re-apply cached controls, since rebinding replaces the camera control.
@@ -258,24 +293,25 @@ class CameraXCapture(
     override fun captureStill(onJpeg: (ByteArray?) -> Unit) {
         val ic = imageCapture ?: return onJpeg(null)
         if (provider == null || released) return onJpeg(null)
-        // Briefly add ImageCapture (drops the live stream to preview size for the shot), then restore
-        // analysis-only so streaming returns to full resolution.
+        // ImageCapture stays bound from start(), so a still needs no rebind — per-shot unbind/rebind
+        // cycles hang the session configuration on some HALs. Just snap from the bound use case.
         main.execute {
-            if (capturing || released) return@execute onJpeg(null)
-            capturing = true
+            if (released) return@execute onJpeg(null)
             var finished = false
             fun done(result: ByteArray?) {
                 if (finished) return
                 finished = true
                 mainHandler.removeCallbacksAndMessages(null)
                 onJpeg(result)
-                restoreStreamBind()
             }
-            try { rebind(withCapture = true) }
-            catch (e: Exception) { Log.e(TAG, "rebind capture: ${e.message}"); capturing = false; return@execute onJpeg(null) }
-            // Watchdog: if the HAL never calls back, don't leave `capturing` stuck (would reject all
-            // future stills) and don't strand the live stream at preview size.
-            mainHandler.postDelayed({ if (!finished) { Log.w(TAG, "capture timeout"); done(null) } }, 5000)
+            // Watchdog: if the HAL never calls back, fall back to the live analysis frame so the
+            // snapshot still succeeds.
+            mainHandler.postDelayed({
+                if (!finished) {
+                    Log.w(TAG, "capture timeout — falling back to analysis frame")
+                    done(frameFallbackJpeg())
+                }
+            }, CAPTURE_TIMEOUT_MS)
             val shoot = Runnable {
                 if (finished) return@Runnable
                 ic.takePicture(main, object : ImageCapture.OnImageCapturedCallback() {
@@ -286,22 +322,63 @@ class CameraXCapture(
                         } catch (e: Exception) { Log.e(TAG, "read: ${e.message}"); null } finally { image.close() }
                         done(b)
                     }
-                    override fun onError(e: ImageCaptureException) { Log.e(TAG, "capture: ${e.message}"); done(null) }
+                    override fun onError(e: ImageCaptureException) {
+                        Log.e(TAG, "capture: ${e.message}")
+                        done(frameFallbackJpeg())
+                    }
                 })
             }
-            // Wait for the re-applied zoom to actually take effect on the new camera, else the still
-            // would be captured at the reset (1.0x) zoom.
+            // Wait for the re-applied zoom to actually take effect, else the still would be captured
+            // at the reset (1.0x) zoom.
             val zoomFuture = zoomRatio?.let { r -> try { camera?.cameraControl?.setZoomRatio(r) } catch (_: Exception) { applyZoomWithRetry(r); null } }
             if (zoomFuture != null) zoomFuture.addListener(shoot, main) else shoot.run()
         }
     }
 
-    /** Restore the analysis-only (full-resolution) bind after a still. */
-    private fun restoreStreamBind() {
-        main.execute {
-            try { rebind(withCapture = false) } catch (e: Exception) { Log.e(TAG, "rebind stream: ${e.message}") }
-            finally { capturing = false }
+    /** JPEG encoded from the latest analysis frame (if still fresh), or null. Guarantees a snapshot
+     *  whenever the camera is producing frames. */
+    private fun frameFallbackJpeg(): ByteArray? {
+        val nv: ByteArray; val w: Int; val h: Int; val rot: Int
+        synchronized(nv21Lock) {
+            val cached = latestNv21 ?: run { Log.w(TAG, "fallback: no cached frame"); return null }
+            val age = System.currentTimeMillis() - latestNv21AtMs
+            if (age > FRAME_FALLBACK_MAX_AGE_MS) {
+                Log.w(TAG, "fallback: cached frame stale (${age}ms)")
+                return null
+            }
+            nv = cached.copyOf()   // copy under the lock so the analyzer can't overwrite mid-encode
+            w = latestNv21W; h = latestNv21H; rot = latestNv21Rotation
         }
+        if (w == 0 || h == 0) return null
+        return try {
+            val quality = DeviceMemoryHelper.mjpegJpegQuality(ctx)
+            var jpeg = convertNV21toJPEG(nv, w, h, quality)
+            if (rot != 0) jpeg = rotateJpeg(jpeg, rot, quality)
+            jpeg
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "frame fallback OOM")
+            try { System.gc() } catch (_: Exception) {}
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "frame fallback: ${e.message}")
+            null
+        }
+    }
+
+    private fun rotateJpeg(jpeg: ByteArray, degrees: Int, quality: Int): ByteArray {
+        val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
+        try {
+            val m = Matrix().apply { postRotate(degrees.toFloat()) }
+            val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+            try {
+                if (rotated == bmp) return jpeg
+                val out = ByteArrayOutputStream()
+                try {
+                    rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
+                    return out.toByteArray()
+                } finally { out.close() }
+            } finally { if (rotated != bmp) rotated.recycle() }
+        } finally { bmp.recycle() }
     }
 
     override fun getTorch(): Boolean = torchEnabled
@@ -367,13 +444,18 @@ class CameraXCapture(
 
     override fun stop() {
         ready = false
-        released = true               // block any in-flight capture callback from rebinding
-        capturing = false
+        released = true               // block any in-flight capture callback from touching the camera
         mainHandler.removeCallbacksAndMessages(null)
         try { provider?.unbindAll() } catch (_: Exception) {}
         try { analysisExec.shutdown() } catch (_: Exception) {}
         provider = null; camera = null; imageCapture = null
     }
 
-    companion object { private const val TAG = "CameraXCapture" }
+    companion object {
+        private const val TAG = "CameraXCapture"
+        /** Give a full-res takePicture this long before falling back to the analysis frame. */
+        private const val CAPTURE_TIMEOUT_MS = 4_000L
+        /** Analysis-frame fallback is only served if the cached frame is at most this old. */
+        private const val FRAME_FALLBACK_MAX_AGE_MS = 6_000L
+    }
 }

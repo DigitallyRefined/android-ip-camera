@@ -111,6 +111,10 @@ class StreamingServerHelper(
     /** Disconnect streaming clients whose writes have not completed within this window. */
     private val STALE_WRITE_TIMEOUT_MS = 15_000L
     private val CONNECTION_CLEANUP_INTERVAL_MS = 60_000L
+    /** Hard cap on the whole /video/snapshot request (snapshot() is already internally bounded). */
+    private val SNAPSHOT_TOTAL_WAIT_MS = 14_000L
+    private val SNAPSHOT_MAX_ATTEMPTS = 3
+    private val SNAPSHOT_RETRY_DELAY_MS = 250L
 
     fun getClients(): List<Client> = clients.toList()
     fun getH264Clients(): List<Client> = h264Clients.toList()
@@ -657,30 +661,35 @@ class StreamingServerHelper(
                 // One JPEG captured into RAM (no disk). ?camera=<id>. For polling / dual-camera views.
                 val id = parseQueryParams(uri)["camera"] ?: ""
 
-                // Try to get a snapshot immediately; if none available, retry briefly
+                // snapshot() is internally bounded (never returns stale images); retry briefly to ride
+                // out a transient camera restart, but never let the request hang past the total cap.
+                val deadline = System.currentTimeMillis() + SNAPSHOT_TOTAL_WAIT_MS
                 var jpeg = onSnapshot(id)
-                if (jpeg == null) {
-                    val maxRetries = 5
-                    val retryDelayMs = 200L
-                    var attempt = 0
-                    while (jpeg == null && attempt < maxRetries && !socket.isClosed) {
-                        try {
-                            kotlinx.coroutines.delay(retryDelayMs)
-                        } catch (_: Exception) {
-                            // If coroutine is cancelled or interrupted, stop retrying
-                            break
-                        }
-                        jpeg = onSnapshot(id)
-                        attempt++
+                var attempt = 0
+                while (jpeg == null && attempt < SNAPSHOT_MAX_ATTEMPTS &&
+                    System.currentTimeMillis() < deadline && !socket.isClosed) {
+                    attempt++
+                    try {
+                        kotlinx.coroutines.delay(SNAPSHOT_RETRY_DELAY_MS)
+                    } catch (_: Exception) {
+                        // If coroutine is cancelled or interrupted, stop retrying
+                        break
                     }
+                    jpeg = onSnapshot(id)
                 }
 
                 if (jpeg != null) {
                     writer.print("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n")
-                    writer.print("Content-Length: ${jpeg.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")
+                    writer.print("Content-Length: ${jpeg.size}\r\n")
+                    writer.print("Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n")
+                    writer.print("Pragma: no-cache\r\n")
+                    writer.print("Expires: 0\r\n")
+                    writer.print("Connection: close\r\n\r\n")
                     writer.flush(); outputStream.write(jpeg); outputStream.flush()
                 } else {
-                    writer.print("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\nno frame"); writer.flush()
+                    writer.print("HTTP/1.1 503 Service Unavailable\r\n")
+                    writer.print("Content-Type: text/plain\r\n")
+                    writer.print("Cache-Control: no-store\r\nConnection: close\r\n\r\nno frame"); writer.flush()
                 }
                 try { socket.close() } catch (_: Exception) {}
                 return
