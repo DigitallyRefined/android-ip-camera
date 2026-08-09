@@ -796,6 +796,19 @@ class StreamingService : LifecycleService() {
                 val key = if (targetFront) "front" else "back"
                 val hadViewers = hasActiveClients() || currentSurfaceProvider != null
 
+                // Switch to the target camera, capture, then restore the original stream / stop.
+                fun captureViaRebind(): ByteArray? {
+                    val orig = frontFacing
+                    val origCameraId = selectedCameraId
+                    selectCamera(targetFront, targetCameraId)
+                    switchAndWait(force = true, deadline)   // starts the camera even with no live viewers
+                    val jpeg = backend?.let { captureFrom(it, key, deadline) }
+                    frontFacing = orig
+                    selectedCameraId = origCameraId
+                    launchMain { if (hadViewers) startCamera() else stopCamera() }
+                    return jpeg ?: freshCached(key)
+                }
+
                 val live = backend
                 if (live != null && targetFront == frontFacing && targetCameraId == selectedCameraId) {
                     // "stream": reuse the last streamed frame (no camera rebind); "max": full-res capture.
@@ -812,17 +825,6 @@ class StreamingService : LifecycleService() {
                     // for its first frame (healthy devices frame within ~1s); if none ever arrives the
                     // session is broken — remember it and rebind via startCamera() so it falls back to
                     // Camera1 before capturing.
-                    fun captureViaRebind(): ByteArray? {
-                        val orig = frontFacing
-                        val origCameraId = selectedCameraId
-                        selectCamera(targetFront, targetCameraId)
-                        switchAndWait(force = true, deadline)   // rebind → fallback → Camera1
-                        val jpeg = backend?.let { captureFrom(it, key, deadline) }
-                        frontFacing = orig
-                        selectedCameraId = origCameraId
-                        launchMain { if (hadViewers) startCamera() else stopCamera() }
-                        return jpeg ?: freshCached(key)
-                    }
                     if (live is CameraXCapture && !live.hasProducedFrame) {
                         if (prefs.getBoolean("camera2_unusable", false)) {
                             // Known-broken device: go straight to Camera1, no grace wait.
@@ -842,16 +844,7 @@ class StreamingService : LifecycleService() {
                     }
                     return captureFrom(live, key, deadline) ?: freshCached(key)
                 }
-
-                val orig = frontFacing
-                val origCameraId = selectedCameraId
-                selectCamera(targetFront, targetCameraId)
-                switchAndWait(force = true, deadline)           // starts the camera even with no live viewers
-                val jpeg = backend?.let { captureFrom(it, key, deadline) }
-                frontFacing = orig
-                selectedCameraId = origCameraId
-                launchMain { if (hadViewers) startCamera() else stopCamera() }
-                return jpeg ?: freshCached(key)
+                return captureViaRebind()
             } finally {
                 snapshotInProgress = false
             }
