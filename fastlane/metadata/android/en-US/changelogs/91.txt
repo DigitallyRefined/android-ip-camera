@@ -1,0 +1,5 @@
+## What's Changed
+* Fix failing camera image snapshot & caching #70
+
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.9.0...v0.9.1
