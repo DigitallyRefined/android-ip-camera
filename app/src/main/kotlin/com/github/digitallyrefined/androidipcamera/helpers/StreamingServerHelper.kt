@@ -111,6 +111,8 @@ class StreamingServerHelper(
     /** Disconnect streaming clients whose writes have not completed within this window. */
     private val STALE_WRITE_TIMEOUT_MS = 15_000L
     private val CONNECTION_CLEANUP_INTERVAL_MS = 60_000L
+    /** Whether the media routes serve at all. The control routes ignore it — see the handler. */
+    private val PREF_STREAMING_ENABLED = "streaming_enabled"
     /** Hard cap on the whole /video/snapshot request (snapshot() is already internally bounded). */
     private val SNAPSHOT_TOTAL_WAIT_MS = 14_000L
     private val SNAPSHOT_MAX_ATTEMPTS = 3
@@ -146,6 +148,21 @@ class StreamingServerHelper(
         } catch (_: Exception) {
             value
         }
+
+    fun isStreamingEnabled(): Boolean =
+        PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_STREAMING_ENABLED, true)
+
+    /**
+     * Flips the streaming gate. Turning it off also drops the viewers that are already connected —
+     * otherwise an established MJPEG connection would keep the camera open indefinitely and "off"
+     * would only apply to whoever connected next.
+     */
+    private fun setStreamingEnabled(enabled: Boolean) {
+        PreferenceManager.getDefaultSharedPreferences(context).edit()
+            .putBoolean(PREF_STREAMING_ENABLED, enabled).apply()
+        onLog(if (enabled) "Streaming enabled" else "Streaming disabled")
+        if (!enabled) closeClientConnection()
+    }
 
     fun stopServer() {
         synchronized(this) {
@@ -654,6 +671,39 @@ class StreamingServerHelper(
                 writer.print(htmlResponse)
                 writer.flush()
                 socket.close()
+                return
+            }
+
+            // Streaming on/off, so a home-automation system can stop the camera serving without
+            // needing access to the device. Deliberately does NOT close the listening socket:
+            // shutting the port would make /control/start unreachable and turning the camera back
+            // on would need physical access. Only the media routes are refused.
+            if (path.startsWith("/control/")) {
+                when (path) {
+                    "/control/start" -> setStreamingEnabled(true)
+                    "/control/stop" -> setStreamingEnabled(false)
+                    "/control/status" -> {}
+                    else -> {
+                        writer.print("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                        writer.flush()
+                        try { socket.close() } catch (_: Exception) {}
+                        return
+                    }
+                }
+                writer.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
+                writer.print("{\"streaming\":${isStreamingEnabled()}}")
+                writer.flush()
+                try { socket.close() } catch (_: Exception) {}
+                return
+            }
+
+            if (!isStreamingEnabled() &&
+                (path.startsWith("/video") || path == "/audio" || path == "/audio/raw")
+            ) {
+                writer.print("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")
+                writer.print("Streaming is disabled. POST /control/start to re-enable.\r\n")
+                writer.flush()
+                try { socket.close() } catch (_: Exception) {}
                 return
             }
 
