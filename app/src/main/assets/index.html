@@ -881,9 +881,6 @@
       if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
       if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
 
-      const recordToggleBtn = getElById('recordToggleBtn');
-      if (recordToggleBtn) recordToggleBtn.style.display = (mode === 'h264') ? 'block' : 'none';
-
       if (avDelay && avDelayVal) {
         const currentVal = avDelay.value;
         const prevDefault = mode === 'h264' ? '2.5' : '2.3';
