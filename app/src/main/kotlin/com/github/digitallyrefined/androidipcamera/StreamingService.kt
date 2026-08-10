@@ -86,6 +86,11 @@ class StreamingService : LifecycleService() {
      *  so a frame-less CameraX backend falls back to Camera1 before the capture attempt. */
     @Volatile private var snapshotInProgress = false
 
+    /** True while /record/start is bringing the H.264 encoder up with no viewers connected. Makes
+     *  startCamera() deliver frames and initialize the encoder so recording works without streaming.
+     *  Cleared once localRecorder takes over (or the start fails), so the no-viewer baseline returns. */
+    @Volatile private var recordingNeeded = false
+
     /** Latest good full-res capture per camera ("front"/"back"), with the time it was taken. */
     private data class CachedSnapshot(val jpeg: ByteArray, val atMs: Long)
     private val snapCache = ConcurrentHashMap<String, CachedSnapshot>()
@@ -247,6 +252,9 @@ class StreamingService : LifecycleService() {
     // MainActivity attaches PreviewView here; camera restarts when a surface is set while streaming.
     fun setPreviewSurface(surfaceProvider: Preview.SurfaceProvider?) {
         currentSurfaceProvider = surfaceProvider
+        // Recording owns the camera session: stopping or restarting the camera now would tear
+        // down the encoder and finalize the file, so leave the pipeline alone until it stops.
+        if (localRecorder?.isRecording == true) return
         val shouldRun = encoders.any { it.hasClients() } || currentSurfaceProvider != null
         if (shouldRun) {
             debouncedStartCamera()
@@ -312,6 +320,10 @@ class StreamingService : LifecycleService() {
                 onClientConnected = {
                     launchMain {
                         onClientConnected?.invoke()
+                        // While recording, the camera is already running and feeding the encoder; a
+                        // restart would finalize the recording, and new viewers pick up the existing
+                        // stream, so no reconfiguration is needed.
+                        if (localRecorder?.isRecording == true) return@launchMain
                         if (captureRunning) {
                             debouncedStartCamera()
                         } else {
@@ -322,13 +334,10 @@ class StreamingService : LifecycleService() {
                 onClientDisconnected = {
                     launchMain {
                         onClientDisconnected?.invoke()
-                        if (hasActiveClients()) {
-                            if (currentSurfaceProvider != null) {
-                                debouncedStartCamera()
-                            } else {
-                                stopCamera()
-                            }
-                        } else if (captureRunning) {
+                        // Recording owns the camera: stopping or restarting it now would finalize
+                        // the file, and remaining viewers keep their existing stream as-is.
+                        if (localRecorder?.isRecording == true) return@launchMain
+                        if (!hasActiveClients()) {
                             if (currentSurfaceProvider == null) {
                                 // Last client gone and no on-screen preview: shed the H.264
                                 // surface encoder / GL pipe and keep the camera warm in a plain,
@@ -344,6 +353,8 @@ class StreamingService : LifecycleService() {
                             } else {
                                 debouncedStartCamera()
                             }
+                        } else if (captureRunning) {
+                            debouncedStartCamera()
                         }
                     }
                 },
@@ -564,7 +575,7 @@ class StreamingService : LifecycleService() {
             // never configures ImageAnalysis/ImageCapture. The backend choice only matters when
             // frames are actually needed (clients / recording / snapshot in flight): then honor the
             // API preference and the known-bad-Camera2 flag, which route to the Camera1 backend.
-            val needsFrames = snapshotInProgress ||
+            val needsFrames = snapshotInProgress || recordingNeeded ||
                 encoders.any { it.hasClients() } || localRecorder?.isRecording == true
             val useCamera1 = needsFrames && (chooseApi() == "camera1" || camxUnusable)
             if (useCamera1) {
@@ -649,7 +660,7 @@ class StreamingService : LifecycleService() {
         val h264 = h264StreamingEncoder
         var h264SurfaceProvider: Preview.SurfaceProvider? = null
 
-        if (h264 != null && (h264.hasClients() || localRecorder?.isRecording == true) && supportsSurfaceEncoder()) {
+        if (h264 != null && (h264.hasClients() || recordingNeeded || localRecorder?.isRecording == true) && supportsSurfaceEncoder()) {
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
             val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
             val fpsCoerced = fps.coerceIn(1, 60)
@@ -703,7 +714,7 @@ class StreamingService : LifecycleService() {
                 cameraXGlPipe?.let { pipe ->
                     pipe.frameWidth = img.width; pipe.frameHeight = img.height
                 }
-                val recording = localRecorder?.isRecording == true
+                val recording = localRecorder?.isRecording == true || recordingNeeded
                 val activeEncoders = encoders.filter { it.hasClients() }
                 if (recording && h264StreamingEncoder != null) {
                     h264StreamingEncoder?.processFrame(img)
@@ -1161,6 +1172,10 @@ class StreamingService : LifecycleService() {
             """{"error":"already_recording","message":"Recording is already in progress","uri":"${localRecorder?.recordingLocation() ?: ""}"}"""
         )
 
+        // Make the camera deliver frames and initialize the H.264 encoder even with no viewers
+        // connected; cleared once localRecorder takes over (or the start fails).
+        recordingNeeded = true
+
         // Ensure camera and H.264 encoder are started on demand
         if (!captureRunning || !hasActiveClients()) {
             val latch = CountDownLatch(1)
@@ -1180,6 +1195,8 @@ class StreamingService : LifecycleService() {
         }
 
         if (enc == null) {
+            recordingNeeded = false
+            restoreNoViewerCameraState()
             return Triple(false, "503 Service Unavailable",
                 """{"error":"no_encoder","message":"Failed to initialize H.264 encoder"}"""
             )
@@ -1191,9 +1208,12 @@ class StreamingService : LifecycleService() {
             enc.onRecordFrame = { bytes, isKey, pts -> recorder.feedFrame(bytes, isKey, pts) }
             enc.requestKeyFrame()
             localRecorder = recorder
+            recordingNeeded = false
             Triple(true, "201 Created", recorder.statusJson())
         } catch (e: Exception) {
             Log.e(TAG, "startRecording failed", e)
+            recordingNeeded = false
+            restoreNoViewerCameraState()
             Triple(false, "500 Internal Server Error",
                 """{"error":"start_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
             )
@@ -1212,13 +1232,7 @@ class StreamingService : LifecycleService() {
 
             // If no remote network streaming clients are connected, update camera state
             if (!encoders.any { it.hasClients() }) {
-                launchMain {
-                    if (currentSurfaceProvider != null) {
-                        debouncedStartCamera()
-                    } else {
-                        stopCamera()
-                    }
-                }
+                restoreNoViewerCameraState()
             }
             Triple(true, "200 OK", finalStatus)
         } catch (e: Exception) {
@@ -1233,6 +1247,22 @@ class StreamingService : LifecycleService() {
     fun getRecordingStatus(): String {
         return localRecorder?.statusJson()
             ?: """{"recording":false}"""
+    }
+
+    /**
+     * Bring the camera back to the no-viewer baseline: fully stop it when nothing else needs it,
+     * or keep/restart it in preview-only mode when the on-phone preview surface is attached.
+     * Does nothing while network streaming clients are still connected.
+     */
+    private fun restoreNoViewerCameraState() {
+        if (encoders.any { it.hasClients() }) return
+        launchMain {
+            if (currentSurfaceProvider != null) {
+                debouncedStartCamera()
+            } else {
+                stopCamera()
+            }
+        }
     }
 
     /** Safely stops any active recording (used in stopCamera/onDestroy safety nets). */
