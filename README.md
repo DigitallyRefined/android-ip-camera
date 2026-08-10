@@ -118,6 +118,15 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
 * **Recording Status (`/record/status`)**
   * **Usage:** Query whether a local MP4 recording is currently active.
   * **Format:** `application/json` — `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>}` (or `{"recording":false}` when idle).
+* **Enable Streaming (`/control/start`)**
+  * **Usage:** Re-enable streaming of the media routes after it has been disabled (e.g. by a home-automation system).
+  * **Format:** `application/json` — `{"streaming":true}`
+* **Disable Streaming (`/control/stop`)**
+  * **Usage:** Stop serving the media routes (`/video/*`, `/audio*`) without closing the listening port, and disconnect any viewers that are currently connected. The `/control/*` endpoints remain reachable so streaming can be turned back on remotely. When disabled, media routes return `503 Service Unavailable` with a hint to POST `/control/start`.
+  * **Format:** `application/json` — `{"streaming":false}`
+* **Streaming Status (`/control/status`)**
+  * **Usage:** Query whether streaming is currently enabled.
+  * **Format:** `application/json` — `{"streaming":<bool>}`
 
 ### 🎛️ Remote Control Commands
 
