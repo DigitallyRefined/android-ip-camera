@@ -7,7 +7,7 @@ An Android H.264 / MJPEG IP Camera app
 
 ![Desktop Browser](screenshot.webp)
 
-## Install
+## 📲 Install
 
 <div align="center">
 <a href="https://github.com/DigitallyRefined/android-ip-camera/releases">
@@ -42,7 +42,7 @@ Some models include an option to only charge to 80%, make sure this is enabled w
 
 Note: running at a higher image quality may cause some phones to over heat, which can also damage the battery.
 
-## Frigate config
+## 🎥 Frigate config
 
 Use the example config below to add your phones camera to [Frigate](https://github.com/blakeblackshear/frigate), optionally uncommenting the audio lines (if required) & update the `rtsp` stream:
 
@@ -139,7 +139,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `api=<auto|camerax|camera1>`: Prefer capture API implementation.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
 
-## HTTPS/TLS certificates
+## 🔐 HTTPS/TLS certificates
 
 To protect the stream and the password from being sent in plain-text over HTTP, a certificate can be used to start the stream over HTTPS.
 
@@ -147,7 +147,11 @@ The app will automatically generate a self-signed certificate on first launch, b
 
 To generate a new self-signed certificate, clear the app settings and restart or clone this repo and run `./scripts/generate-certificate.sh` then use the certificate `personal_certificate.p12` file it generates.
 
-## Permissions
+## 🤖 AI generated code disclaimer
+
+Some of the code in this repository may be generated with the assistance of AI tools. All changes are reviewed and tested on a real device with a human in the loop before being released.
+
+## 🛂 Permissions
 
 The app uses the following permissions to function:
 
