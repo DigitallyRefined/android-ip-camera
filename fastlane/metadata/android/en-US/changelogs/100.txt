@@ -1,0 +1,8 @@
+## What's Changed
+* Restart the streaming server after a START_STICKY restart by @gilcu2 in #71
+* Persist the torch, and let it work with no viewer connected by @gilcu2 in #73
+* Add /control endpoints to enable and disable streaming remotely by @gilcu2 in #72
+* Allow recording via API while no clients connected & fix HTTP record by @DigitallyRefined in #75
+
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.9.1...v0.10.0
