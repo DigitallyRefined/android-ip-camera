@@ -139,6 +139,12 @@ class StreamingService : LifecycleService() {
             // calls startStreamingServer() after binding, so start it here instead.
             ACTION_START_SERVER -> startStreamingServer()
         }
+        // A null intent means the system re-created this START_STICKY service after killing the
+        // process. Nothing starts the server in that path — no activity binds, and onCreate() only
+        // posts the notification — so the service comes back looking healthy (foreground
+        // notification, camera available) with nothing listening on the port. startStreamingServer()
+        // early-returns when the socket is already open, so this is safe to reach on any path.
+        if (intent == null) startStreamingServer()
         return super.onStartCommand(intent, flags, startId)
     }
 
