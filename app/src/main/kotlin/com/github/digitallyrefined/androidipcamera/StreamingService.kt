@@ -69,6 +69,12 @@ class StreamingService : LifecycleService() {
     @Volatile private var cameraXGlPipe: CameraGlPipe? = null   // CameraX H.264 GL pipe
     @Volatile private var backend: CaptureBackend? = null   // CameraXCapture (default) or Camera1Capture (legacy)
     @Volatile private var captureRunning = false
+    /**
+     * True while the camera is open *only* to keep the torch lit. The camera is otherwise opened on
+     * demand, so without this the torch would die the moment the last viewer left — and a blanket
+     * "don't release while the torch is on" guard would leak a camera session that nothing closes.
+     */
+    @Volatile private var cameraHeldForTorch = false
     @Volatile private var localRecorder: LocalRecorder? = null
 
     @Volatile private var frontFacing = false             // false = back camera (read across threads)
@@ -111,6 +117,8 @@ class StreamingService : LifecycleService() {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "streaming_service_channel"
         private const val PREF_CAMERA_ID = "camera_id"
+        /** "on"/"off". Already surfaced by /info.json, which until now reported a value nobody wrote. */
+        private const val PREF_CAMERA_TORCH = "camera_torch"
         /** Hard cap for a single /video/snapshot pipeline run (switch + capture). */
         private const val SNAPSHOT_DEADLINE_MS = 12_000L
         /** A cached capture older than this is treated as stale and never served. */
@@ -139,6 +147,12 @@ class StreamingService : LifecycleService() {
             // calls startStreamingServer() after binding, so start it here instead.
             ACTION_START_SERVER -> startStreamingServer()
         }
+        // A null intent means the system re-created this START_STICKY service after killing the
+        // process. Nothing starts the server in that path — no activity binds, and onCreate() only
+        // posts the notification — so the service comes back looking healthy (foreground
+        // notification, camera available) with nothing listening on the port. startStreamingServer()
+        // early-returns when the socket is already open, so this is safe to reach on any path.
+        if (intent == null) startStreamingServer()
         return super.onStartCommand(intent, flags, startId)
     }
 
@@ -197,6 +211,9 @@ class StreamingService : LifecycleService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
             try { unregisterReceiver(notificationChannelReceiver) } catch (_: Exception) {}
         safeStopRecording()
+        // The service is going away, so the torch has nothing left to keep the camera open for;
+        // clearing this first stops the guard in stopCamera() from leaking the session.
+        cameraHeldForTorch = false
         stopCamera()
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
@@ -706,6 +723,10 @@ class StreamingService : LifecycleService() {
     }
 
     private fun stopCamera() {
+        // Single choke point for every on-demand release path (last viewer left, preview hidden,
+        // stream reconfigured). The torch-off handler clears the flag before calling in, so it is
+        // the one caller that can still close a torch-held session.
+        if (cameraHeldForTorch) return
         safeStopRecording()
         cameraCloseStartTime = System.currentTimeMillis()
         backend?.stop(); backend = null
@@ -748,6 +769,9 @@ class StreamingService : LifecycleService() {
 
     private fun applyStored(b: CaptureBackend) {
         val p = PreferenceManager.getDefaultSharedPreferences(this)
+        // The torch is device-level, not per-camera, so it is restored ahead of the early return
+        // below — the per-camera settings need a resolved camera id, the torch does not.
+        if (p.getString(PREF_CAMERA_TORCH, "off") == "on") b.setTorch(true)
         val id = camId()
         if (id == null) return
         val phys = id.substringAfter(':', id)
@@ -995,14 +1019,31 @@ class StreamingService : LifecycleService() {
         val physicalId = id?.substringAfter(':', id ?: "") ?: ""
         when (key) {
             "torch" -> {
-                val current = backend?.getTorch() ?: false
+                val current = backend?.getTorch()
+                    ?: (prefs.getString(PREF_CAMERA_TORCH, "off") == "on")
                 val next = when (value.lowercase()) {
                     "on" -> true
                     "off" -> false
                     "toggle" -> !current
                     else -> return
                 }
-                launchMain { backend?.setTorch(next) }
+                // Persist before opening the camera: applyStored() reads this pref while the
+                // backend is being set up, which is what makes the torch survive the camera
+                // restarts that happen every time a stream starts or stops.
+                prefs.edit().putString(PREF_CAMERA_TORCH, if (next) "on" else "off").apply()
+                launchMain {
+                    if (next && !captureRunning) {
+                        // Nothing is streaming, so there is no backend to talk to. Open the camera
+                        // just for the torch and record that this session is ours to close.
+                        cameraHeldForTorch = true
+                        startCamera(force = true)
+                    }
+                    backend?.setTorch(next)
+                    if (!next && cameraHeldForTorch) {
+                        cameraHeldForTorch = false
+                        if (!hasActiveClients() && currentSurfaceProvider == null) stopCamera()
+                    }
+                }
             }
             "exposure" -> {
                 val ev = value.toIntOrNull() ?: return

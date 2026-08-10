@@ -113,6 +113,8 @@ class StreamingServerHelper(
     private val CONNECTION_CLEANUP_INTERVAL_MS = 60_000L
     /** Whether the media routes serve at all. The control routes ignore it — see the handler. */
     private val PREF_STREAMING_ENABLED = "streaming_enabled"
+    /** Wait before restarting a server whose accept loop ended on its own — see scheduleServerRestart. */
+    private val SERVER_RESTART_DELAY_MS = 5_000L
     /** Hard cap on the whole /video/snapshot request (snapshot() is already internally bounded). */
     private val SNAPSHOT_TOTAL_WAIT_MS = 14_000L
     private val SNAPSHOT_MAX_ATTEMPTS = 3
@@ -162,6 +164,29 @@ class StreamingServerHelper(
             .putBoolean(PREF_STREAMING_ENABLED, enabled).apply()
         onLog(if (enabled) "Streaming enabled" else "Streaming disabled")
         if (!enabled) closeClientConnection()
+    }
+
+    /**
+     * Brings the server back after the accept loop ended without anyone asking it to.
+     *
+     * The failure this exists for is silent: the service keeps running with its foreground
+     * notification and the camera still available, but the port is dead, so nothing on the device
+     * looks wrong and the outage is only visible to whoever tries to connect. There is no other
+     * recovery path — the activity only starts the server when it binds, so an app left running in
+     * the background stays dead until it is force-stopped and relaunched by hand.
+     *
+     * A single delayed attempt is enough to keep retrying: if the restart also fails, its own
+     * accept loop ends the same way and schedules the next one, so this backs off at a fixed
+     * interval for as long as the failure lasts.
+     */
+    private fun scheduleServerRestart(generation: Long) {
+        CoroutineScope(Dispatchers.IO).launch {
+            kotlinx.coroutines.delay(SERVER_RESTART_DELAY_MS)
+            val stillStopped = synchronized(this@StreamingServerHelper) { generation == serverGeneration }
+            if (!stillStopped) return@launch  // something already restarted it
+            onLog("Server ended unexpectedly, restarting")
+            startStreamingServer()
+        }
     }
 
     fun stopServer() {
@@ -270,6 +295,9 @@ class StreamingServerHelper(
         synchronized(this) {
               serverJob = CoroutineScope(Dispatchers.IO).launch {
               var localServerSocket: ServerSocket? = null
+              // Only set once the socket is live and published, so a server that never managed to
+              // bind (bad certificate, port in use) is not retried forever by the supervisor below.
+              var serverWasPublished = false
               try {
                   val prefs = PreferenceManager.getDefaultSharedPreferences(context)
                   val secureStorage = SecureStorage(context)
@@ -448,6 +476,7 @@ class StreamingServerHelper(
                   }
                   if (!published) return@launch
 
+                  serverWasPublished = true
                   onLog("Server started on port $streamPort (${if (useTLS) "HTTPS" else "HTTP"})")
                   // Clear the starting flag now that server is running
                   synchronized(this@StreamingServerHelper) {
@@ -494,10 +523,15 @@ class StreamingServerHelper(
                   onLog("Could not start server: ${e.message}")
               } finally {
                   try { localServerSocket?.close() } catch (_: IOException) {}
-                  synchronized(this@StreamingServerHelper) {
+                  val endedOnItsOwn = synchronized(this@StreamingServerHelper) {
                       if (serverSocket === localServerSocket) serverSocket = null
                       if (generation == serverGeneration) isStarting = false
+                      // stopServer() and every new start bump serverGeneration. If it is still
+                      // ours, nobody asked this loop to end — the socket was closed underneath it
+                      // or an exception escaped — and nothing else will bring the server back.
+                      generation == serverGeneration
                   }
+                  if (serverWasPublished && endedOnItsOwn) scheduleServerRestart(generation)
               }
             }
         }
