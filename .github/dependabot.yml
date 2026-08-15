@@ -4,7 +4,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-      day: saturday
+      day: sunday
       time: '01:32'
       timezone: Europe/London
     open-pull-requests-limit: 10
@@ -31,7 +31,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-      day: saturday
+      day: sunday
       time: '01:32'
       timezone: Europe/London
     cooldown:
