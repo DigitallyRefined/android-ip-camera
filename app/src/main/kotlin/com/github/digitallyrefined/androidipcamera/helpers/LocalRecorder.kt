@@ -37,7 +37,8 @@ class LocalRecorder(
 ) {
     companion object {
         private const val TAG = "LocalRecorder"
-        private const val SUBDIR = "AndroidIPCamera"
+        /** Subfolder of the public Movies directory where recordings are stored. */
+        const val SUBDIR = "AndroidIPCamera"
     }
 
     // --- Public state (read from any thread) ---

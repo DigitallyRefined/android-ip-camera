@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Recordings</title>
+    <style>
+      body {
+        background: #121212;
+        color: #e0e0e0;
+        font-family: -apple-system, Roboto, sans-serif;
+        margin: 0;
+        padding: 16px;
+      }
+
+      h1 {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #fff;
+        word-break: break-all;
+      }
+
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        max-width: 720px;
+        background: #1e1e1e;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      td,
+      th {
+        padding: 10px 12px;
+        text-align: left;
+        border-bottom: 1px solid #333;
+        font-size: 0.9rem;
+      }
+
+      th {
+        color: #888;
+        font-weight: 500;
+        text-transform: uppercase;
+        font-size: 0.72rem;
+        letter-spacing: 0.05em;
+      }
+
+      tr:last-child td {
+        border-bottom: none;
+      }
+
+      td.num {
+        white-space: nowrap;
+        color: #aaa;
+      }
+
+      a {
+        color: #007AFF;
+        text-decoration: none;
+        word-break: break-all;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      button {
+        background: #444;
+        color: #fff;
+        border: 1px solid #666;
+        border-radius: 6px;
+        padding: 5px 12px;
+        cursor: pointer;
+        font-size: 0.85rem;
+      }
+
+      button:hover {
+        background: #c0392b;
+        border-color: #c0392b;
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      button:disabled:hover {
+        background: #444;
+        border-color: #666;
+      }
+
+      td.empty {
+        color: #888;
+        padding: 24px 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="folder">Recordings</h1>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Size</th>
+          <th>Last Modified</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr id="empty">
+          <td colspan="4" class="empty">Loading...</td>
+        </tr>
+      </tbody>
+    </table>
+    <script>
+      function formatSize(bytes) {
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let size = bytes,
+          unit = 0;
+        while (size >= 1024 && unit < units.length - 1) {
+          size /= 1024;
+          unit++;
+        }
+        return (
+          unit === 0
+          ? size
+          : size.toFixed(1)) + ' ' + units[unit];
+      }
+
+      const dateFormat = new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'short',
+        timeStyle: 'medium'
+      });
+      function formatDate(ms) {
+        return dateFormat.format(ms);
+      }
+
+      async function loadFiles() {
+        const rowsEl = document.getElementById('rows');
+        const setStatus = message => {
+          rowsEl.textContent = '';
+          if (!message)
+            return;
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 4;
+          td.className = 'empty';
+          td.textContent = message;
+          tr.appendChild(td);
+          rowsEl.appendChild(tr);
+        };
+        try {
+          const res = await fetch('/files.json');
+          if (!res.ok)
+            throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          document.title = 'Index of /' + data.folder;
+          document
+            .getElementById('folder')
+            .textContent = 'Index of /' + data.folder;
+          setStatus(null);
+          for (const file of data.files) {
+            const tr = document.createElement('tr');
+
+            const nameTd = document.createElement('td');
+            const link = document.createElement('a');
+            link.href = '/files/' + encodeURIComponent(file.name);
+            link.setAttribute('download', '');
+            link.textContent = file.name;
+            nameTd.appendChild(link);
+
+            const sizeTd = document.createElement('td');
+            sizeTd.className = 'num';
+            sizeTd.textContent = formatSize(file.sizeBytes);
+
+            const dateTd = document.createElement('td');
+            dateTd.textContent = formatDate(file.lastModifiedMs);
+
+            const delTd = document.createElement('td');
+            const btn = document.createElement('button');
+            btn.dataset.name = file.name;
+            btn.onclick = () => deleteFile(btn);
+            btn.textContent = 'Delete';
+            delTd.appendChild(btn);
+
+            tr.append(nameTd, sizeTd, dateTd, delTd);
+            rowsEl.appendChild(tr);
+          }
+          if (data.files.length === 0)
+            setStatus('No files.');
+          }
+        catch (e) {
+          setStatus('Failed to load file list: ' + e.message);
+        }
+      }
+
+      async function deleteFile(btn) {
+        const name = btn.dataset.name;
+        if (!confirm('Delete "' + name + '"? This cannot be undone.'))
+          return;
+        btn.disabled = true;
+        btn.textContent = 'Deleting...';
+        try {
+          const res = await fetch('/files/' + encodeURIComponent(name), {method: 'DELETE'});
+          if (res.ok) {
+            location.reload();
+            return;
+          }
+          alert('Delete failed (HTTP ' + res.status + ')');
+        } catch (e) {
+          alert('Delete failed: ' + e);
+        }
+        btn.disabled = false;
+        btn.textContent = 'Delete';
+      }
+
+      loadFiles();
+    </script>
+  </body>
+</html>

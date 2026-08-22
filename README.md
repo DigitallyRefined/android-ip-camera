@@ -118,6 +118,21 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
 * **Recording Status (`/record/status`)**
   * **Usage:** Query whether a local MP4 recording is currently active.
   * **Format:** `application/json` — `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>}` (or `{"recording":false}` when idle).
+* **Recordings Index (`/files`)**
+  * **Usage:** Open `https://[ip_address]:[port]/files` in a web browser for a folder index of the recordings stored on the device (`Movies/AndroidIPCamera`). Lists files only — no subfolder browsing.
+  * **Format:** `text/html` — static page shell that loads the file list from `/files.json`, renders each file as a link to its download URL plus a Delete button (with a browser confirmation prompt) that issues a `DELETE /files/<filename>` request.
+* **Recordings List JSON (`/files.json`)**
+  * **Usage:** Query the recordings folder listing programmatically or feed custom front-ends.
+  * **Format:** `application/json` — `{"folder":<string>, "files":[{"name":<string>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
+* **Download Recording (`/files/<filename>`, GET)**
+  * **Usage:** Download a recorded MP4 from the device. Browsers save the file instead of playing it (`Content-Disposition: attachment`).
+  * **Responses:** `200 OK` with the file bytes, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid file names.
+* **Delete Recording (`/files/<filename>`, DELETE)**
+  * **Usage:** Permanently delete a recorded MP4 from the device.
+  * **Responses:**
+    * `200 OK`: `{"deleted":true}` — file deleted.
+    * `404 Not Found`: `{"error":"not_found"}` — no such file in the recordings folder.
+    * `500 Internal Server Error`: `{"error":"delete_failed"}` — the file exists but could not be deleted.
 * **Enable Streaming (`/control/start`)**
   * **Usage:** Re-enable streaming of the media routes after it has been disabled (e.g. by a home-automation system).
   * **Format:** `application/json` — `{"streaming":true}`
