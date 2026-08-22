@@ -1440,12 +1440,16 @@
     }
 
     function toggleRecording() {
-      const url = isRecording ? '/record/stop' : '/record/start';
+      const wasRecording = isRecording;
+      const url = wasRecording ? '/record/stop' : '/record/start';
       fetch(url, { method: 'POST' })
         .then(r => r.json())
         .then(data => {
           if (data.error) {
             alert('Recording Message: ' + (data.message || data.error));
+          } else if (wasRecording) {
+            // Recording stopped: show the recordings list
+            window.open('/files', 'recordings');
           }
           checkRecordingStatus();
         })

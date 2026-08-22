@@ -120,6 +120,9 @@ class StreamingServerHelper(
     private val SNAPSHOT_MAX_ATTEMPTS = 3
     private val SNAPSHOT_RETRY_DELAY_MS = 250L
 
+    /** GET /files, GET|DELETE /files/<filename> — see [FileManager]. */
+    private val fileManager = FileManager(context, onLog)
+
     fun getClients(): List<Client> = clients.toList()
     fun getH264Clients(): List<Client> = h264Clients.toList()
     fun resetH264Wait() { h264Clients.forEach { it.waitingKey = true } }  // resync viewers at next keyframe
@@ -559,6 +562,7 @@ class StreamingServerHelper(
             val requestLine = reader.readLine() ?: return
             val requestParts = requestLine.split(" ")
             if (requestParts.size < 2) return
+            val httpMethod = requestParts[0].uppercase(Locale.US)
             val uri = requestParts[1]
             val path = uri.substringBefore('?')
 
@@ -809,6 +813,12 @@ class StreamingServerHelper(
                 writer.print("Connection: close\r\n\r\n")
                 writer.print(json)
                 writer.flush()
+                try { socket.close() } catch (_: Exception) {}
+                return
+            }
+
+            // ---- Recorded files endpoints (Movies/AndroidIPCamera) ----
+            if (fileManager.handleRequest(httpMethod, path, writer, outputStream)) {
                 try { socket.close() } catch (_: Exception) {}
                 return
             }
