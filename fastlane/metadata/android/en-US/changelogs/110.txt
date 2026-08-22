@@ -1,0 +1,6 @@
+## What's Changed
+* Add recordings file manager & HTTP API (shown to download recording after stopping) in #80
+* Bump dependencies by @dependabot[bot] in #76 #78 #77
+
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.10.0...v0.11.0
