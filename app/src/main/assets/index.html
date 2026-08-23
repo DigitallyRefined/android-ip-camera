@@ -385,10 +385,10 @@
 
     function targetCanvasSize(frame) {
       if (viewMode === 'fit') {
-        const w = (streamContainer && streamContainer.clientWidth)
+        const w = (streamContainer?.clientWidth)
           ? streamContainer.clientWidth
           : (frame ? frame.width : (lastDrawn ? lastDrawn.width : streamCanvas.width));
-        const h = (streamContainer && streamContainer.clientHeight)
+        const h = (streamContainer?.clientHeight)
           ? streamContainer.clientHeight
           : (frame ? frame.height : (lastDrawn ? lastDrawn.height : streamCanvas.height));
         return { w, h };
@@ -427,8 +427,10 @@
       if (!flashBtn) return;
       const currentCameraInfo = selectedCameraInfo();
       const hasFlash = currentCameraInfo?.hasFlash || false;
-      flashBtn.style.display = hasFlash ? 'inline-block' : 'none';
-      if (hasFlash) {
+      // Keep the button visible while the torch is on, even if the selected
+      // camera reports no flash, so it can always be switched off.
+      flashBtn.style.display = (hasFlash || torchState === 'on') ? 'inline-block' : 'none';
+      if (flashBtn.style.display !== 'none') {
         flashBtn.textContent = (torchState === 'on')
           ? '⚡ Flash Off'
           : '💡 Flash On';
@@ -457,7 +459,7 @@
           credentials: 'include',
           signal: controller.signal
         }).then(res => {
-          if (res && res.status === 403) {
+          if (res?.status === 403) {
             alert('Audio is disabled because microphone permission is not granted.');
             return;
           }
@@ -535,7 +537,7 @@
     function updateLocalLensSetting(param, val) {
       const key = toLensKey(param);
       if (!key) return;
-      const cam = cameraList.find(c => c && c.id === currentCamera);
+      const cam = cameraList.find(c => c?.id === currentCamera);
       if (!cam) return;
       cam.lensSettings = cam.lensSettings || {};
       cam.lensSettings[key] = normalizeValueForKey(key, val);
@@ -738,7 +740,7 @@
               .then(({ done, value }) => {
                 if (done)
                   return;
-                if (value && value.length) {
+                if (value?.length) {
                   buffer = concat(buffer, value);
                   process();
                 }
@@ -765,7 +767,7 @@
                   .pop() || null;
               }
             }
-            if (candidate && candidate.bmp) {
+            if (candidate?.bmp) {
               const size = targetCanvasSize(candidate.bmp);
               const w = size.w;
               const h = size.h;
@@ -832,7 +834,7 @@
 
     function h264Rotation() {
       const c = selectedCameraInfo();
-      return (((c && c.sensorOrientation) || 0) + rotate) % 360;
+      return (((c?.sensorOrientation) || 0) + rotate) % 360;
     }
     const h264Supported = ('VideoDecoder' in window) && ('EncodedVideoChunk' in window);
     const baseUrl = () => location.protocol + '//' + location.host;
@@ -1051,7 +1053,7 @@
     });
 
     function camerasForFacing(facing) {
-      return cameraList.filter(camera => camera && camera.facing === facing);
+      return cameraList.filter(camera => camera?.facing === facing);
     }
 
     function currentCameraFacing() {
@@ -1107,9 +1109,9 @@
         const zoomEl = getElById('zoom');
         if (!zoomEl) return;
         const cam = selectedCameraInfo();
-        const max = (cam && cam.zoom && cam.zoom.max) ? parseFloat(cam.zoom.max) : 8;
+        const max = (cam?.zoom?.max) ? parseFloat(cam.zoom.max) : 8;
         // Some cameras may report a min zoom (e.g. ultra-wide starting at 0)
-        const min = (cam && cam.zoom && cam.zoom.min) ? parseFloat(cam.zoom.min) : 0.1;
+        const min = (cam?.zoom?.min) ? parseFloat(cam.zoom.min) : 0.1;
         // Ensure sensible min/max values
         zoomEl.max = String((isFinite(max) && max > 0) ? parseFloat(max).toFixed(1) : '8.0');
         zoomEl.min = String((isFinite(min) && min >= 0) ? parseFloat(min).toFixed(1) : '0.1');
@@ -1194,13 +1196,16 @@
       // Front-facing cameras are slower on H.264 for most Android devices,
       // so automatically switch to MJPEG when selecting a front camera.
       // Switch back to H.264 for rear cameras when available.
-      if (newCameraInfo && newCameraInfo.facing === 'front' && streamMode !== 'mjpeg') {
+      if (newCameraInfo?.facing === 'front' && streamMode !== 'mjpeg') {
         setStreamMode('mjpeg');
-      } else if (newCameraInfo && newCameraInfo.facing === 'back' && streamMode === 'mjpeg' && h264Supported && window.isSecureContext) {
+      } else if (newCameraInfo?.facing === 'back' && streamMode === 'mjpeg' && h264Supported && window.isSecureContext) {
         setStreamMode('h264');
       }
-      // If the next camera has no flash, reflect the forced-off state immediately.
-      if (torchState === 'on' && newCameraInfo && !newCameraInfo.hasFlash) {
+      // Only force the flash off when we know for sure we're switching to the
+      // front-facing camera. Rear lenses share the device flash, and some
+      // report hasFlash=false on their physical characteristics even though
+      // the torch works, so leave the flash alone between them.
+      if (torchState === 'on' && newCameraInfo?.facing === 'front') {
         try {
           sendControl('torch', 'off');
         } catch (_) { }
@@ -1211,7 +1216,7 @@
       // If the server provided per-camera lens settings in the camera object, apply
       // them immediately
       try {
-        if (newCameraInfo && newCameraInfo.lensSettings) {
+        if (newCameraInfo?.lensSettings) {
           // Ensure all values in lensSettings are properly normalized (e.g., string to number)
           for (const key in newCameraInfo.lensSettings) {
             newCameraInfo.lensSettings[key] = normalizeValueForKey(key, newCameraInfo.lensSettings[key]);
@@ -1385,7 +1390,7 @@
           if (applySettings) {
             try {
               const cam = cameraList.find(c => c.id === currentCamera);
-              if (cam && cam.lensSettings) {
+              if (cam?.lensSettings) {
                 // Ensure all values in lensSettings are properly normalized (e.g., string to number)
                 for (const key in cam.lensSettings) {
                   cam.lensSettings[key] = normalizeValueForKey(key, cam.lensSettings[key]);
@@ -1412,7 +1417,7 @@
     let isRecording = false;
     function updateRecordingUi(statusData) {
       const toggleBtn = getElById('recordToggleBtn');
-      isRecording = !!(statusData && statusData.recording);
+      isRecording = !!(statusData?.recording);
       if (isRecording) {
         const secs = Math.floor((statusData.durationMs || 0) / 1000);
         const mins = Math.floor(secs / 60);
