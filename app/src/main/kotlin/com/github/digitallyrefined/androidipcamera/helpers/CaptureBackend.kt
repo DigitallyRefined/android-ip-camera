@@ -12,6 +12,12 @@ interface CaptureBackend {
     val ready: Boolean get() = true        // CameraX overrides (async bind); Camera1 is ready after start()
     /** Full-resolution JPEG; concurrent with the live stream where the hardware allows. */
     fun captureStill(onJpeg: (ByteArray?) -> Unit)
+    /**
+     * True only when THIS camera can drive the flash unit. Auxiliary lenses (ultra-wide, depth)
+     * report no flash unit on many multi-lens phones — the caller must then route the torch
+     * through a flash-capable camera instead of assuming setTorch() did anything.
+     */
+    val hasFlashUnit: Boolean get() = true
     fun getTorch(): Boolean
     fun setTorch(on: Boolean)
     fun setExposure(ev: Int)

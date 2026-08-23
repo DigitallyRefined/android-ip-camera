@@ -381,6 +381,7 @@
     let drawing = false;
     let viewMode = 'fit';
     let torchState = 'off';
+    let deviceHasFlash = false;
     let cameraList = [];
 
     function targetCanvasSize(frame) {
@@ -427,10 +428,11 @@
       if (!flashBtn) return;
       const currentCameraInfo = selectedCameraInfo();
       const hasFlash = currentCameraInfo?.hasFlash || false;
-      // Keep the button visible while the torch is on, even if the selected
-      // camera reports no flash, so it can always be switched off.
-      flashBtn.style.display = (hasFlash || torchState === 'on') ? 'inline-block' : 'none';
-      if (flashBtn.style.display !== 'none') {
+      // The torch is a device-level flash unit shared by the rear lenses: offer it even when the
+      // selected camera reports none (e.g. ultra-wide/depth), and keep it visible while on.
+      const visible = hasFlash || deviceHasFlash || torchState === 'on';
+      flashBtn.style.display = visible ? 'inline-block' : 'none';
+      if (visible) {
         flashBtn.textContent = (torchState === 'on')
           ? '⚡ Flash Off'
           : '💡 Flash On';
@@ -1249,6 +1251,10 @@
         currentCamera = settings.cameraId;
         updateCameraSelectValue();
       }
+      // Reconcile torch state with the server: the page starts blind ('off'), but the service may
+      // have the torch lit (restored from prefs on its last camera start).
+      if (settings.deviceHasFlash !== undefined) deviceHasFlash = !!settings.deviceHasFlash;
+      if (settings.torch === 'on' || settings.torch === 'off') setTorchState(settings.torch);
       if (settings.streamRes) desiredResolution = settings.streamRes;
       if (settings.rotate != null) {
         rotate = parseInt(settings.rotate, 10) || 0;

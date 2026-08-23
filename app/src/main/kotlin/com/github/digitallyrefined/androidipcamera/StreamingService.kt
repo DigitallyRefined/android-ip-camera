@@ -75,6 +75,10 @@ class StreamingService : LifecycleService() {
      * "don't release while the torch is on" guard would leak a camera session that nothing closes.
      */
     @Volatile private var cameraHeldForTorch = false
+    /** True while the torch is lit through [setDeviceTorch] (CameraManager.setTorchMode) rather
+     *  than the streaming camera's own session. Tracked so it can be released on shutdown — unlike
+     *  session-bound torch, a setTorchMode torch survives process death. */
+    @Volatile private var deviceTorchOn = false
     @Volatile private var localRecorder: LocalRecorder? = null
 
     @Volatile private var frontFacing = false             // false = back camera (read across threads)
@@ -220,6 +224,9 @@ class StreamingService : LifecycleService() {
         // clearing this first stops the guard in stopCamera() from leaking the session.
         cameraHeldForTorch = false
         stopCamera()
+        // A setTorchMode torch outlives the process — release it explicitly or the LED burns
+        // forever after the service is stopped.
+        if (deviceTorchOn) setDeviceTorch(false)
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
 
@@ -564,6 +571,12 @@ class StreamingService : LifecycleService() {
             Log.i(TAG, "startCamera bypassed: no force, no clients, and preview surface is null")
             return@withLock
         }
+        // An explicit restart must always be able to tear down the current session — even one the
+        // torch is holding open. Otherwise the flag permanently neuters stopCamera(), the old
+        // backend leaks (its HAL device stays claimed), and on single-HAL devices every later
+        // camera open fails until process death. Restore the hold after a successful start.
+        val resumeTorchHold = cameraHeldForTorch
+        cameraHeldForTorch = false
         stopCamera()
         h264StreamingEncoder?.awaitRelease()
         try {
@@ -605,6 +618,10 @@ class StreamingService : LifecycleService() {
 
             captureRunning = true
             encoders.forEach { it.start() }
+            // Still no viewers? The camera is open purely to keep the torch lit.
+            if (resumeTorchHold && !hasActiveClients() && currentSurfaceProvider == null) {
+                cameraHeldForTorch = true
+            }
             // Apply stored camera-level controls (exposure/zoom/focus) to the backend.
             // CameraX binding is asynchronous; retry in a background coroutine until ready.
             lifecycleScope.launch(Dispatchers.IO) {
@@ -782,7 +799,12 @@ class StreamingService : LifecycleService() {
         val p = PreferenceManager.getDefaultSharedPreferences(this)
         // The torch is device-level, not per-camera, so it is restored ahead of the early return
         // below — the per-camera settings need a resolved camera id, the torch does not.
-        if (p.getString(PREF_CAMERA_TORCH, "off") == "on") b.setTorch(true)
+        if (p.getString(PREF_CAMERA_TORCH, "off") == "on") {
+            b.setTorch(true)
+            // The active lens may not own the flash unit (ultra-wide/depth); anchor the torch to
+            // the flash-capable rear camera instead so a lens switch never strands the state.
+            if (!b.hasFlashUnit) setDeviceTorch(true)
+        }
         val id = camId()
         if (id == null) return
         val phys = id.substringAfter(':', id)
@@ -807,6 +829,36 @@ class StreamingService : LifecycleService() {
             else -> null
         }
         focus?.toFloatOrNull()?.let { b.setManualFocus(it) }
+    }
+
+    /** Rear camera id that owns the flash unit (usually the main lens). Auxiliary rear lenses on
+     *  multi-camera phones often report no flash unit, yet physically share this one. */
+    private fun flashAnchorCameraId(): String? = try {
+        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        cm.cameraIdList.firstOrNull { id ->
+            try {
+                val ch = cm.getCameraCharacteristics(id)
+                ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
+                    ch.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_FRONT
+            } catch (_: Exception) { false }
+        }
+    } catch (_: Exception) { null }
+
+    /**
+     * Torch through [CameraManager.setTorchMode] — works with NO camera session open, so it keeps
+     * the LED lit while a flash-less lens (ultra-wide/depth) is streaming or while the camera
+     * restarts between lens switches. Returns false if the platform rejected it.
+     */
+    private fun setDeviceTorch(on: Boolean): Boolean {
+        deviceTorchOn = try {
+            val id = flashAnchorCameraId() ?: return false
+            (getSystemService(Context.CAMERA_SERVICE) as CameraManager).setTorchMode(id, on)
+            on
+        } catch (e: Exception) {
+            Log.w(TAG, "device torch($on): ${e.message}")
+            false
+        }
+        return deviceTorchOn
     }
 
     // ---------------- snapshot (full resolution) ----------------
@@ -1050,6 +1102,11 @@ class StreamingService : LifecycleService() {
                         startCamera(force = true)
                     }
                     backend?.setTorch(next)
+                    // The active lens may not own the flash unit (ultra-wide/depth) — drive the
+                    // torch through the flash-capable rear camera instead so it still lights.
+                    // On "off" always clear the device channel too: a lens switch can have moved
+                    // the torch between mechanisms.
+                    if (backend?.hasFlashUnit != true || !next) setDeviceTorch(next)
                     if (!next && cameraHeldForTorch) {
                         cameraHeldForTorch = false
                         if (!hasActiveClients() && currentSurfaceProvider == null) stopCamera()

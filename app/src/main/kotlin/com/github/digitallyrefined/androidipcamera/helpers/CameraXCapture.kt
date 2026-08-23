@@ -82,6 +82,19 @@ class CameraXCapture(
         private set
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var torchEnabled = false
+    /** Whether the bound camera can drive the flash at all — auxiliary lenses (ultra-wide, depth)
+     *  report FLASH_INFO_AVAILABLE=false on many multi-lens phones and enableTorch() then fails
+     *  asynchronously, which a synchronous try/catch never sees. Lazy because it reads
+     *  [logicalCameraId], declared below. */
+    override val hasFlashUnit: Boolean by lazy {
+        try {
+            val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val want = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+            val id = logicalCameraId?.takeIf { it in cm.cameraIdList }
+                ?: cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
+            id != null && cm.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+        } catch (_: Exception) { true }
+    }
     // Cached camera controls, re-applied after a rebind (which replaces the camera control).
     @Volatile private var zoomRatio: Float? = null
     @Volatile private var exposureIndex: Int? = null
@@ -253,7 +266,7 @@ class CameraXCapture(
         }
         // Re-apply cached controls, since rebinding replaces the camera control.
         val cc = camera?.cameraControl
-        if (torchEnabled) try { cc?.enableTorch(true) } catch (_: Exception) {}
+        if (torchEnabled && hasFlashUnit) try { cc?.enableTorch(true) } catch (_: Exception) {}
         zoomRatio?.let { applyZoomWithRetry(it) }
         exposureIndex?.let { try { cc?.setExposureCompensationIndex(it) } catch (_: Exception) {} }
         manualFocus?.let { setManualFocus(it) }
@@ -382,7 +395,28 @@ class CameraXCapture(
     }
 
     override fun getTorch(): Boolean = torchEnabled
-    override fun setTorch(on: Boolean) { torchEnabled = on; try { camera?.cameraControl?.enableTorch(on) } catch (_: Exception) {} }
+    override fun setTorch(on: Boolean) {
+        // Lenses without a flash unit must report OFF even when asked for ON, so the service knows
+        // to route the torch through a flash-capable camera instead.
+        torchEnabled = on && hasFlashUnit
+        if (on && !hasFlashUnit) return
+        try {
+            val future = camera?.cameraControl?.enableTorch(on) ?: return
+            // enableTorch reports failure through the future, not by throwing — observe it or the
+            // failure is completely silent and internal state drifts from the real LED.
+            future.addListener({
+                try {
+                    future.get()
+                } catch (e: Exception) {
+                    Log.w(TAG, "enableTorch($on): ${e.message}")
+                    if (on) torchEnabled = false
+                }
+            }, main)
+        } catch (e: Exception) {
+            Log.w(TAG, "enableTorch($on): ${e.message}")
+            if (on) torchEnabled = false
+        }
+    }
     override fun setExposure(ev: Int) { exposureIndex = ev; try { camera?.cameraControl?.setExposureCompensationIndex(ev) } catch (_: Exception) {} }
     override fun setZoom(ratio: Float) { zoomRatio = ratio; applyZoomWithRetry(ratio) }
     @OptIn(ExperimentalCamera2Interop::class)

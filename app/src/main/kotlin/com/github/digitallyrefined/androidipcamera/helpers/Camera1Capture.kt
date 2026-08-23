@@ -26,6 +26,8 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
     private var onPreviewFrame: ((ByteArray) -> Unit)? = null
     @Volatile private var torchEnabled = false
     @Volatile private var stopped = false
+    /** This lens can only drive the flash if the HAL advertises FLASH_MODE_TORCH. */
+    override val hasFlashUnit: Boolean
 
     init {
         camera.parameters.supportedPreviewSizes?.let { sizes ->
@@ -33,6 +35,9 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
                 ?: sizes.minByOrNull { abs(it.width * it.height - targetW * targetH) }
             pick?.let { chosenW = it.width; chosenH = it.height }
         }
+        hasFlashUnit = try {
+            camera.parameters.supportedFlashModes?.contains(Camera.Parameters.FLASH_MODE_TORCH) == true
+        } catch (_: Exception) { false }
     }
 
     fun start(st: SurfaceTexture, fps: Int = 30) {
@@ -124,9 +129,11 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
 
     override fun getTorch(): Boolean = torchEnabled
     override fun setTorch(on: Boolean) = live { p ->
-        torchEnabled = on
-        val m = if (on) Camera.Parameters.FLASH_MODE_TORCH else Camera.Parameters.FLASH_MODE_OFF
-        if (p.supportedFlashModes?.contains(m) == true) p.flashMode = m
+        // Lenses without a flash unit (ultra-wide/depth) must report OFF even when asked for ON,
+        // so the service knows to route the torch through a flash-capable camera instead.
+        torchEnabled = on && hasFlashUnit
+        if (!hasFlashUnit) return@live
+        p.flashMode = if (on) Camera.Parameters.FLASH_MODE_TORCH else Camera.Parameters.FLASH_MODE_OFF
     }
     override fun setExposure(ev: Int) = live { p ->
         val lo = p.minExposureCompensation; val hi = p.maxExposureCompensation
