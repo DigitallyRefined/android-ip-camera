@@ -46,13 +46,18 @@ Note: running at a higher image quality may cause some phones to over heat, whic
 
 Use the example config below to add your phones camera to [Frigate](https://github.com/blakeblackshear/frigate), optionally uncommenting the audio lines (if required) & update the `rtsp` stream:
 
+### Settings > Configuration Editor
+
 ```yaml
 go2rtc:
   streams:
     android-cam-video:
-      - "https://[ip_address]:4444/video/h264"
+      ## For example: https://test:Testing123@192.168.0.5:4444/video/h264
+      ## Or use to use a .env file:
+      ## https://{ANDROID_CAM_USER}:{ANDROID_CAM_PASSWORD}@[ip_address]:4444/video/h264
+      - "https://[username]:[password]@[ip_address]:4444/video/h264" 
     # android-cam-audio:
-    #   - "https://[ip_address]:4444/audio"
+    #   - "https://[username]:[password]@[ip_address]:4444/audio"
     # android-cam:
     #  - ffmpeg:android-cam-video#video=copy
     #  - ffmpeg:android-cam-audio#audio=copy
@@ -62,13 +67,16 @@ cameras:
     enabled: true
     ffmpeg:
       inputs:
-        - path: rtsp://127.0.0.1:8554/android-cam-video # or android-cam
+        - path: rtsp://127.0.0.1:8554/android-cam-video ## or android-cam
           input_args: preset-rtsp-restream
           roles:
             - detect
             - record
     #        - audio
 ```
+
+**Note:** if your username or password contains special characters, you'll need to URL encode them via:  
+`python3 -c 'import urllib.parse; print(urllib.parse.quote(input(), safe=""))'`
 
 ## Server URL Paths & Remote Control API
 
