@@ -266,7 +266,10 @@ class StreamingService : LifecycleService() {
         if (shouldRun) {
             debouncedStartCamera()
         } else {
-            launchMain { stopCamera() }
+            launchMain {
+                stopCamera()
+                bridgeTorchAcrossIdle()
+            }
         }
     }
     fun isCameraRunning() = captureRunning
@@ -345,6 +348,9 @@ class StreamingService : LifecycleService() {
                         // the file, and remaining viewers keep their existing stream as-is.
                         if (localRecorder?.isRecording == true) return@launchMain
                         if (!hasActiveClients()) {
+                            // Reload/idle: keep the LED lit across the session gap before the
+                            // shed-restart tears the streaming camera down.
+                            bridgeTorchAcrossIdle()
                             if (currentSurfaceProvider == null) {
                                 // Last client gone and no on-screen preview: shed the H.264
                                 // surface encoder / GL pipe and keep the camera warm in a plain,
@@ -622,6 +628,8 @@ class StreamingService : LifecycleService() {
             if (resumeTorchHold && !hasActiveClients() && currentSurfaceProvider == null) {
                 cameraHeldForTorch = true
             }
+            // enableTorch can silently lose the race with a settling HAL; confirm it stuck.
+            scheduleVerifyTorchRestored()
             // Apply stored camera-level controls (exposure/zoom/focus) to the backend.
             // CameraX binding is asynchronous; retry in a background coroutine until ready.
             lifecycleScope.launch(Dispatchers.IO) {
@@ -861,6 +869,59 @@ class StreamingService : LifecycleService() {
         return deviceTorchOn
     }
 
+    /**
+     * Going idle (last viewer left, no on-phone preview)? Hand the torch to the device channel
+     * BEFORE/AS the streaming session closes: [CameraManager.setTorchMode] needs no camera open,
+     * so a page reload or preview-off no longer takes the LED down with the session. The post-start
+     * verifier ([scheduleVerifyTorchRestored]) reclaims it for the next stream.
+     */
+    private fun bridgeTorchAcrossIdle() {
+        if (hasActiveClients() || currentSurfaceProvider != null) return
+        if (PreferenceManager.getDefaultSharedPreferences(this)
+                .getString(PREF_CAMERA_TORCH, "off") != "on") return
+        setDeviceTorch(true)
+    }
+
+    /**
+     * Torch restoration is best-effort at start time — enableTorch can fail while the HAL is still
+     * settling after a bind, and opening any camera can strip a device-channel torch. Re-check
+     * briefly and re-apply until it sticks, the user toggles it off, or the camera stops again.
+     */
+    private fun scheduleVerifyTorchRestored() {
+        lifecycleScope.launch(Dispatchers.Main) {
+            // enableTorch reports failure ASYNC via its future (which flips getTorch() back to
+            // false), so only trust the state once it has stayed lit across two consecutive checks.
+            var confirmed = 0
+            repeat(12) {
+                kotlinx.coroutines.delay(250)
+                if (!captureRunning) return@launch
+                val b = backend
+                when (PreferenceManager.getDefaultSharedPreferences(this@StreamingService)
+                        .getString(PREF_CAMERA_TORCH, "off")) {
+                    "on" -> if (b?.hasFlashUnit == true) {
+                        if (b.getTorch()) {
+                            confirmed++
+                            if (confirmed >= 2) return@launch   // session torch stably lit
+                        } else {
+                            confirmed = 0
+                            b.setTorch(true)
+                        }
+                    } else {
+                        // Device channel has no queryable state; re-arm idempotently in case the
+                        // framework stripped it while a camera was opening.
+                        confirmed = 0
+                        setDeviceTorch(true)
+                    }
+                    "off" -> {
+                        if (deviceTorchOn) setDeviceTorch(false)
+                        return@launch
+                    }
+                    else -> return@launch
+                }
+            }
+        }
+    }
+
     // ---------------- snapshot (full resolution) ----------------
 
     /**
@@ -892,7 +953,13 @@ class StreamingService : LifecycleService() {
                     val jpeg = backend?.let { captureFrom(it, key, deadline) }
                     frontFacing = orig
                     selectedCameraId = origCameraId
-                    launchMain { if (hadViewers) startCamera() else stopCamera() }
+                    launchMain {
+                        if (hadViewers) startCamera() else {
+                            stopCamera()
+                            // The snapshot's temporary session may have stripped the idle torch.
+                            bridgeTorchAcrossIdle()
+                        }
+                    }
                     return jpeg ?: freshCached(key)
                 }
 
