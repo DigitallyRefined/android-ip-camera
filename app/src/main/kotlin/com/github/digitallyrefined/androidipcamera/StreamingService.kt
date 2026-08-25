@@ -808,6 +808,7 @@ class StreamingService : LifecycleService() {
         // The torch is device-level, not per-camera, so it is restored ahead of the early return
         // below — the per-camera settings need a resolved camera id, the torch does not.
         if (p.getString(PREF_CAMERA_TORCH, "off") == "on") {
+            Log.i(TAG, "[DEBUG-torch] applyStored: restoring, lens hasFlashUnit=${b.hasFlashUnit}")
             b.setTorch(true)
             // The active lens may not own the flash unit (ultra-wide/depth); anchor the torch to
             // the flash-capable rear camera instead so a lens switch never strands the state.
@@ -879,6 +880,7 @@ class StreamingService : LifecycleService() {
         if (hasActiveClients() || currentSurfaceProvider != null) return
         if (PreferenceManager.getDefaultSharedPreferences(this)
                 .getString(PREF_CAMERA_TORCH, "off") != "on") return
+        Log.i(TAG, "[DEBUG-torch] going idle with torch on — bridging via device channel")
         setDeviceTorch(true)
     }
 
@@ -890,35 +892,51 @@ class StreamingService : LifecycleService() {
     private fun scheduleVerifyTorchRestored() {
         lifecycleScope.launch(Dispatchers.Main) {
             // enableTorch reports failure ASYNC via its future (which flips getTorch() back to
-            // false), so only trust the state once it has stayed lit across two consecutive checks.
+            // false), so the state must survive several consecutive checks before it is trusted.
             var confirmed = 0
-            repeat(12) {
+            Log.i(TAG, "[DEBUG-torch] verify started")
+            repeat(24) {
                 kotlinx.coroutines.delay(250)
-                if (!captureRunning) return@launch
+                if (!captureRunning) { Log.i(TAG, "[DEBUG-torch] verify aborted: capture stopped"); return@launch }
                 val b = backend
                 when (PreferenceManager.getDefaultSharedPreferences(this@StreamingService)
                         .getString(PREF_CAMERA_TORCH, "off")) {
                     "on" -> if (b?.hasFlashUnit == true) {
                         if (b.getTorch()) {
                             confirmed++
-                            if (confirmed >= 2) return@launch   // session torch stably lit
+                            if (confirmed == 1) {
+                                // Session owns the LED now; drop any lingering device-channel
+                                // claim so the two mechanisms can't fight over one flash unit.
+                                if (deviceTorchOn) {
+                                    Log.i(TAG, "[DEBUG-torch] releasing device torch to session")
+                                    setDeviceTorch(false)
+                                }
+                            } else if (confirmed >= 4) {
+                                Log.i(TAG, "[DEBUG-torch] session torch stable — done")
+                                return@launch
+                            }
                         } else {
+                            if (confirmed > 0) Log.w(TAG, "[DEBUG-torch] session torch dropped after $confirmed ticks — async enableTorch failure? re-applying")
                             confirmed = 0
                             b.setTorch(true)
                         }
                     } else {
-                        // Device channel has no queryable state; re-arm idempotently in case the
-                        // framework stripped it while a camera was opening.
-                        confirmed = 0
+                        // Device channel has no queryable state; re-arm through the settle window
+                        // in case the framework stripped it while a camera was opening.
+                        if (confirmed == 0) Log.i(TAG, "[DEBUG-torch] lens has no flash unit — arming device torch")
+                        confirmed++
                         setDeviceTorch(true)
+                        if (confirmed >= 8) { Log.i(TAG, "[DEBUG-torch] device torch armed through settle window — done"); return@launch }
                     }
                     "off" -> {
+                        Log.i(TAG, "[DEBUG-torch] pref off during verify — clearing device channel")
                         if (deviceTorchOn) setDeviceTorch(false)
                         return@launch
                     }
                     else -> return@launch
                 }
             }
+            Log.w(TAG, "[DEBUG-torch] verify budget exhausted without stable torch")
         }
     }
 
@@ -1162,6 +1180,7 @@ class StreamingService : LifecycleService() {
                 // restarts that happen every time a stream starts or stops.
                 prefs.edit().putString(PREF_CAMERA_TORCH, if (next) "on" else "off").apply()
                 launchMain {
+                    Log.i(TAG, "[DEBUG-torch] control: next=$next captureRunning=$captureRunning backendHasUnit=${backend?.hasFlashUnit}")
                     if (next && !captureRunning) {
                         // Nothing is streaming, so there is no backend to talk to. Open the camera
                         // just for the torch and record that this session is ours to close.
