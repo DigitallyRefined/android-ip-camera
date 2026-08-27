@@ -1349,6 +1349,7 @@ class StreamingServerHelper(
         val streamRes: String,
         val fps: String,
         val torch: String,
+        val deviceHasFlash: Boolean,
         val audioGain: String,
         val snapshotRes: String,
     )
@@ -1409,6 +1410,9 @@ class StreamingServerHelper(
                 put("streamRes", settings.streamRes)
                 put("fps", settings.fps)
                 put("torch", settings.torch)
+                // Whether ANY rear lens can drive the flash — the torch is a device-level unit,
+                // so the UI may offer it even when the selected camera reports none.
+                put("deviceHasFlash", settings.deviceHasFlash)
                 put("audioGain", settings.audioGain)
                 put("snapshotRes", settings.snapshotRes)
             })
@@ -1512,10 +1516,25 @@ class StreamingServerHelper(
             streamRes = prefs.getString("stream_res", "auto") ?: "auto",
             fps = prefs.getString("stream_fps", "30") ?: "30",
             torch = prefs.getString("camera_torch", "off") ?: "off",
+            deviceHasFlash = anyBackCameraWithFlash(),
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
             snapshotRes = prefs.getString("snapshot_res_$cameraId", "max") ?: "max",
         )
     }
+
+    /** True if any rear-facing lens reports a flash unit. Auxiliary lenses (ultra-wide, depth)
+     *  often report none even though they physically share the main lens's flash — the torch is
+     *  a device-level unit, so one capable rear camera is enough to offer it everywhere. */
+    private fun anyBackCameraWithFlash(): Boolean = try {
+        val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        cm.cameraIdList.any { id ->
+            try {
+                val ch = cm.getCameraCharacteristics(id)
+                ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
+                    ch.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_FRONT
+            } catch (_: Throwable) { false }
+        }
+    } catch (_: Throwable) { false }
 
     private fun buildCameraInfoList(idle: Boolean): List<InfoCamera> {
         val encCaps = H264HardwareEncoder.caps()
