@@ -364,8 +364,13 @@
             <option value="max">Max (full sensor)</option>
           </select>
           <div style="display:flex; gap:8px; margin-bottom:8px;">
-            <button id="recordToggleBtn" class="btn btn-action" style="flex:1; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
-            <button id="snapBtn" class="btn btn-action" style="flex:1; min-width:0; margin-bottom:0;" onclick="window.open('/video/snapshot','_blank')">📸 Take Snapshot</button>
+            <button id="recordToggleBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
+            <button id="snapBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="takeSnapshot()">📸 Take Snapshot</button>
+          </div>
+          <div style="display:flex; justify-content:flex-end; align-items:center; gap:4px; margin-bottom:8px;">
+            <label style="margin:0; font-size:13px; color:#ccc; cursor:pointer;" title="Timer (seconds, 0 = instant)">⏱️</label>
+            <input type="number" id="timerInput" min="0" max="300" step="1" value="0"
+              style="width:50px; padding:4px 6px; font-size:13px; text-align:center; background:#333; color:#fff; border:1px solid #555; border-radius:4px; margin:0;">
           </div>
         </div>
 
@@ -1520,6 +1525,71 @@
         })
         .catch(err => alert('Failed to send recording command: ' + err));
     }
+
+    let snapTimerId = null;
+    let snapWin = null;
+
+    function takeSnapshot() {
+      if (snapTimerId) {
+        clearInterval(snapTimerId);
+        snapTimerId = null;
+        snapWin = null;
+        resetSnapButton();
+        return;
+      }
+      const input = getElById('timerInput');
+      const secs = input ? Math.floor(parseFloat(input.value) || 0) : 0;
+      if (secs > 0) {
+        try { localStorage.setItem('snapTimerSecs', String(secs)); } catch (_) {}
+        let remaining = secs;
+        const btn = getElById('snapBtn');
+        btn.textContent = `⏱️ ${remaining}s`;
+        btn.style.background = '#d32f2f';
+        btn.style.borderColor = '#b71c1c';
+        snapWin = window.open('', '_blank');
+        snapTimerId = setInterval(() => {
+          remaining--;
+          if (remaining <= 0) {
+            clearInterval(snapTimerId);
+            snapTimerId = null;
+            if (snapWin) {
+              try { snapWin.location.href = '/video/snapshot'; } catch (_) { window.open('/video/snapshot', '_blank'); }
+              snapWin = null;
+            } else {
+              window.open('/video/snapshot', '_blank');
+            }
+            resetSnapButton();
+          } else {
+            btn.textContent = `⏱️ ${remaining}s`;
+          }
+        }, 1000);
+      } else {
+        window.open('/video/snapshot', '_blank');
+      }
+    }
+
+    function resetSnapButton() {
+      const btn = getElById('snapBtn');
+      btn.textContent = '📸 Take Snapshot';
+      btn.style.background = '';
+      btn.style.borderColor = '';
+    }
+
+    (function initTimerInput() {
+      const input = getElById('timerInput');
+      if (!input) return;
+      try {
+        const saved = parseInt(localStorage.getItem('snapTimerSecs'), 10);
+        if (isFinite(saved) && saved >= 0) input.value = saved;
+      } catch (_) {}
+      input.addEventListener('input', () => {
+        const v = Math.floor(parseFloat(input.value) || 0);
+        if (v >= 0) {
+          try { localStorage.setItem('snapTimerSecs', String(v)); } catch (_) {}
+        }
+      });
+      input.addEventListener('click', (e) => e.stopPropagation());
+    })();
 
     setInterval(checkRecordingStatus, 3000);
     checkRecordingStatus();
