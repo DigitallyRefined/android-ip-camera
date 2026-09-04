@@ -1,0 +1,9 @@
+## What's Changed
+* Add fullscreen button & snapshot timer by @DigitallyRefined in #93
+* Improve port checking/retrying by @DigitallyRefined in #94
+* Fix flash turning off for some devices by @DigitallyRefined in #84
+* Add cam username/password to Frigate config example by @DigitallyRefined in #83
+* Bump dependencies by @dependabot[bot] in #81 #85 #86 #88
+
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.11.0...v0.12.0
