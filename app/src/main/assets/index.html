@@ -136,6 +136,11 @@
       border-color: #007AFF;
     }
 
+    .fullscreen-active {
+      background: #007AFF !important;
+      border-color: #007AFF !important;
+    }
+
     .btn-action {
       width: 100%;
       margin-bottom: 15px;
@@ -226,6 +231,12 @@
       margin: 22px 0 6px;
     }
 
+    .stream-container:fullscreen,
+    .stream-container:-webkit-full-screen {
+      width: 100vw;
+      height: 100vh;
+    }
+
     @media (max-width: 900px) {
       .main {
         flex-direction: column;
@@ -244,9 +255,10 @@
 <body>
   <div class='header'>
     <h2 style='margin:0;font-size:18px;'>Android IP Camera</h2>
-    <div>
+    <div style="display:flex;gap:8px;">
       <button id='fitBtn' class='btn active' onclick='setView("fit")'>Fit Screen</button>
       <button id='origBtn' class='btn' onclick='setView("original")'>Original Size</button>
+      <button id='fullscreenBtn' class='btn' onclick='toggleFullscreen()'>⛶ Fullscreen</button>
     </div>
   </div>
 
@@ -352,8 +364,13 @@
             <option value="max">Max (full sensor)</option>
           </select>
           <div style="display:flex; gap:8px; margin-bottom:8px;">
-            <button id="recordToggleBtn" class="btn btn-action" style="flex:1; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
-            <button id="snapBtn" class="btn btn-action" style="flex:1; min-width:0; margin-bottom:0;" onclick="window.open('/video/snapshot','_blank')">📸 Take Snapshot</button>
+            <button id="recordToggleBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
+            <button id="snapBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="takeSnapshot()">📸 Take Snapshot</button>
+          </div>
+          <div style="display:flex; justify-content:flex-end; align-items:center; gap:4px; margin-bottom:8px;">
+            <label style="margin:0; font-size:13px; color:#ccc; cursor:pointer;" title="Timer (seconds, 0 = instant)">⏱️</label>
+            <input type="number" id="timerInput" min="0" max="300" step="1" value="0"
+              style="width:50px; padding:4px 6px; font-size:13px; text-align:center; background:#333; color:#fff; border:1px solid #555; border-radius:4px; margin:0;">
           </div>
         </div>
 
@@ -384,14 +401,23 @@
     let deviceHasFlash = false;
     let cameraList = [];
 
+    function isFullscreenActive() {
+      return !!(document.fullscreenElement || document.webkitFullscreenElement);
+    }
+
     function targetCanvasSize(frame) {
-      if (viewMode === 'fit') {
-        const w = (streamContainer?.clientWidth)
-          ? streamContainer.clientWidth
-          : (frame ? frame.width : (lastDrawn ? lastDrawn.width : streamCanvas.width));
-        const h = (streamContainer?.clientHeight)
-          ? streamContainer.clientHeight
-          : (frame ? frame.height : (lastDrawn ? lastDrawn.height : streamCanvas.height));
+      if (viewMode === 'fit' || isFullscreenActive()) {
+        let w, h;
+        if (isFullscreenActive()) {
+          w = window.innerWidth;
+          h = window.innerHeight;
+        } else if (streamContainer?.clientWidth) {
+          w = streamContainer.clientWidth;
+          h = streamContainer.clientHeight;
+        } else {
+          w = frame ? frame.width : (lastDrawn ? lastDrawn.width : streamCanvas.width);
+          h = frame ? frame.height : (lastDrawn ? lastDrawn.height : streamCanvas.height);
+        }
         return { w, h };
       } else {
         const w = frame ? frame.width : (lastDrawn ? lastDrawn.width : streamCanvas.width);
@@ -1245,6 +1271,39 @@
       applyCanvasSize(targetCanvasSize(lastDrawn));
     }
 
+    function toggleFullscreen() {
+      const container = streamContainer;
+      if (!container) return;
+
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        if (container.requestFullscreen) {
+          container.requestFullscreen();
+        } else if (container.webkitRequestFullscreen) {
+          container.webkitRequestFullscreen();
+        }
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+          document.webkitExitFullscreen();
+        }
+      }
+    }
+
+    function onFullscreenChange() {
+      requestAnimationFrame(() => {
+        applyCanvasSize(targetCanvasSize(lastDrawn));
+      });
+    }
+
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+    window.addEventListener('resize', () => {
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        applyCanvasSize(targetCanvasSize(lastDrawn));
+      }
+    });
+
     function applyStreamSettings(settings) {
       if (!settings) return;
       if (settings.cameraId) {
@@ -1466,6 +1525,71 @@
         })
         .catch(err => alert('Failed to send recording command: ' + err));
     }
+
+    let snapTimerId = null;
+    let snapWin = null;
+
+    function takeSnapshot() {
+      if (snapTimerId) {
+        clearInterval(snapTimerId);
+        snapTimerId = null;
+        snapWin = null;
+        resetSnapButton();
+        return;
+      }
+      const input = getElById('timerInput');
+      const secs = input ? Math.floor(parseFloat(input.value) || 0) : 0;
+      if (secs > 0) {
+        try { localStorage.setItem('snapTimerSecs', String(secs)); } catch (_) {}
+        let remaining = secs;
+        const btn = getElById('snapBtn');
+        btn.textContent = `⏱️ ${remaining}s`;
+        btn.style.background = '#d32f2f';
+        btn.style.borderColor = '#b71c1c';
+        snapWin = window.open('', '_blank');
+        snapTimerId = setInterval(() => {
+          remaining--;
+          if (remaining <= 0) {
+            clearInterval(snapTimerId);
+            snapTimerId = null;
+            if (snapWin) {
+              try { snapWin.location.href = '/video/snapshot'; } catch (_) { window.open('/video/snapshot', '_blank'); }
+              snapWin = null;
+            } else {
+              window.open('/video/snapshot', '_blank');
+            }
+            resetSnapButton();
+          } else {
+            btn.textContent = `⏱️ ${remaining}s`;
+          }
+        }, 1000);
+      } else {
+        window.open('/video/snapshot', '_blank');
+      }
+    }
+
+    function resetSnapButton() {
+      const btn = getElById('snapBtn');
+      btn.textContent = '📸 Take Snapshot';
+      btn.style.background = '';
+      btn.style.borderColor = '';
+    }
+
+    (function initTimerInput() {
+      const input = getElById('timerInput');
+      if (!input) return;
+      try {
+        const saved = parseInt(localStorage.getItem('snapTimerSecs'), 10);
+        if (isFinite(saved) && saved >= 0) input.value = saved;
+      } catch (_) {}
+      input.addEventListener('input', () => {
+        const v = Math.floor(parseFloat(input.value) || 0);
+        if (v >= 0) {
+          try { localStorage.setItem('snapTimerSecs', String(v)); } catch (_) {}
+        }
+      });
+      input.addEventListener('click', (e) => e.stopPropagation());
+    })();
 
     setInterval(checkRecordingStatus, 3000);
     checkRecordingStatus();
