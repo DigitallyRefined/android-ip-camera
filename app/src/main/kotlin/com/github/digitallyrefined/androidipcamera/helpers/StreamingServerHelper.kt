@@ -119,6 +119,10 @@ class StreamingServerHelper(
     private val SNAPSHOT_TOTAL_WAIT_MS = 14_000L
     private val SNAPSHOT_MAX_ATTEMPTS = 3
     private val SNAPSHOT_RETRY_DELAY_MS = 250L
+    /** Max retries when binding the server socket fails (e.g. port still in TIME_WAIT). */
+    private val SOCKET_BIND_MAX_RETRIES = 5
+    /** Base delay between bind retries (exponential backoff: 200, 400, 800, 1600, 3200 ms). */
+    private val SOCKET_BIND_RETRY_DELAY_MS = 200L
 
     /** GET /files, GET|DELETE /files/<filename> — see [FileManager]. */
     private val fileManager = FileManager(context, onLog)
@@ -420,13 +424,34 @@ class StreamingServerHelper(
 
                                       sslContext.init(keyManagerFactory.keyManagers, null, null)
                                       val sslServerSocketFactory = sslContext.serverSocketFactory
-                                      sslServerSocket = (sslServerSocketFactory.createServerSocket(streamPort, 50, bindAddress) as SSLServerSocket).apply {
-                                          reuseAddress = true
-                                          enabledProtocols = arrayOf(tlsVersion)
-                                          // Don't restrict cipher suites - let the system negotiate
-                                          soTimeout = 30000
+                                      for (bindAttempt in 0..SOCKET_BIND_MAX_RETRIES) {
+                                          try {
+                                              sslServerSocket = (sslServerSocketFactory.createServerSocket(streamPort, 50, bindAddress) as SSLServerSocket).apply {
+                                                  reuseAddress = true
+                                                  enabledProtocols = arrayOf(tlsVersion)
+                                                  // Don't restrict cipher suites - let the system negotiate
+                                                  soTimeout = 30000
+                                              }
+                                              onLog("Server started with TLS $tlsVersion")
+                                              break
+                                          } catch (bindEx: IOException) {
+                                              val msg = bindEx.message ?: ""
+                                              val isBindError = msg.contains("Address already in use") ||
+                                                  msg.contains("BindException") ||
+                                                  msg.contains("errno = 48") ||
+                                                  msg.contains("EADDRINUSE")
+                                              val isCertError = msg.contains("certificate") ||
+                                                  msg.contains("keystore") ||
+                                                  msg.contains("password")
+                                              if (isBindError && !isCertError && bindAttempt < SOCKET_BIND_MAX_RETRIES) {
+                                                  val delay = SOCKET_BIND_RETRY_DELAY_MS * (1L shl bindAttempt)
+                                                  onLog("Port $streamPort in use, retrying in ${delay}ms (attempt ${bindAttempt + 1}/$SOCKET_BIND_MAX_RETRIES)")
+                                                  Thread.sleep(delay)
+                                                  continue
+                                              }
+                                              throw bindEx
+                                          }
                                       }
-                                      onLog("Server started with TLS $tlsVersion")
                                       break
                                   }
                               } catch (keystoreException: Exception) {
@@ -457,10 +482,30 @@ class StreamingServerHelper(
                   } else {
                       // Use HTTP (no TLS)
                       try {
-                          ServerSocket(streamPort, 50, bindAddress).apply {
-                                  reuseAddress = true
-                                  soTimeout = 30000
+                          var httpSocket: ServerSocket? = null
+                          for (bindAttempt in 0..SOCKET_BIND_MAX_RETRIES) {
+                              try {
+                                  httpSocket = ServerSocket(streamPort, 50, bindAddress).apply {
+                                      reuseAddress = true
+                                      soTimeout = 30000
+                                  }
+                                  break
+                              } catch (e: IOException) {
+                                  val msg = e.message ?: ""
+                                  val isBindError = msg.contains("Address already in use") ||
+                                      msg.contains("BindException") ||
+                                      msg.contains("errno = 48") ||
+                                      msg.contains("EADDRINUSE")
+                                  if (isBindError && bindAttempt < SOCKET_BIND_MAX_RETRIES) {
+                                      val delay = SOCKET_BIND_RETRY_DELAY_MS * (1L shl bindAttempt)
+                                      onLog("Port $streamPort in use, retrying in ${delay}ms (attempt ${bindAttempt + 1}/$SOCKET_BIND_MAX_RETRIES)")
+                                      Thread.sleep(delay)
+                                      continue
+                                  }
+                                  throw e
                               }
+                          }
+                          httpSocket ?: throw IOException("Failed to create server socket after retries")
                       } catch (e: Exception) {
                           Handler(Looper.getMainLooper()).post {
                               onLog("CRITICAL: Failed to create HTTP server: ${e.message}")
