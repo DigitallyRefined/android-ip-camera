@@ -69,6 +69,20 @@
       gap: 5px;
     }
 
+    .stream-loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #aaa;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      z-index: 5;
+      pointer-events: none;
+    }
+
     .controls-panel {
       width: 350px;
       background: #1e1e1e;
@@ -268,6 +282,7 @@
         <span id="wifiStatus" title="WiFi Strength">🛜 --%</span>
         <span id="batteryStatus" title="Battery Status">🔋 --%</span>
       </div>
+      <div id="streamLoading" class="stream-loading">Loading...</div>
       <canvas id='streamCanvas'></canvas>
       <audio id="audioEl" preload="none" muted></audio>
     </div>
@@ -715,6 +730,7 @@
       mjpegRunning = true;
       frameQueue = [];
       lastDrawn = null;
+      showStreamLoading();
       const ctx = streamCanvas.getContext('2d');
       fetch(STREAM_SRC, {
         cache: 'no-store',
@@ -812,6 +828,7 @@
               ctx.drawImage(candidate.bmp, dx, dy, dw, dh);
               lastDrawn = candidate.bmp;
               setStreamResolution(iw, ih);
+              hideStreamLoading();
             }
             requestAnimationFrame(drawLoop);
           }
@@ -833,6 +850,16 @@
       mjpegAbort = null;
       mjpegRunning = false;
       drawing = false;   // let the rAF draw loop exit (esp. when switching to H.264)
+    }
+
+    function showStreamLoading() {
+      const el = getElById('streamLoading');
+      if (el) el.style.display = 'flex';
+    }
+
+    function hideStreamLoading() {
+      const el = getElById('streamLoading');
+      if (el) el.style.display = 'none';
     }
 
     // ---- Stream mode: MJPEG (universal) vs H.264 decoded in-browser via WebCodecs ----
@@ -942,6 +969,7 @@
     async function startH264Stream() {
       if (!h264Supported) return;
       stopH264Stream();
+      showStreamLoading();
       const ctx = streamCanvas.getContext('2d');
       const controller = new AbortController();
       h264Abort = controller;
@@ -975,6 +1003,7 @@
             ctx.drawImage(frame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
             ctx.filter = 'none';
             ctx.restore();
+            hideStreamLoading();
           } finally { frame.close(); }
         },
         error: (e) => console.error('H.264 decode:', e)
