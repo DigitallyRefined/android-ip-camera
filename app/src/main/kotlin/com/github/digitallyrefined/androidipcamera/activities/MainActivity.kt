@@ -160,13 +160,8 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.registerReceiver(this, cameraRestartReceiver, IntentFilter("com.github.digitallyrefined.androidipcamera.RESTART_CAMERA"), ContextCompat.RECEIVER_NOT_EXPORTED)
         ContextCompat.registerReceiver(this, closeAppReceiver, IntentFilter("com.github.digitallyrefined.androidipcamera.CLOSE_APP"), ContextCompat.RECEIVER_NOT_EXPORTED)
 
-        val ipAddressText = findViewById<TextView>(R.id.ipAddressText)
-        val ipAddress = getLocalIpAddress()
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val tlsVersion = prefs.getString("tls_version", "1.3") ?: "1.3"
-        val protocol = if (tlsVersion == "disabled") "http" else "https"
-        ipAddressText.text = "$protocol://$ipAddress:$STREAM_PORT"
         showNoClientMessage(true)
+        updateIpAddressText()
 
         findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
@@ -201,7 +196,19 @@ class MainActivity : AppCompatActivity() {
                 streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
             }
         }
+        // Refresh the IP address text in case the port was changed in settings
+        updateIpAddressText()
         checkNotificationChannelEnabled()
+    }
+
+    private fun updateIpAddressText() {
+        val ipAddressText = findViewById<TextView>(R.id.ipAddressText)
+        val ipAddress = getLocalIpAddress()
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val tlsVersion = prefs.getString("tls_version", "1.3") ?: "1.3"
+        val protocol = if (tlsVersion == "disabled") "http" else "https"
+        val port = prefs.getString("server_port", "4444")?.toIntOrNull() ?: 4444
+        ipAddressText.text = "$protocol://$ipAddress:$port"
     }
 
     private fun checkNotificationChannelEnabled() {
@@ -379,7 +386,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
-        private const val STREAM_PORT = 4444
         private const val REQUEST_CODE_PERMISSIONS = 10
         private val REQUIRED_PERMISSIONS = when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(

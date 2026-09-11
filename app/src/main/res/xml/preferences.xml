@@ -21,6 +21,22 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
+    <PreferenceCategory
+        android:title="Startup">
+        <CheckBoxPreference
+            android:key="start_on_boot"
+            android:title="Start on Boot"
+            android:summary="Start the camera server automatically after the device restarts"
+            android:defaultValue="false" />
+        <EditTextPreference
+            android:key="server_port"
+            android:title="Streaming Port"
+            android:summary="Port for the streaming server (default: 4444)"
+            android:defaultValue="4444"
+            android:inputType="number"
+            android:singleLine="true" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Certificate Settings">
         <ListPreference
             android:key="tls_version"
@@ -43,14 +59,5 @@
             android:title="Test Certificate Setup"
             android:summary="Validate your certificate configuration"
             android:persistent="false" />
-    </PreferenceCategory>
-
-    <PreferenceCategory
-        android:title="Startup">
-        <CheckBoxPreference
-            android:key="start_on_boot"
-            android:title="Start on boot"
-            android:summary="Start the camera server automatically after the device restarts"
-            android:defaultValue="false" />
     </PreferenceCategory>
 </PreferenceScreen>

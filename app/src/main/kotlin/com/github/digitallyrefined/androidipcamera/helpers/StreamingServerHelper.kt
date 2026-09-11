@@ -307,6 +307,7 @@ class StreamingServerHelper(
               var serverWasPublished = false
               try {
                   val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+                  val port = prefs.getString("server_port", null)?.toIntOrNull()?.takeIf { it in 1..65535 } ?: streamPort
                   val secureStorage = SecureStorage(context)
                   val certificatePath = prefs.getString("certificate_path", null)
 
@@ -426,7 +427,7 @@ class StreamingServerHelper(
                                       val sslServerSocketFactory = sslContext.serverSocketFactory
                                       for (bindAttempt in 0..SOCKET_BIND_MAX_RETRIES) {
                                           try {
-                                              sslServerSocket = (sslServerSocketFactory.createServerSocket(streamPort, 50, bindAddress) as SSLServerSocket).apply {
+                                              sslServerSocket = (sslServerSocketFactory.createServerSocket(port, 50, bindAddress) as SSLServerSocket).apply {
                                                   reuseAddress = true
                                                   enabledProtocols = arrayOf(tlsVersion)
                                                   // Don't restrict cipher suites - let the system negotiate
@@ -445,7 +446,7 @@ class StreamingServerHelper(
                                                   msg.contains("password")
                                               if (isBindError && !isCertError && bindAttempt < SOCKET_BIND_MAX_RETRIES) {
                                                   val delay = SOCKET_BIND_RETRY_DELAY_MS * (1L shl bindAttempt)
-                                                  onLog("Port $streamPort in use, retrying in ${delay}ms (attempt ${bindAttempt + 1}/$SOCKET_BIND_MAX_RETRIES)")
+                                                  onLog("Port $port in use, retrying in ${delay}ms (attempt ${bindAttempt + 1}/$SOCKET_BIND_MAX_RETRIES)")
                                                   Thread.sleep(delay)
                                                   continue
                                               }
@@ -485,7 +486,7 @@ class StreamingServerHelper(
                           var httpSocket: ServerSocket? = null
                           for (bindAttempt in 0..SOCKET_BIND_MAX_RETRIES) {
                               try {
-                                  httpSocket = ServerSocket(streamPort, 50, bindAddress).apply {
+                                  httpSocket = ServerSocket(port, 50, bindAddress).apply {
                                       reuseAddress = true
                                       soTimeout = 30000
                                   }
@@ -498,7 +499,7 @@ class StreamingServerHelper(
                                       msg.contains("EADDRINUSE")
                                   if (isBindError && bindAttempt < SOCKET_BIND_MAX_RETRIES) {
                                       val delay = SOCKET_BIND_RETRY_DELAY_MS * (1L shl bindAttempt)
-                                      onLog("Port $streamPort in use, retrying in ${delay}ms (attempt ${bindAttempt + 1}/$SOCKET_BIND_MAX_RETRIES)")
+                                      onLog("Port $port in use, retrying in ${delay}ms (attempt ${bindAttempt + 1}/$SOCKET_BIND_MAX_RETRIES)")
                                       Thread.sleep(delay)
                                       continue
                                   }
@@ -525,7 +526,7 @@ class StreamingServerHelper(
                   if (!published) return@launch
 
                   serverWasPublished = true
-                  onLog("Server started on port $streamPort (${if (useTLS) "HTTPS" else "HTTP"})")
+                  onLog("Server started on port $port (${if (useTLS) "HTTPS" else "HTTP"})")
                   // Clear the starting flag now that server is running
                   synchronized(this@StreamingServerHelper) {
                       if (generation == serverGeneration) isStarting = false

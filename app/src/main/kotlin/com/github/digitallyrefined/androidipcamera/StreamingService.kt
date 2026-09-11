@@ -123,7 +123,6 @@ class StreamingService : LifecycleService() {
 
     companion object {
         private const val TAG = "StreamingService"
-        private const val STREAM_PORT = 4444
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "streaming_service_channel"
         private const val PREF_CAMERA_ID = "camera_id"

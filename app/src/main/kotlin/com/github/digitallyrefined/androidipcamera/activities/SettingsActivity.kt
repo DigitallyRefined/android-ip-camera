@@ -150,6 +150,29 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
+            // Configure streaming port preference
+            findPreference<EditTextPreference>("server_port")?.apply {
+                setOnBindEditTextListener { editText ->
+                    editText.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                }
+
+                setOnPreferenceChangeListener { _, newValue ->
+                    val portStr = newValue.toString()
+                    val port = portStr.toIntOrNull()
+                    if (port == null || port !in 1..65535) {
+                        Toast.makeText(
+                            requireContext(),
+                            "Port must be between 1 and 65535",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    summary = "Port $port"
+                    restartStreamingServer()
+                    true
+                }
+            }
+
             // Add validation for certificate password
             findPreference<EditTextPreference>("certificate_password")?.apply {
                 // Do not pre-fill the existing certificate password when editing
