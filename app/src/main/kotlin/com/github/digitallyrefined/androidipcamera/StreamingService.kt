@@ -704,7 +704,7 @@ class StreamingService : LifecycleService() {
             // without restarting the camera (the pipe reads mirror on each frame).
             val pipe = CameraGlPipe(enc.inputSurface!!, want.width, want.height, fpsCoerced, standardBuffer = true).also {
                 it.mirror = readMirrorPref()
-                it.rotation = readRotatePref()
+                it.rotation = quantizedRotation(readRotatePref())
                 it.start()
                 cameraXGlPipe = it
             }
@@ -803,6 +803,13 @@ class StreamingService : LifecycleService() {
         }
     }
 
+    /** Quantise a rotation to the nearest 90°, matching the H.264 byte-buffer encoder's snapping
+     *  (the raw value is persisted verbatim for the MJPEG pipeline, which rotates arbitrary angles). */
+    private fun quantizedRotation(angle: Int): Int {
+        val norm = ((angle % 360) + 360) % 360
+        return ((norm + 45) / 90 * 90) % 360
+    }
+
     /** Surface-mode encoder + GL pipe, used by Camera1 H.264. */
     private fun newPipe(sz: Size): CameraGlPipe {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -813,7 +820,7 @@ class StreamingService : LifecycleService() {
         streamingServerHelper?.resetH264Wait()
         return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also {
             it.mirror = readMirrorPref()
-            it.rotation = readRotatePref()
+            it.rotation = quantizedRotation(readRotatePref())
             it.start()
             glPipe = it
         }
@@ -1283,9 +1290,12 @@ class StreamingService : LifecycleService() {
                 // Persist rotate per-camera
                 prefs.edit().putInt("camera_rotate_$id", norm).apply()
                 if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putInt("camera_rotate_$physicalId", norm).apply()
-                // Apply live to the surface-mode H.264 GL pipes (no encoder restart needed).
-                glPipe?.rotation = norm
-                cameraXGlPipe?.rotation = norm
+                // H.264 only supports 90° steps (the raw value is persisted verbatim for the MJPEG
+                // pipeline, which rotates arbitrary angles). Apply the quantised value live to the
+                // surface-mode GL pipes so they snap to the same steps the byte-buffer encoder uses.
+                val q = quantizedRotation(norm)
+                glPipe?.rotation = q
+                cameraXGlPipe?.rotation = q
             }
             "scale" -> {
                 // Persist scale per-camera (string like "1.0")
