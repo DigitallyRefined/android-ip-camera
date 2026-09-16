@@ -704,6 +704,7 @@ class StreamingService : LifecycleService() {
             // without restarting the camera (the pipe reads mirror on each frame).
             val pipe = CameraGlPipe(enc.inputSurface!!, want.width, want.height, fpsCoerced, standardBuffer = true).also {
                 it.mirror = readMirrorPref()
+                it.rotation = readRotatePref()
                 it.start()
                 cameraXGlPipe = it
             }
@@ -788,6 +789,20 @@ class StreamingService : LifecycleService() {
         }
     }
 
+    /** Per-camera rotate= knob (token then physical id fallback). Consumers apply their own
+     *  quantisation: the byte-buffer H.264 encoder snaps to 90° (YUV rotate cost) and the GL pipe
+     *  only acts on 90° multiples. Returns the raw stored angle. */
+    private fun readRotatePref(): Int {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val id = camId() ?: return 0
+        val phys = id.substringAfter(':', id)
+        return when {
+            prefs.contains("camera_rotate_$id") -> prefs.getInt("camera_rotate_$id", 0)
+            prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
+            else -> 0
+        }
+    }
+
     /** Surface-mode encoder + GL pipe, used by Camera1 H.264. */
     private fun newPipe(sz: Size): CameraGlPipe {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -798,6 +813,7 @@ class StreamingService : LifecycleService() {
         streamingServerHelper?.resetH264Wait()
         return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also {
             it.mirror = readMirrorPref()
+            it.rotation = readRotatePref()
             it.start()
             glPipe = it
         }
@@ -1267,6 +1283,9 @@ class StreamingService : LifecycleService() {
                 // Persist rotate per-camera
                 prefs.edit().putInt("camera_rotate_$id", norm).apply()
                 if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putInt("camera_rotate_$physicalId", norm).apply()
+                // Apply live to the surface-mode H.264 GL pipes (no encoder restart needed).
+                glPipe?.rotation = norm
+                cameraXGlPipe?.rotation = norm
             }
             "scale" -> {
                 // Persist scale per-camera (string like "1.0")

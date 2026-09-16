@@ -50,17 +50,29 @@ class H264StreamingEncoder(
         }
         try {
             var encMutable = enc
-            if (encMutable == null || encMutable.width != image.width || encMutable.height != image.height) {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val camId = prefs.getString("camera_id", null)
+            // Apply the same effective rotation the MJPEG/preview/snapshot pipeline bakes in
+            // (sensor auto-rotation + the per-camera rotate= control) so /video/h264 matches them.
+            val autoRotation = image.imageInfo.rotationDegrees
+            val userRotation = readRotatePref(prefs, camId)
+            val totalRotation = ((autoRotation + userRotation) % 360 + 360) % 360
+            // H.264 YUV rotation is done on 90° boundaries (the rotate control is arbitrary, but
+            // arbitrary-angle rotation would require a full software resample per frame).
+            val rotation = ((totalRotation + 45) / 90 * 90) % 360
+            val swap = rotation == 90 || rotation == 270
+            val outW = if (swap) image.height else image.width
+            val outH = if (swap) image.width else image.height
+            if (encMutable == null || encMutable.width != outW || encMutable.height != outH) {
                 invalidatePendingWrites()
                 encMutable?.stop()
-                val prefs = PreferenceManager.getDefaultSharedPreferences(context)
                 val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
                 val fpsCoerced = fps.coerceIn(1, 60)
                 encMutable = H264HardwareEncoder(
-                    image.width,
-                    image.height,
+                    outW,
+                    outH,
                     fpsCoerced,
-                    H264HardwareEncoder.bitrateFor(image.width, image.height),
+                    H264HardwareEncoder.bitrateFor(outW, outH),
                     false
                 ) { d, k -> broadcastH264(d, k) }
                 h264HardwareEncoder = encMutable
@@ -68,16 +80,14 @@ class H264StreamingEncoder(
                 streamingServerHelper?.resetH264Wait()
             }
             val mirror = run {
-                val p = PreferenceManager.getDefaultSharedPreferences(context)
-                val camId = p.getString("camera_id", null) ?: return@run false
-                val phys = camId.substringAfter(':', camId)
+                val phys = camId?.substringAfter(':', camId)
                 when {
-                    p.contains("mirror_$camId") -> p.getString("mirror_$camId", null)?.toBoolean() ?: false
-                    p.contains("mirror_$phys") -> p.getString("mirror_$phys", null)?.toBoolean() ?: false
+                    camId != null && prefs.contains("mirror_$camId") -> prefs.getString("mirror_$camId", null)?.toBoolean() ?: false
+                    phys != null && prefs.contains("mirror_$phys") -> prefs.getString("mirror_$phys", null)?.toBoolean() ?: false
                     else -> false
                 }
             }
-            encMutable.feed(image, image.imageInfo.timestamp / 1000, mirror)
+            encMutable.feed(image, image.imageInfo.timestamp / 1000, mirror, rotation)
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "processFrame OOM: ${e.message}")
             invalidatePendingWrites()
@@ -87,6 +97,17 @@ class H264StreamingEncoder(
             try { System.gc() } catch (_: Exception) {}
         } catch (e: Exception) {
             Log.e(TAG, "feed: ${e.message}")
+        }
+    }
+
+    /** Per-camera rotate= control (token then physical id fallback, mirroring the MJPEG encoder). */
+    private fun readRotatePref(prefs: android.content.SharedPreferences, camId: String?): Int {
+        if (camId == null) return 0
+        val phys = camId.substringAfter(':', camId)
+        return when {
+            prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
+            prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
+            else -> 0
         }
     }
 

@@ -868,8 +868,8 @@
       // Persisted preference (may throw in some environments)
       streamMode = localStorage.getItem('streamMode') || streamMode;
     } catch (_) { }
-    // MJPEG is rotated server-side; the raw H.264 stream isn't, so the H.264 player rotates on
-    // draw by (sensorOrientation + rotate), mirroring what the MJPEG encoder bakes in.
+    // The rotate= control (plus the sensor auto-rotation) is now baked into the H.264 stream
+    // server-side, exactly like MJPEG, so the in-browser player must not rotate again.
     let rotate = 0;
 
     function setRotation(angle) {
@@ -888,8 +888,7 @@
     }
 
     function h264Rotation() {
-      const c = selectedCameraInfo();
-      return (((c?.sensorOrientation) || 0) + rotate) % 360;
+      return 0;
     }
     const h264Supported = ('VideoDecoder' in window) && ('EncodedVideoChunk' in window);
     const baseUrl = () => location.protocol + '//' + location.host;
