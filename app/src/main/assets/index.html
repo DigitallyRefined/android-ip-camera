@@ -342,10 +342,10 @@
             <input id="rotate" type="range" min="0" max="359" step="1" value="0" data-control="rotate"
               data-badge="rotateVal" data-fmt="suffix" data-suffix="°" style="margin-bottom: 8px;">
             <div style="display:flex;gap:8px;margin-bottom:8px;width:100%;">
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0">0°</button>
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90">90°</button>
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180">180°</button>
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270">270°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0" data-badge="rotateVal">0°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90" data-badge="rotateVal">90°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180" data-badge="rotateVal">180°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270" data-badge="rotateVal">270°</button>
             </div>
           </div>
 
@@ -1502,7 +1502,7 @@
           // reflect the values in `/info.json` on initial load.
           if (applySettings) {
             try {
-              const cam = cameraList.find(c => c.id === currentCamera);
+              const cam = selectedCameraInfo();
               if (cam?.lensSettings) {
                 // Ensure all values in lensSettings are properly normalized (e.g., string to number)
                 for (const key in cam.lensSettings) {

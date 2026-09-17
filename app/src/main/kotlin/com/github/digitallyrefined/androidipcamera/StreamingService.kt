@@ -588,6 +588,17 @@ class StreamingService : LifecycleService() {
         try {
             val want = desiredSize()
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+            // If no camera id has been resolved yet (fresh process / the UI never sent a camera
+            // control), pin the facing-default to a real Camera2 id. Otherwise `camId()` falls back
+            // to "back"/"front" and every per-camera pref (rotate/zoom/exposure/...) is written and
+            // read under a placeholder key, while `/info.json` lensSettings looks them up by the real
+            // camera id — so on page refresh those values appear reset to defaults.
+            if (selectedCameraId == null) {
+                firstCameraIdForFacing(frontFacing)?.let { resolved ->
+                    selectedCameraId = resolved
+                    prefs.edit().putString(PREF_CAMERA_ID, camId()).apply()
+                }
+            }
             val camxUnusable = prefs.getBoolean("camera2_unusable", false)
             // The on-phone preview is only wired to CameraX, so the idle/preview-only state is
             // ALWAYS CameraX — its Preview use case renders even on devices whose Camera2 session
