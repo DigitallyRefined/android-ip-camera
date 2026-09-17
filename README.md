@@ -166,7 +166,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `audio_gain=<value>`: Changes microphone gain multiplier (e.g., `1.0`, `2.0`).
   * `focus_distance=<0..1|-1>`: Set manual focus distance (0..1). Use `-1` to restore autofocus.
   * `snapshot_res=<max|stream>`: Choose snapshot resolution for the selected camera (`max` for full sensor, `stream` to match current stream resolution).
-  * `rotate=<degrees>`: Rotate preview/snapshot (persisted per-camera).
+  * `rotate=<degrees>`: Rotate video stream/snapshot (persisted per-camera).
   * `mirror=<true|false>`: Mirror the video.
   * `api=<auto|camerax|camera1>`: Prefer capture API implementation.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`

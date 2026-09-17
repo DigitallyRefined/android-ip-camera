@@ -1494,39 +1494,78 @@ class StreamingServerHelper(
             val physical = id.substringAfter(':', id)
             val map = mutableMapOf<String, String>()
 
-            // Zoom: prefer token-specific key, then fallback to physical id key
+            // The rotate=/zoom=/scale= controls, the encoders and the GL pipes all bucket per-camera
+            // prefs by the *stored* `camera_id` (camId()). That id can be a logical id ("0") whose
+            // lenses are enumerated here as tokens ("0:2"), the physical id ("2"), the token itself,
+            // or the "back"/"front" facing fallback. `/info.json` must therefore report each entry
+            // using the stored camera's keys first (so the active camera mirrors exactly what the
+            // stream is baking in), then fall back to the entry's own token/physical keys.
+            val storedCamId = prefs.getString("camera_id", null)
+            val logicalOfStored = storedCamId?.substringBefore(':')
+            val storedPhysical = storedCamId?.substringAfter(':', storedCamId)
+            // A token stored id (e.g. "0:4") names ONE exact lens — no siblings share its keys, so
+            // only that entry (and its physical fallback) is "the stored camera". Colon-less ids are
+            // either the facing placeholder ("back"/"front") or the bare logical id used while no
+            // specific lens has been selected; those genuinely broadcast to every camera in their
+            // group/facing, because that's exactly what the stream applies when in that state.
+            val isStoredCamera = storedCamId != null && when {
+                storedCamId.contains(':') -> id == storedCamId || physical == storedPhysical
+                else -> id == storedCamId ||
+                    physical == storedCamId ||
+                    physical == storedPhysical ||
+                    id.substringBefore(':') == logicalOfStored ||
+                    (storedCamId == "back" && cam.facing == "back") ||
+                    (storedCamId == "front" && cam.facing == "front")
+            }
+            val prefBases = buildList {
+                if (isStoredCamera && storedCamId != null) {
+                    add(storedCamId)
+                    if (storedPhysical != null && storedPhysical != storedCamId) add(storedPhysical)
+                }
+                add(id)
+                if (physical != id) add(physical)
+            }
+            fun storedPrefInt(default: Int, prefix: String): Int {
+                for (base in prefBases) {
+                    val key = "$prefix$base"
+                    if (prefs.contains(key)) return prefs.getInt(key, default)
+                }
+                return default
+            }
+            fun storedPrefString(default: String?, prefix: String): String? {
+                for (base in prefBases) {
+                    val key = "$prefix$base"
+                    if (prefs.contains(key)) return prefs.getString(key, default)
+                }
+                return default
+            }
+
+            // Zoom: prefer stored-camera key, then token, then physical.
             // Default to the camera-reported minZoom when no saved preference exists
             val defaultMin = String.format(Locale.US, "%.1f", cam.minZoom ?: 1.0f)
-            val zoomVal = prefStringFallback(defaultMin, "zoom_$id", "zoom_$physical") ?: defaultMin
+            val zoomVal = storedPrefString(defaultMin, "zoom_") ?: defaultMin
             map["zoom"] = zoomVal
 
             // Exposure
-            val exposureVal = prefStringFallback("0", "exposure_$id", "exposure_$physical") ?: "0"
-            map["exposure"] = exposureVal
+            map["exposure"] = storedPrefString("0", "exposure_") ?: "0"
 
             // Focus distance
-            val focusVal = prefStringFallback("-1", "focus_$id", "focus_$physical") ?: "-1"
-            map["focusDistance"] = focusVal
+            map["focusDistance"] = storedPrefString("-1", "focus_") ?: "-1"
 
-            // Rotation: per-camera only; try token then physical
-            val rotateVal = prefIntFallback(0, "camera_rotate_$id", "camera_rotate_$physical")
-            map["rotate"] = rotateVal.toString()
+            // Rotation
+            map["rotate"] = storedPrefInt(0, "camera_rotate_").toString()
 
             // Scale
-            val scaleVal = prefStringFallback("1.0", "stream_scale_$id", "stream_scale_$physical") ?: "1.0"
-            map["scale"] = scaleVal
+            map["scale"] = storedPrefString("1.0", "stream_scale_") ?: "1.0"
 
             // Contrast
-            val contrastVal = prefStringFallback("0", "camera_contrast_$id", "camera_contrast_$physical") ?: "0"
-            map["contrast"] = contrastVal
+            map["contrast"] = storedPrefString("0", "camera_contrast_") ?: "0"
 
             // Mirror
-            val mirrorVal = prefStringFallback("false", "mirror_$id", "mirror_$physical") ?: "false"
-            map["mirror"] = mirrorVal
+            map["mirror"] = storedPrefString("false", "mirror_") ?: "false"
 
             // Snapshot resolution optional (per-camera)
-            val snapshot = prefStringFallback(null, "snapshot_res_$id", "snapshot_res_$physical")
-            snapshot?.let { map["snapshotRes"] = it }
+            storedPrefString(null, "snapshot_res_")?.let { map["snapshotRes"] = it }
 
             id to map
         }

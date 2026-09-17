@@ -588,6 +588,17 @@ class StreamingService : LifecycleService() {
         try {
             val want = desiredSize()
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+            // If no camera id has been resolved yet (fresh process / the UI never sent a camera
+            // control), pin the facing-default to a real Camera2 id. Otherwise `camId()` falls back
+            // to "back"/"front" and every per-camera pref (rotate/zoom/exposure/...) is written and
+            // read under a placeholder key, while `/info.json` lensSettings looks them up by the real
+            // camera id — so on page refresh those values appear reset to defaults.
+            if (selectedCameraId == null) {
+                firstCameraIdForFacing(frontFacing)?.let { resolved ->
+                    selectedCameraId = resolved
+                    prefs.edit().putString(PREF_CAMERA_ID, camId()).apply()
+                }
+            }
             val camxUnusable = prefs.getBoolean("camera2_unusable", false)
             // The on-phone preview is only wired to CameraX, so the idle/preview-only state is
             // ALWAYS CameraX — its Preview use case renders even on devices whose Camera2 session
@@ -704,6 +715,7 @@ class StreamingService : LifecycleService() {
             // without restarting the camera (the pipe reads mirror on each frame).
             val pipe = CameraGlPipe(enc.inputSurface!!, want.width, want.height, fpsCoerced, standardBuffer = true).also {
                 it.mirror = readMirrorPref()
+                it.rotation = quantizedRotation(readRotatePref())
                 it.start()
                 cameraXGlPipe = it
             }
@@ -788,6 +800,27 @@ class StreamingService : LifecycleService() {
         }
     }
 
+    /** Per-camera rotate= knob (token then physical id fallback). Consumers apply their own
+     *  quantisation: the byte-buffer H.264 encoder snaps to 90° (YUV rotate cost) and the GL pipe
+     *  only acts on 90° multiples. Returns the raw stored angle. */
+    private fun readRotatePref(): Int {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val id = camId() ?: return 0
+        val phys = id.substringAfter(':', id)
+        return when {
+            prefs.contains("camera_rotate_$id") -> prefs.getInt("camera_rotate_$id", 0)
+            prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
+            else -> 0
+        }
+    }
+
+    /** Quantise a rotation to the nearest 90°, matching the H.264 byte-buffer encoder's snapping
+     *  (the raw value is persisted verbatim for the MJPEG pipeline, which rotates arbitrary angles). */
+    private fun quantizedRotation(angle: Int): Int {
+        val norm = ((angle % 360) + 360) % 360
+        return ((norm + 45) / 90 * 90) % 360
+    }
+
     /** Surface-mode encoder + GL pipe, used by Camera1 H.264. */
     private fun newPipe(sz: Size): CameraGlPipe {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -798,6 +831,7 @@ class StreamingService : LifecycleService() {
         streamingServerHelper?.resetH264Wait()
         return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also {
             it.mirror = readMirrorPref()
+            it.rotation = quantizedRotation(readRotatePref())
             it.start()
             glPipe = it
         }
@@ -1267,6 +1301,12 @@ class StreamingService : LifecycleService() {
                 // Persist rotate per-camera
                 prefs.edit().putInt("camera_rotate_$id", norm).apply()
                 if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putInt("camera_rotate_$physicalId", norm).apply()
+                // H.264 only supports 90° steps (the raw value is persisted verbatim for the MJPEG
+                // pipeline, which rotates arbitrary angles). Apply the quantised value live to the
+                // surface-mode GL pipes so they snap to the same steps the byte-buffer encoder uses.
+                val q = quantizedRotation(norm)
+                glPipe?.rotation = q
+                cameraXGlPipe?.rotation = q
             }
             "scale" -> {
                 // Persist scale per-camera (string like "1.0")

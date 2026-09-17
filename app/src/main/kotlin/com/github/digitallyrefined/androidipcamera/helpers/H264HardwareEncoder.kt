@@ -86,9 +86,15 @@ class H264HardwareEncoder(
     }
 
     private var yuv: ByteArray? = null
+    private var rotYuv: ByteArray? = null
 
-    /** Convert one analyzer frame to the encoder's YUV layout and feed it. Drops the frame if no input buffer is free. */
-    fun feed(image: ImageProxy, ptsUs: Long, mirror: Boolean = false) {
+    /**
+     * Convert one analyzer frame to the encoder's YUV layout and feed it. Drops the frame if no input
+     * buffer is free. [rotation] is an angle in degrees (multiple of 90) applied before encoding so the
+     * emitted H.264 stream carries the rotation baked in — downstream clients need no extra transcode.
+     * When [rotation] is 90/270 the encoder must already have been created with swapped width/height.
+     */
+    fun feed(image: ImageProxy, ptsUs: Long, mirror: Boolean = false, rotation: Int = 0) {
         if (useSurface) return
         synchronized(codecLock) {
             if (!running) return
@@ -96,30 +102,151 @@ class H264HardwareEncoder(
                 val idx = codec.dequeueInputBuffer(2000)
                 if (idx < 0) return
 
-                // Always use getInputImage for proper stride handling; when mirror is needed
-                // we copy source pixels in reversed column order instead of post-mirroring.
-                val dstImage = codec.getInputImage(idx)
-                if (dstImage != null) {
-                    if (mirror) mirroredCopyYuv(image, dstImage)
-                    else copyYuv(image, dstImage)
+                if (rotation % 360 == 0) {
+                    // Always use getInputImage for proper stride handling; when mirror is needed
+                    // we copy source pixels in reversed column order instead of post-mirroring.
+                    val dstImage = codec.getInputImage(idx)
+                    if (dstImage != null) {
+                        if (mirror) mirroredCopyYuv(image, dstImage)
+                        else copyYuv(image, dstImage)
+                        val size = width * height * 3 / 2
+                        codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
+                        return
+                    }
+
+                    // Fallback for legacy / safety (only reached if getInputImage returns null)
+                    val buf = codec.getInputBuffer(idx)
+                    if (buf == null) { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0); return }
                     val size = width * height * 3 / 2
+                    var arr = yuv
+                    if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
+                    toYuv420(image, arr)
+                    buf.clear(); buf.put(arr, 0, size)
                     codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
                     return
                 }
 
+                // Rotation path: pack the source frame (its own dimensions, which are swapped vs
+                // the encoder when rotating 90/270) into a dense YUV array, rotate it, then feed.
+                // Prefer getInputImage: the codec's input Image carries its native row/pixel strides,
+                // which raw getInputBuffer bytes cannot express — tight-packed buffer input is exactly
+                // what some hardware encoders reject (misaligned rows, green/garbled bands).
+                val dstImage = codec.getInputImage(idx)
+                if (dstImage != null) {
+                    val srcSize = image.width * image.height * 3 / 2
+                    var srcArr = yuv
+                    if (srcArr == null || srcArr.size != srcSize) { srcArr = ByteArray(srcSize); yuv = srcArr }
+                    toYuv420(image, srcArr, image.width, image.height)
+                    val dstSize = width * height * 3 / 2
+                    var dstArr = rotYuv
+                    if (dstArr == null || dstArr.size != dstSize) { dstArr = ByteArray(dstSize); rotYuv = dstArr }
+                    rotateYuv(srcArr, image.width, image.height, rotation, mirror, semiPlanar, dstArr)
+                    writeRotatedDenseToInputImage(dstImage, dstArr, width, height)
+                    codec.queueInputBuffer(idx, 0, dstSize, ptsUs, 0)
+                    return
+                }
+
                 // Fallback for legacy / safety (only reached if getInputImage returns null)
+                val srcSize = image.width * image.height * 3 / 2
+                var srcArr = yuv
+                if (srcArr == null || srcArr.size != srcSize) { srcArr = ByteArray(srcSize); yuv = srcArr }
+                toYuv420(image, srcArr, image.width, image.height)
+                val dstSize = width * height * 3 / 2
+                var dstArr = rotYuv
+                if (dstArr == null || dstArr.size != dstSize) { dstArr = ByteArray(dstSize); rotYuv = dstArr }
+                rotateYuv(srcArr, image.width, image.height, rotation, mirror, semiPlanar, dstArr)
                 val buf = codec.getInputBuffer(idx)
                 if (buf == null) { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0); return }
-                val size = width * height * 3 / 2
-                var arr = yuv
-                if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
-                toYuv420(image, arr)
-                buf.clear(); buf.put(arr, 0, size)
-                codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
+                buf.clear(); buf.put(dstArr, 0, dstSize)
+                codec.queueInputBuffer(idx, 0, dstSize, ptsUs, 0)
             } catch (e: Exception) {
                 if (running) Log.e(TAG, "feed: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Rotate a densely packed YUV420 buffer (as produced by [toYuv420] — NV12 interleaved UV or I420
+     * planar UV per [semiPlanar]) into [dst] by a 90° multiple. [mirror] mirrors the source frame
+     * horizontally before rotation, matching the MJPEG encoder's mirror-then-rotate behaviour.
+     */
+    private fun rotateYuv(
+        src: ByteArray,
+        srcW: Int,
+        srcH: Int,
+        rotation: Int,
+        mirror: Boolean,
+        semiPlanar: Boolean,
+        dst: ByteArray
+    ) {
+        val swap = rotation == 90 || rotation == 270
+        val dstW = if (swap) srcH else srcW
+        val dstH = if (swap) srcW else srcH
+
+        val cw = srcW / 2; val ch = srcH / 2
+        val dcw = dstW / 2; val dch = dstH / 2
+
+        // Y plane
+        for (dy in 0 until dstH) {
+            val dRowOff = dy * dstW
+            for (dx in 0 until dstW) {
+                val (sx, sy) = rotatedSrcCoords(dx, dy, srcW, srcH, rotation, mirror)
+                dst[dRowOff + dx] = src[sy * srcW + sx]
+            }
+        }
+
+        if (semiPlanar) {
+            // NV12: U,V interleaved, one block of cw x ch pixels (2 bytes each)
+            val sOff = srcW * srcH
+            val dOff = dstW * dstH
+            for (dy in 0 until dch) {
+                val dRowOff = dOff + dy * dcw * 2
+                for (dx in 0 until dcw) {
+                    val (sx, sy) = rotatedSrcCoords(dx, dy, cw, ch, rotation, mirror)
+                    val sIdx = sOff + (sy * cw + sx) * 2
+                    val dIdx = dRowOff + dx * 2
+                    dst[dIdx] = src[sIdx]
+                    dst[dIdx + 1] = src[sIdx + 1]
+                }
+            }
+        } else {
+            // I420: planar U then V, each cw x ch
+            val uOff = srcW * srcH
+            val vOff = srcW * srcH + cw * ch
+            val duOff = dstW * dstH
+            val dvOff = dstW * dstH + dcw * dch
+            for (dy in 0 until dch) {
+                val dRowOffU = duOff + dy * dcw
+                val dRowOffV = dvOff + dy * dcw
+                for (dx in 0 until dcw) {
+                    val (sx, sy) = rotatedSrcCoords(dx, dy, cw, ch, rotation, mirror)
+                    val sIdx = sy * cw + sx
+                    dst[dRowOffU + dx] = src[uOff + sIdx]
+                    dst[dRowOffV + dx] = src[vOff + sIdx]
+                }
+            }
+        }
+    }
+
+    /** Map a destination pixel in a plane of width [sw] x height [sh] back to its source pixel after
+     *  rotating [rotation]° (clockwise) and optionally mirroring the source horizontally first. */
+    private fun rotatedSrcCoords(
+        dx: Int,
+        dy: Int,
+        sw: Int,
+        sh: Int,
+        rotation: Int,
+        mirror: Boolean
+    ): Pair<Int, Int> {
+        val sx: Int
+        val sy: Int
+        when (rotation % 360) {
+            90 -> { sx = sw - 1 - dy; sy = dx }
+            180 -> { sx = sw - 1 - dx; sy = sh - 1 - dy }
+            270 -> { sx = dy; sy = sh - 1 - dx }
+            else -> { sx = dx; sy = dy }
+        }
+        return if (mirror) (sw - 1 - sx) to sy else sx to sy
     }
 
     private fun mirrorYuvArray(arr: ByteArray, w: Int, h: Int) {
@@ -168,6 +295,86 @@ class H264HardwareEncoder(
         val uvH = src.height / 2
         copyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
         copyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
+    }
+
+    /**
+     * Write a densely packed YUV420 buffer (as produced by [rotateYuv] — NV12 interleaved UV or I420
+     * planar U,V per [semiPlanar]) into the codec's input [Image] planes, honouring each plane's
+     * rowStride/pixelStride. This is the safe counterpart to [copyPlane]: it lets the hardware encoder
+     * consume the rotated frame at its native layout instead of tight-packed buffer bytes.
+     */
+    private fun writeRotatedDenseToInputImage(image: Image, src: ByteArray, w: Int, h: Int) {
+        val dstPlanes = image.planes
+
+        // Y plane (dense, pixelStride 1)
+        writeDensePlane(src, 0, w, 1, dstPlanes[0], w, h)
+
+        val cw = w / 2
+        val ch = h / 2
+        if (semiPlanar) {
+            // NV12: interleaved UV block starting at w*h, (cw x ch) pairs of 2 bytes each
+            val uvOff = w * h
+            writeDensePlane(src, uvOff, cw * 2, 2, dstPlanes[1], cw, ch)      // U at even bytes
+            writeDensePlane(src, uvOff + 1, cw * 2, 2, dstPlanes[2], cw, ch)  // V at odd bytes
+        } else {
+            // I420: planar U then planar V, each cw x ch
+            val uOff = w * h
+            val vOff = w * h + cw * ch
+            writeDensePlane(src, uOff, cw, 1, dstPlanes[1], cw, ch)
+            writeDensePlane(src, vOff, cw, 1, dstPlanes[2], cw, ch)
+        }
+    }
+
+    /**
+     * Stride-aware copy of one dense plane (as laid out in a packed YUV420 buffer: row bytes
+     * [srcRowBytes] contiguous, pixel stride [srcPix]) into a codec input [Image.Plane] with its own
+     * rowStride/pixelStride. Mirrors [copyPlane]'s handling of interleaved chroma (reads the existing
+     * dst row first when pixelStride > 1 so sibling bytes are preserved).
+     */
+    private fun writeDensePlane(
+        src: ByteArray,
+        srcOffset: Int,
+        srcRowBytes: Int,
+        srcPix: Int,
+        dst: Image.Plane,
+        w: Int,
+        h: Int
+    ) {
+        val dBuf = dst.buffer
+        val dRow = dst.rowStride
+        val dPix = dst.pixelStride
+
+        var dRBuf: ByteArray? = null
+        if (srcPix != 1 || dPix != 1) {
+            dRBuf = planeDstRowBuf
+            if (dRBuf == null || dRBuf.size < dRow) { dRBuf = ByteArray(dRow).also { planeDstRowBuf = it } }
+        }
+
+        for (row in 0 until h) {
+            val srcRowOff = srcOffset + row * srcRowBytes
+            dBuf.position(row * dRow)
+            if (srcPix == 1 && dPix == 1) {
+                val bytesToWrite = minOf(w, dBuf.remaining())
+                dBuf.put(src, srcRowOff, bytesToWrite)
+            } else if (dRBuf != null) {
+                val limit = minOf(w * dPix, dRow)
+                val bytesToCopy = minOf(limit, dBuf.remaining())
+
+                if (dPix > 1) {
+                    dBuf.get(dRBuf, 0, bytesToCopy)
+                    dBuf.position(row * dRow)
+                }
+
+                for (col in 0 until w) {
+                    val dstIdx = col * dPix
+                    val srcIdx = col * srcPix
+                    if (srcIdx < srcRowBytes && dstIdx < limit) {
+                        dRBuf[dstIdx] = src[srcRowOff + srcIdx]
+                    }
+                }
+                dBuf.put(dRBuf, 0, bytesToCopy)
+            }
+        }
     }
 
     /** Like [copyYuv] but copies source pixels in reversed column order to achieve a horizontal
@@ -301,36 +508,36 @@ class H264HardwareEncoder(
      * Reads each source row in ONE bulk ByteBuffer.get into a reused array, then strides in the array —
      * per-pixel ByteBuffer.get() is the throughput killer (bounds-checked native read per byte).
      */
-    private fun toYuv420(image: ImageProxy, out: ByteArray) {
+    private fun toYuv420(image: ImageProxy, out: ByteArray, w: Int = width, h: Int = height) {
         val yP = image.planes[0]; val uP = image.planes[1]; val vP = image.planes[2]
         val yB = yP.buffer; val uB = uP.buffer; val vB = vP.buffer
         val yRow = yP.rowStride; val yPix = yP.pixelStride
         var o = 0
-        if (yPix == 1 && yRow == width) {
-            yB.position(0); yB.get(out, 0, width * height); o = width * height       // contiguous: one copy
+        if (yPix == 1 && yRow == w) {
+            yB.position(0); yB.get(out, 0, w * h); o = w * h       // contiguous: one copy
         } else {
             var rb = yRowBuf; if (rb == null || rb.size < yRow) { rb = ByteArray(yRow); yRowBuf = rb }
-            for (r in 0 until height) {
+            for (r in 0 until h) {
                 yB.position(r * yRow); yB.get(rb, 0, minOf(yRow, yB.remaining()))
-                if (yPix == 1) System.arraycopy(rb, 0, out, o, width)
-                else for (c in 0 until width) out[o + c] = rb[c * yPix]
-                o += width
+                if (yPix == 1) System.arraycopy(rb, 0, out, o, w)
+                else for (c in 0 until w) out[o + c] = rb[c * yPix]
+                o += w
             }
         }
         val uRow = uP.rowStride; val uPix = uP.pixelStride
         val vRow = vP.rowStride; val vPix = vP.pixelStride
-        val cw = width / 2; val ch = height / 2
+        val cw = w / 2; val ch = h / 2
         var ub = uRowBuf; if (ub == null || ub.size < uRow) { ub = ByteArray(uRow); uRowBuf = ub }
         var vb = vRowBuf; if (vb == null || vb.size < vRow) { vb = ByteArray(vRow); vRowBuf = vb }
         if (semiPlanar) {                                  // NV12: U,V interleaved
-            o = width * height
+            o = w * h
             for (r in 0 until ch) {
                 uB.position(r * uRow); uB.get(ub, 0, minOf(uRow, uB.remaining()))
                 vB.position(r * vRow); vB.get(vb, 0, minOf(vRow, vB.remaining()))
                 for (c in 0 until cw) { out[o++] = ub[c * uPix]; out[o++] = vb[c * vPix] }
             }
         } else {                                           // I420: full U plane, then full V plane
-            var uo = width * height; var vo = width * height + cw * ch
+            var uo = w * h; var vo = w * h + cw * ch
             for (r in 0 until ch) {
                 uB.position(r * uRow); uB.get(ub, 0, minOf(uRow, uB.remaining()))
                 vB.position(r * vRow); vB.get(vb, 0, minOf(vRow, vB.remaining()))

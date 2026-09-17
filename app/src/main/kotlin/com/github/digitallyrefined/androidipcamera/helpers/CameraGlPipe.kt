@@ -13,6 +13,7 @@ import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -45,6 +46,10 @@ class CameraGlPipe(
     private var program = 0
     private var aPos = 0; private var aTex = 0; private var uST = 0; private var uMirror = 0
     @Volatile var mirror = false
+    /** Extra clockwise rotation (degrees) applied on top of the camera's own transform. The sensor
+     *  rotation is already baked in by the SurfaceTexture transform, so this is the per-camera
+     *  rotate= control (quantised to 90° steps). Mirrors what the MJPEG encoder bakes in. */
+    @Volatile var rotation: Int = 0
     @Volatile var frameWidth: Int = 0
     @Volatile var frameHeight: Int = 0
     lateinit var surfaceTexture: SurfaceTexture
@@ -55,6 +60,7 @@ class CameraGlPipe(
     private val quad = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
         put(floatArrayOf(-1f,-1f, 0f,0f,  1f,-1f, 1f,0f,  -1f,1f, 0f,1f,  1f,1f, 1f,1f)); position(0)
     }
+    private val rotatedQuad = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
     private val stMatrix = FloatArray(16)
 
     fun start() {
@@ -98,10 +104,10 @@ class CameraGlPipe(
     }
 
     private fun drawFrame() {
-        GLES20.glViewport(0, 0, width, height)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         GLES20.glUseProgram(program)
 
+        val rot = ((rotation % 360) + 360) % 360
         // Use externally-provided frame dimensions (from CameraX Preview use case) to
         // letterbox when the camera output aspect ratio differs from the pipe surface.
         var fw = frameWidth; var fh = frameHeight
@@ -110,6 +116,11 @@ class CameraGlPipe(
             // portrait). When it does, the effective display dimensions are swapped, so we
             // must swap the frame width/height to compute the correct viewport adjustment.
             if (Math.abs(stMatrix[0]) < 0.5f && Math.abs(stMatrix[4]) > 0.5f) {
+                val t = fw; fw = fh; fh = t
+            }
+            // The quad is rotated [rot]° below, so the drawn content dimensions are swapped
+            // for right-angle rotations — letterbox against the rotated shape.
+            if (rot == 90 || rot == 270) {
                 val t = fw; fw = fh; fh = t
             }
             val outAspect = width.toFloat() / height.toFloat()
@@ -126,11 +137,41 @@ class CameraGlPipe(
             GLES20.glViewport(vpX, vpY, vpW, vpH)
         }
 
-        quad.position(0)
-        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 16, quad)
+        // When rotation is a non-zero multiple of 90°, build a scratch buffer with the
+        // quad's positions rotated clockwise about the origin (texture coords untouched).
+        val buf: FloatBuffer
+        if (rot == 90 || rot == 180 || rot == 270) {
+            val src = FloatArray(16)
+            quad.rewind()
+            quad.get(src)
+            quad.position(0)
+            val q = rotatedQuad
+            q.rewind()
+            for (i in 0 until 4) {
+                val x = src[i * 4]
+                val y = src[i * 4 + 1]
+                val u = src[i * 4 + 2]
+                val v = src[i * 4 + 3]
+                val (nx, ny) = when (rot) {
+                    90 -> y to -x
+                    180 -> -x to -y
+                    270 -> -y to x
+                    else -> x to y
+                }
+                q.put(nx); q.put(ny); q.put(u); q.put(v)
+            }
+            q.position(0)
+            buf = q
+        } else {
+            quad.position(0)
+            buf = quad
+        }
+
+        buf.position(0)
+        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 16, buf)
         GLES20.glEnableVertexAttribArray(aPos)
-        quad.position(2)
-        GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 16, quad)
+        buf.position(2)
+        GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 16, buf)
         GLES20.glEnableVertexAttribArray(aTex)
         GLES20.glUniformMatrix4fv(uST, 1, false, stMatrix, 0)
         GLES20.glUniform1f(uMirror, if (mirror) 1f else 0f)

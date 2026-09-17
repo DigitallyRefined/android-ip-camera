@@ -342,10 +342,10 @@
             <input id="rotate" type="range" min="0" max="359" step="1" value="0" data-control="rotate"
               data-badge="rotateVal" data-fmt="suffix" data-suffix="°" style="margin-bottom: 8px;">
             <div style="display:flex;gap:8px;margin-bottom:8px;width:100%;">
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0">0°</button>
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90">90°</button>
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180">180°</button>
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270">270°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0" data-badge="rotateVal">0°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90" data-badge="rotateVal">90°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180" data-badge="rotateVal">180°</button>
+              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270" data-badge="rotateVal">270°</button>
             </div>
           </div>
 
@@ -623,14 +623,18 @@
         el.addEventListener('click', () => {
           const val = el.dataset.value !== undefined ? el.dataset.value : (el.value !== undefined ? el.value : '');
           if (badge) badge.innerText = val;
-          // If this is the rotate control, use setRotation so the slider
-          // and internal `rotate` var are updated and the control is
-          // sent only once (setRotation calls sendControl).
+          // Rotate buttons (0°/90°/180°/270°) must also move the slider thumb, update the local
+          // `rotate`, and format the badge so buttons and slider never disagree about the position.
           if (param === 'rotate') {
-            try { setRotation(parseInt(val, 10) || 0); } catch (_) { sendControl(param, val); }
-          } else {
-            sendControl(param, val);
+            const v = parseInt(val, 10) || 0;
+            rotate = ((v % 360) + 360) % 360;
+            const slider = getElById('rotate');
+            if (slider) {
+              slider.value = String(rotate);
+              if (badge) badge.innerText = formatControlValue(slider);
+            }
           }
+          sendControl(param, val);
         });
         return;
       }
@@ -868,29 +872,11 @@
       // Persisted preference (may throw in some environments)
       streamMode = localStorage.getItem('streamMode') || streamMode;
     } catch (_) { }
-    // MJPEG is rotated server-side; the raw H.264 stream isn't, so the H.264 player rotates on
-    // draw by (sensorOrientation + rotate), mirroring what the MJPEG encoder bakes in.
+    // The rotate= control (plus the sensor auto-rotation) is baked into the H.264 stream server-side
+    // aligned to the nearest 90°. `rotate` tracks the raw slider value; the player applies the small
+    // residual (rotate − nearest90) on top of the baked stream so the preview matches the slider,
+    // while the raw H.264/MJPEG streams remain rotating in the server's 90° steps for other clients.
     let rotate = 0;
-
-    function setRotation(angle) {
-      const el = getElById('rotate');
-      const badge = getElById('rotateVal');
-      try {
-        if (el) {
-          el.value = String(angle);
-          // Trigger input/change so other listeners update badges/UI
-          try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) { }
-          try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) { }
-        }
-        if (badge) badge.textContent = `${angle}°`;
-      } catch (_) { }
-      rotate = ((angle % 360) + 360) % 360;
-    }
-
-    function h264Rotation() {
-      const c = selectedCameraInfo();
-      return (((c?.sensorOrientation) || 0) + rotate) % 360;
-    }
     const h264Supported = ('VideoDecoder' in window) && ('EncodedVideoChunk' in window);
     const baseUrl = () => location.protocol + '//' + location.host;
 
@@ -976,38 +962,56 @@
       let configured = false, ts = 0;
       let au = [], auHasVcl = false, auKey = false;
       const h264Queue = [];
-      const decoder = new VideoDecoder({
+      let lastSpsKey = null;
+      const makeDecoder = () => new VideoDecoder({
         output: (frame) => {
           try {
-            const rot = h264Rotation();
             const fw = frame.displayWidth, fh = frame.displayHeight;
-            const swap = (rot === 90 || rot === 270);
-            const cw = swap ? fh : fw, ch = swap ? fw : fh;   // canvas content dims after rotation
-            const size = targetCanvasSize({ width: cw, height: ch });
-            applyCanvasSize(size);
-            const s = Math.min(size.w / cw, size.h / ch) * getUserScale();
-            ctx.clearRect(0, 0, size.w, size.h);
-            ctx.save();
-            ctx.translate(size.w / 2, size.h / 2);
-            if (rot) ctx.rotate(rot * Math.PI / 180);
-            // Apply client-side contrast filter when available
+            // The server bakes the rotate= control into the raw stream aligned to the nearest
+            // 90° (H.264 rotation is quantized; arbitrary angles are not resampled). Rotate the
+            // canvas only by the small residual so the preview tracks the slider exactly — the
+            // residual is 0 at every 90° step, so this never double-rotates the baked rotation.
+            const q = (Math.round(rotate / 90) * 90 + 360) % 360;
+            let residual = rotate - q;
+            if (residual > 180) residual -= 360;
+            if (residual < -180) residual += 360;
+            let filter = 'none';
             try {
               const contrastEl = getElById('contrast');
               if (contrastEl) {
                 const c = parseInt(contrastEl.value, 10) || 0;
-                ctx.filter = `contrast(${100 + c}%)`;
-              } else {
-                ctx.filter = 'none';
+                filter = `contrast(${100 + c}%)`;
               }
-            } catch (_) { ctx.filter = 'none'; }
-            ctx.drawImage(frame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
+            } catch (_) { }
+            ctx.filter = filter;
+            if (residual !== 0) {
+              const a = Math.abs(residual) * Math.PI / 180;
+              const cos = Math.cos(a), sin = Math.sin(a);
+              const cw = Math.max(1, Math.ceil(Math.abs(fw * cos) + Math.abs(fh * sin)));
+              const ch = Math.max(1, Math.ceil(Math.abs(fw * sin) + Math.abs(fh * cos)));
+              const size = targetCanvasSize({ width: cw, height: ch });
+              applyCanvasSize(size);
+              const s = Math.min(size.w / cw, size.h / ch) * getUserScale();
+              ctx.clearRect(0, 0, size.w, size.h);
+              ctx.save();
+              ctx.translate(size.w / 2, size.h / 2);
+              ctx.rotate(residual * Math.PI / 180);
+              ctx.drawImage(frame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
+              ctx.restore();
+            } else {
+              const size = targetCanvasSize({ width: fw, height: fh });
+              applyCanvasSize(size);
+              const s = Math.min(size.w / fw, size.h / fh) * getUserScale();
+              ctx.clearRect(0, 0, size.w, size.h);
+              ctx.drawImage(frame, (size.w - fw * s) / 2, (size.h - fh * s) / 2, fw * s, fh * s);
+            }
             ctx.filter = 'none';
-            ctx.restore();
             hideStreamLoading();
           } finally { frame.close(); }
         },
         error: (e) => console.error('H.264 decode:', e)
       });
+      let decoder = makeDecoder();
       h264Decoder = decoder;
       const hex = (n) => n.toString(16).padStart(2, '0');
       const flush = () => {
@@ -1031,9 +1035,24 @@
       const onNal = (nal) => {
         if (!nal.length) return;
         const type = nal[0] & 0x1f;
-        if (type === 7 && !configured) {
-          try { decoder.configure({ codec: 'avc1.' + hex(nal[1]) + hex(nal[2]) + hex(nal[3]), optimizeForLatency: true }); configured = true; }
-          catch (e) { console.error('configure:', e); }
+        if (type === 7) {
+          // Every IDR carries a fresh SPS. Reconfigure only when the stream itself
+          // restarted with new encoding parameters (e.g. rotation swapped the encoder
+          // dimensions), not on ordinary periodic keyframes with identical SPS.
+          const spsKey = nal.length + ':' + Array.from(nal, hex).join('');
+          if (configured && spsKey !== lastSpsKey) {
+            h264Queue.length = 0;
+            au = []; auHasVcl = false; auKey = false;
+            try { decoder.close(); } catch (_) { }
+            decoder = makeDecoder();
+            h264Decoder = decoder;
+            configured = false;
+          }
+          if (!configured) {
+            lastSpsKey = spsKey;
+            try { decoder.configure({ codec: 'avc1.' + hex(nal[1]) + hex(nal[2]) + hex(nal[3]), optimizeForLatency: true }); configured = true; }
+            catch (e) { console.error('configure:', e); }
+          }
         }
         const isVcl = type >= 1 && type <= 5;
         if (isVcl && auHasVcl) flush();            // a new VCL starts the next access unit
@@ -1483,7 +1502,7 @@
           // reflect the values in `/info.json` on initial load.
           if (applySettings) {
             try {
-              const cam = cameraList.find(c => c.id === currentCamera);
+              const cam = selectedCameraInfo();
               if (cam?.lensSettings) {
                 // Ensure all values in lensSettings are properly normalized (e.g., string to number)
                 for (const key in cam.lensSettings) {
