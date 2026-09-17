@@ -1,0 +1,6 @@
+## What's Changed
+* Fix camera rotation & apply rotation to the raw H.264 stream by @DigitallyRefined in #101
+* Bump dependencies by @dependabot[bot] in #99 #102
+
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.13.0...v0.13.1
