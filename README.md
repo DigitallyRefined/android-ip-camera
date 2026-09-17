@@ -42,6 +42,16 @@ Some models include an option to only charge to 80%, make sure this is enabled w
 
 Note: running at a higher image quality may cause some phones to over heat, which can also damage the battery.
 
+## 🔋 Background Usage
+
+The app runs as a foreground service with a persistent notification, so it won't be closed while streaming. For reliable 24/7 operation:
+
+* **Unrestricted battery usage:** Open **Settings > Apps > Android IP Camera > Battery** and select **Unrestricted** (or **Don't optimise**) so Android doesn't sleep the app.
+* **Don't swipe the app away** from recent apps - force-stopping it terminates the server.
+* Don't dismiss the persistent notification or the server may get stopped.
+* The display can be safely turned off while streaming.
+* Enable **Start on Boot** in the app settings for unattended setups.
+
 ## 🎥 Frigate config
 
 Use the example config below to add your phones camera to [Frigate](https://github.com/blakeblackshear/frigate), optionally uncommenting the audio lines (if required) & update the `rtsp` stream:
