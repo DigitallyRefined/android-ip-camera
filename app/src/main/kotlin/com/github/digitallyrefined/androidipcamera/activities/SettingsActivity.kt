@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.documentfile.provider.DocumentFile
 import androidx.preference.EditTextPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
@@ -15,6 +16,7 @@ import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
+import com.github.digitallyrefined.androidipcamera.helpers.RecordingsHelper
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 
 class SettingsActivity : AppCompatActivity() {
@@ -29,6 +31,7 @@ class SettingsActivity : AppCompatActivity() {
     class SettingsFragment : PreferenceFragmentCompat() {
         companion object {
             private const val PICK_CERTIFICATE_FILE = 1
+            private const val PICK_RECORDING_FOLDER = 2
         }
 
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
@@ -216,6 +219,49 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
+            // Configure the video recording storage location (defaults to Movies/AndroidIPCamera)
+            findPreference<Preference>("recording_storage_uri")?.apply {
+                summary = recordingStorageSummary()
+                setOnPreferenceClickListener {
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                        addFlags(
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                        )
+                    }
+                    startActivityForResult(
+                        Intent.createChooser(intent, "Select recording folder"),
+                        PICK_RECORDING_FOLDER
+                    )
+                    true
+                }
+            }
+
+            findPreference<Preference>("reset_recording_storage")?.apply {
+                setOnPreferenceClickListener {
+                    val current = RecordingsHelper.customStorageUri(requireContext())
+                    if (current != null) {
+                        try {
+                            requireContext().contentResolver.releasePersistableUriPermission(
+                                current,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            )
+                        } catch (_: Exception) {
+                            // Permission may already be gone; nothing to release
+                        }
+                    }
+                    PreferenceManager.getDefaultSharedPreferences(requireContext()).edit()
+                        .remove(RecordingsHelper.PREF_RECORDING_STORAGE_URI)
+                        .apply()
+                    findPreference<Preference>("recording_storage_uri")?.summary = recordingStorageSummary()
+                    Toast.makeText(requireContext(),
+                        "Recordings will be saved to Movies/AndroidIPCamera",
+                        Toast.LENGTH_SHORT).show()
+                    true
+                }
+            }
+
             // Add test certificate functionality
             findPreference<Preference>("test_certificate")?.apply {
                 setOnPreferenceClickListener {
@@ -293,7 +339,36 @@ class SettingsActivity : AppCompatActivity() {
                         Toast.LENGTH_SHORT).show()
                 }
             }
+
+            if (requestCode == PICK_RECORDING_FOLDER && resultCode == Activity.RESULT_OK) {
+                data?.data?.let { uri ->
+                    try {
+                        requireContext().contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                        PreferenceManager.getDefaultSharedPreferences(requireContext()).edit()
+                            .putString(RecordingsHelper.PREF_RECORDING_STORAGE_URI, uri.toString())
+                            .apply()
+                        findPreference<Preference>("recording_storage_uri")?.summary = recordingStorageSummary()
+                        Toast.makeText(requireContext(),
+                            "Recording location updated", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        Toast.makeText(requireContext(),
+                            "Could not use that folder: ${e.message}",
+                            Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
             super.onActivityResult(requestCode, resultCode, data)
+        }
+
+        /** Summary for the storage preference: the chosen folder name or the default path. */
+        private fun recordingStorageSummary(): String {
+            val uri = RecordingsHelper.customStorageUri(requireContext())
+                ?: return "Default: ${RecordingsHelper.DEFAULT_RELATIVE_PATH}"
+            val name = DocumentFile.fromTreeUri(requireContext(), uri)?.name
+            return "Custom folder: ${name ?: uri}"
         }
 
         private fun restartStreamingServer() {

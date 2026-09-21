@@ -37,6 +37,19 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="Recording">
+        <Preference
+            android:key="recording_storage_uri"
+            android:title="Recording Storage Location"
+            android:summary="Recordings are saved to Movies/AndroidIPCamera on the internal storage. Tap to pick a different folder, for example on an SD card."
+            android:persistent="true" />
+        <Preference
+            android:key="reset_recording_storage"
+            android:title="Reset to Default Location"
+            android:summary="Save recordings back to Movies/AndroidIPCamera"
+            android:persistent="false" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Certificate Settings">
         <ListPreference
             android:key="tls_version"
