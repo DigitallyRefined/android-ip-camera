@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -100,6 +101,69 @@ class CameraXCapture(
     @Volatile private var exposureIndex: Int? = null
     // Cached manual focus (0f..1f) so it can be re-applied after an async (re)bind; null = autofocus.
     @Volatile private var manualFocus: Float? = null
+    // Cached night mode (low light boost) flag so it can be re-applied after an async (re)bind.
+    @Volatile private var nightMode = false
+    // Opt-in OEM NIGHT extension. Applied at bind time (not via interop), so toggling it forces a
+    // rebind; mutually exclusive with the low-light-boost [nightMode] above.
+    @Volatile private var nightExtensionRequested = false
+
+    /**
+     * Low light boost (API 28+): `CONTROL_POST_RAW_SENSITIVITY_BOOST` multiplies the sensor
+     * sensitivity beyond the auto range — the official Camera2 "low light boost" / night-mode hook
+     * that lets the exposure accumulate more light in dark scenes, at the cost of a lower frame rate
+     * and motion blur. When the range's upper bound is 100 (the neutral "1x" factor) the device
+     * offers no boost, and the toggle is reported as unsupported instead of pretending to work.
+     */
+    private class LowLightBoost(val supported: Boolean, val maxBoost: Int)
+
+    private val lowLightBoost: LowLightBoost by lazy {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return@lazy LowLightBoost(false, 0)
+        try {
+            val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val want = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+            val id = logicalCameraId?.takeIf { it in cm.cameraIdList }
+                ?: cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
+                ?: cm.cameraIdList.firstOrNull()
+            val range = id?.let {
+                try {
+                    cm.getCameraCharacteristics(it).get(CameraCharacteristics.CONTROL_POST_RAW_SENSITIVITY_BOOST_RANGE)
+                } catch (_: Exception) { null }
+            }
+            if (range != null && range.upper > 100) LowLightBoost(true, range.upper)
+            else LowLightBoost(false, 0)
+        } catch (_: Exception) { LowLightBoost(false, 0) }
+    }
+
+    private val supportsLowLightBoost: Boolean get() = lowLightBoost.supported
+
+    /**
+     * Re-apply the overlapping Camera2 interop capture-request overrides (manual focus + night mode)
+     * as one coherent CaptureRequestOptions set, so enabling night mode doesn't clobber an active
+     * focus override and vice versa. Passing no overrides clears them all (back to CameraX defaults).
+     */
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun applyCamera2Overrides() {
+        val cam = camera ?: return
+        try {
+            val c2 = Camera2CameraControl.from(cam.cameraControl)
+            val b = CaptureRequestOptions.Builder()
+            var any = false
+            manualFocus?.let { norm ->
+                val minDist = Camera2CameraInfo.from(cam.cameraInfo)
+                    .getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+                b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, norm * minDist)
+                any = true
+            }
+            if (nightMode) {
+                // Max boost on the live repeating request; absence of the key is the neutral state.
+                b.setCaptureRequestOption(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, lowLightBoost.maxBoost)
+                any = true
+            }
+            if (any) c2.captureRequestOptions = b.build()
+            else c2.clearCaptureRequestOptions()
+        } catch (e: Exception) { Log.e(TAG, "camera2 overrides: ${e.message}") }
+    }
     private val main = ContextCompat.getMainExecutor(ctx)
     private val analysisExec = Executors.newSingleThreadExecutor()
 
@@ -192,6 +256,9 @@ class CameraXCapture(
                         }
                         .build()
                 } ?: if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+                // Load the OEM extension manager in the background so a stored/opt-in Night
+                // Extension preference can be honoured on the next rebind.
+                NightExtensionSupport.prime(ctx)
                 rebind()
                 ready = true
                 Log.i(TAG, "bound desired ${desired.width}x${desired.height} front=$front cameraId=${cameraId ?: "default"}")
@@ -205,7 +272,7 @@ class CameraXCapture(
     private fun rebind() {
         if (released) return
         val p = provider ?: return
-        val sel = boundSelector ?: return
+        val baseSel = boundSelector ?: return
         val analysis = analysisUseCase ?: return
         val cases = mutableListOf<androidx.camera.core.UseCase>()
         previewUseCase?.let { cases.add(it) }
@@ -217,6 +284,41 @@ class CameraXCapture(
         // bindToLifecycle() may fail if the HAL hasn't finished tearing down. Retry a few
         // times before falling back to degraded surface combinations.
         val maxRetries = 3
+
+        // When the user opted into the OEM NIGHT extension, try that selector first. Some HALs
+        // advertise the extension but then refuse to configure a session that also carries
+        // ImageAnalysis, so fall back to the standard selector rather than losing the camera.
+        // If the async ExtensionsManager isn't ready yet, keep the request and bind normally —
+        // setNightExtension() has registered a whenReady() callback that rebinds once it loads.
+        if (nightExtensionRequested && NightExtensionSupport.isReady()) {
+            val extSel = NightExtensionSupport.extensionSelector(baseSel)
+            if (extSel == null) {
+                // Manager ready but this camera can't do NIGHT with analysis — stop retrying.
+                Log.i(TAG, "Night extension requested but unavailable for this camera; staying on boost/off")
+                nightExtensionRequested = false
+            } else {
+                var extensionBound = false
+                for (attempt in 1..maxRetries) {
+                    try {
+                        camera = p.bindToLifecycle(owner, extSel, *cases.toTypedArray())
+                        encoderSurfaceBound = encoderUseCase != null && cases.any { it === encoderUseCase }
+                        extensionBound = true
+                        break
+                    } catch (e: Exception) {
+                        if (attempt < maxRetries) Thread.sleep(500)
+                        else Log.w(TAG, "Night extension bind failed (${e.message}); using standard selector")
+                    }
+                }
+                if (extensionBound) {
+                    reapplyControlsAfterRebind()
+                    return
+                }
+                // Don't keep retrying a selector this HAL cannot configure.
+                nightExtensionRequested = false
+            }
+        }
+
+        val sel = baseSel
         var lastException: Exception? = null
         for (attempt in 1..maxRetries) {
             try {
@@ -264,12 +366,20 @@ class CameraXCapture(
                 }
             }
         }
-        // Re-apply cached controls, since rebinding replaces the camera control.
+        reapplyControlsAfterRebind()
+    }
+
+    /** Re-apply the cached controls after a rebind replaced the camera control (torch, zoom,
+     *  exposure, and the Camera2 manual-focus / low-light-boost interop overrides). */
+    private fun reapplyControlsAfterRebind() {
         val cc = camera?.cameraControl
         if (torchEnabled && hasFlashUnit) try { cc?.enableTorch(true) } catch (_: Exception) {}
         zoomRatio?.let { applyZoomWithRetry(it) }
         exposureIndex?.let { try { cc?.setExposureCompensationIndex(it) } catch (_: Exception) {} }
-        manualFocus?.let { setManualFocus(it) }
+        // Manual focus and/or night mode overrides persist as cached fields and are re-applied
+        // atomically after the rebind replaced the camera control. (The NIGHT extension is applied
+        // at bind time via the extension-enabled selector, not through these interop options.)
+        if (manualFocus != null || nightMode) applyCamera2Overrides()
     }
 
     /**
@@ -427,6 +537,8 @@ class CameraXCapture(
             // defeats the AF scan below.
             manualFocus = null
             try { Camera2CameraControl.from(cam.cameraControl).clearCaptureRequestOptions() } catch (_: Exception) {}
+            // Clearing the options also drops the AE override above — reinstate night mode if active.
+            if (nightMode) applyCamera2Overrides()
             val pt = SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f)
             cam.cameraControl.startFocusAndMetering(
                 FocusMeteringAction.Builder(pt, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
@@ -441,27 +553,52 @@ class CameraXCapture(
      */
     @OptIn(ExperimentalCamera2Interop::class)
     override fun setManualFocus(distance: Float) {
-        val cam = camera ?: run { manualFocus = distance.takeIf { it >= 0f }; return }
-        try {
-            val c2 = Camera2CameraControl.from(cam.cameraControl)
-            if (distance < 0f) {
-                // Clear the override so CameraX resumes its own continuous AF.
-                manualFocus = null
-                c2.clearCaptureRequestOptions()
-                return
+        // Normalized fixed focus distance in 0f..1f (0f = infinity, 1f = nearest); a negative value
+        // clears the override and restores continuous autofocus. Applied together with night mode via
+        // applyCamera2Overrides() so the two interop overrides never fight each other.
+        manualFocus = distance.takeIf { it >= 0f }?.coerceIn(0f, 1f)
+        applyCamera2Overrides()
+    }
+
+    override fun isNightModeSupported(): Boolean = supportsLowLightBoost
+
+    override fun setNightMode(on: Boolean) {
+        // The boost and the OEM extension are alternatives — turning the boost on drops the
+        // extension so the two never double-process.
+        if (on) {
+            if (nightExtensionRequested) {
+                nightExtensionRequested = false
+                mainHandler.post { if (!released) rebind() }
             }
-            val norm = distance.coerceIn(0f, 1f)
-            manualFocus = norm
-            // Nearest focus in diopters; 0f (fixed-focus lens) leaves us at infinity, which is fine.
-            val minDist = Camera2CameraInfo.from(cam.cameraInfo)
-                .getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
-            c2.captureRequestOptions = CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
-                .setCaptureRequestOption(
-                    CaptureRequest.LENS_FOCUS_DISTANCE, norm * minDist)
-                .build()
-        } catch (e: Exception) { Log.e(TAG, "manualFocus: ${e.message}") }
+        }
+        // Never lie to the underlying feature: if the HAL has no low-light-boost range, stay off.
+        nightMode = on && supportsLowLightBoost
+        applyCamera2Overrides()
+    }
+
+    override fun isNightExtensionSupported(): Boolean {
+        val base = boundSelector ?: return false
+        return NightExtensionSupport.isExtensionAvailable(base) &&
+            NightExtensionSupport.isImageAnalysisSupported(base)
+    }
+
+    override fun setNightExtension(on: Boolean) {
+        // Mutually exclusive with the low-light-boost override.
+        if (on) { nightMode = false; applyCamera2Overrides() }
+        val changed = nightExtensionRequested != on
+        nightExtensionRequested = on
+        // No rebind needed when the state is unchanged (e.g. the stored "false" default at startup).
+        if (!changed) return
+        if (!on) {
+            mainHandler.post { if (!released) rebind() }
+            return
+        }
+        // The extension is applied through the bind selector, so this needs a rebind once the
+        // async ExtensionsManager is ready. If it isn't yet, wait for it instead of silently
+        // binding without the extension.
+        NightExtensionSupport.prime(ctx)
+        val requestRebind: () -> Unit = { mainHandler.post { if (!released) rebind() }; Unit }
+        if (NightExtensionSupport.isReady()) requestRebind() else NightExtensionSupport.whenReady(requestRebind)
     }
 
     /** The camera's WIDEST advertised AE FPS range — leaves auto-exposure fully free while giving legacy

@@ -135,6 +135,18 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         if (!hasFlashUnit) return@live
         p.flashMode = if (on) Camera.Parameters.FLASH_MODE_TORCH else Camera.Parameters.FLASH_MODE_OFF
     }
+    override fun isNightModeSupported(): Boolean = try {
+        camera.parameters.supportedSceneModes?.contains(Camera.Parameters.SCENE_MODE_NIGHT) == true
+    } catch (_: Exception) { false }
+    /** Night scene mode: the Camera1 equivalent of low light boost — long exposure, higher gain. Best-effort. */
+    override fun setNightMode(on: Boolean) = live { p ->
+        val modes = p.supportedSceneModes
+        if (on && modes?.contains(Camera.Parameters.SCENE_MODE_NIGHT) == true) {
+            p.sceneMode = Camera.Parameters.SCENE_MODE_NIGHT
+        } else if (modes?.contains(Camera.Parameters.SCENE_MODE_AUTO) == true) {
+            p.sceneMode = Camera.Parameters.SCENE_MODE_AUTO
+        }
+    }
     override fun setExposure(ev: Int) = live { p ->
         val lo = p.minExposureCompensation; val hi = p.maxExposureCompensation
         if (lo != hi) p.exposureCompensation = ev.coerceIn(lo, hi)

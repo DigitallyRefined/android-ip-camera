@@ -865,6 +865,22 @@ class StreamingService : LifecycleService() {
         }
         zoom?.toFloatOrNull()?.let { b.setZoom(it) }
 
+        val nightMode = when {
+            p.contains("night_mode_$id") -> p.getString("night_mode_$id", "false")
+            p.contains("night_mode_$phys") -> p.getString("night_mode_$phys", "false")
+            else -> null
+        }
+        nightMode?.toBoolean()?.let { b.setNightMode(it) }
+
+        // OEM CameraX NIGHT extension is an alternative mechanism; applied after night_mode so it
+        // wins when both stored prefs are set (the backend makes them mutually exclusive).
+        val nightExtension = when {
+            p.contains("night_extension_$id") -> p.getString("night_extension_$id", "false")
+            p.contains("night_extension_$phys") -> p.getString("night_extension_$phys", "false")
+            else -> null
+        }
+        nightExtension?.toBoolean()?.let { b.setNightExtension(it) }
+
         val focus = when {
             p.contains("focus_$id") -> p.getString("focus_$id", null)
             p.contains("focus_$phys") -> p.getString("focus_$phys", null)
@@ -1237,6 +1253,21 @@ class StreamingService : LifecycleService() {
                 prefs.edit().putString("exposure_$id", ev.toString()).apply()
                 if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("exposure_$physicalId", ev.toString()).apply()
                 launchMain { backend?.setExposure(ev) }
+            }
+            "night_mode" -> {
+                // Low light boost / night mode (per-camera). A camera that doesn't support it stays off.
+                val on = value == "true"
+                prefs.edit().putString("night_mode_$id", on.toString()).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("night_mode_$physicalId", on.toString()).apply()
+                launchMain { backend?.setNightMode(on) }
+            }
+            "night_extension" -> {
+                // Opt-in OEM CameraX NIGHT extension (per-camera). Needs a rebind, and only works
+                // when the device's extension can feed the streamed ImageAnalysis frames.
+                val on = value == "true"
+                prefs.edit().putString("night_extension_$id", on.toString()).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("night_extension_$physicalId", on.toString()).apply()
+                launchMain { backend?.setNightExtension(on) }
             }
             "zoom" -> {
                 val z = value.toFloatOrNull() ?: return

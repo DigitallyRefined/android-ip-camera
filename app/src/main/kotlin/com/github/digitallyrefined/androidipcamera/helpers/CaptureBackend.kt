@@ -20,6 +20,23 @@ interface CaptureBackend {
     val hasFlashUnit: Boolean get() = true
     fun getTorch(): Boolean
     fun setTorch(on: Boolean)
+    /**
+     * Enable/disable night mode (low light boost). When enabled the sensor accumulates more light at
+     * the cost of a lower frame rate and more motion blur. Best-effort: backends that report no
+     * support simply stay off.
+     */
+    fun setNightMode(on: Boolean)
+    /** True when the active camera can actually drive night mode / low light boost. */
+    fun isNightModeSupported(): Boolean = false
+    /**
+     * Opt-in alternative to [setNightMode]: use the OEM CameraX NIGHT extension (the vendor's tuned
+     * night algorithm) instead of the raw low-light-boost control. Mutually exclusive with
+     * [setNightMode] — enabling one turns the other off. No-op on backends without extension support.
+     */
+    fun setNightExtension(on: Boolean) {}
+    /** True when the active camera exposes an OEM NIGHT extension that can feed the streamed
+     *  ImageAnalysis frames (not just the on-screen preview / stills). */
+    fun isNightExtensionSupported(): Boolean = false
     fun setExposure(ev: Int)
     fun setZoom(ratio: Float)
     fun triggerAutoFocus()

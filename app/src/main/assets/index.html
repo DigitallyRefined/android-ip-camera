@@ -351,6 +351,16 @@
             <span style="vertical-align:middle;">Mirror</span>
           </label>
 
+          <label style="margin-bottom:12px;" title="Accumulates more light in dark scenes using night/low-light boost. Increases exposure time, so the frame rate drops and moving subjects blur.">
+            <input type="checkbox" id="nightModeCheckbox" onchange="onNightModeToggle(this)" style="margin:0;vertical-align:middle;">
+            <span style="vertical-align:middle;">Night Mode (Low Light Boost)</span>
+          </label>
+
+          <label id="nightExtensionLabel" style="margin-bottom:12px;display:none;" title="Opt-in: use the device vendor's CameraX Night extension instead of the raw low-light-boost control. Only offered when the extension can feed the streamed frames. Requires restarting the camera stream, so the video pauses briefly.">
+            <input type="checkbox" id="nightExtensionCheckbox" onchange="onNightExtensionToggle(this)" style="margin:0;vertical-align:middle;">
+            <span style="vertical-align:middle;">Night Extension (CameraX)</span>
+          </label>
+
           <p class="group-title">Post Processing</p>
 
           <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
@@ -583,6 +593,39 @@
       cam.lensSettings[key] = normalizeValueForKey(key, val);
       // Reflect the change in the visible controls without re-sending to server
       try { applyStreamSettings(cam.lensSettings); } catch (_) { }
+    }
+
+    // Night mode and the OEM Night extension are alternative mechanisms; enabling one clears the
+    // other so the user never has both selected.
+    function onNightModeToggle(el) {
+      const on = !!(el && el.checked);
+      if (on) {
+        const ext = getElById('nightExtensionCheckbox');
+        if (ext && ext.checked) { ext.checked = false; sendControl('night_extension', 'false'); }
+      }
+      sendControl('night_mode', on ? 'true' : 'false');
+    }
+
+    function onNightExtensionToggle(el) {
+      const on = !!(el && el.checked);
+      if (on) {
+        const nm = getElById('nightModeCheckbox');
+        if (nm && nm.checked) { nm.checked = false; sendControl('night_mode', 'false'); }
+      }
+      sendControl('night_extension', on ? 'true' : 'false');
+    }
+
+    // The OEM Night-extension opt-in is only offered for cameras whose vendor extension can feed the
+    // streamed frames. Called on every /info.json load (including the 60s poll) so the option appears
+    // as soon as the server finishes its async probe.
+    function refreshNightExtensionAvailability() {
+      const ext = getElById('nightExtensionCheckbox');
+      const label = getElById('nightExtensionLabel');
+      if (!ext) return;
+      const supported = selectedCameraInfo()?.supportsNightExtension;
+      if (label) label.style.display = supported ? '' : 'none';
+      ext.disabled = !supported;
+      if (supported !== true) ext.checked = false;
     }
 
     function formatControlValue(el) {
@@ -1206,6 +1249,9 @@
 
     // Resolution dropdown is built from the sizes the camera reports, plus "Auto".
     let desiredResolution = 'auto';
+    // The OEM Night-extension probe is async on the server; re-fetch a few times until it completes
+    // so the opt-in appears without waiting for the 60s poll (bounded in case the probe never can).
+    let nightExtProbeAttempts = 0;
 
     function selectedCameraInfo() {
       return cameraList.find(camera => camera.id === currentCamera)
@@ -1403,6 +1449,27 @@
         mirrorEl.checked = settings.mirror === 'true';
       }
 
+      const nightModeEl = getElById('nightModeCheckbox');
+      if (nightModeEl) {
+        if (settings.nightMode !== undefined) {
+          nightModeEl.checked = settings.nightMode === 'true';
+        }
+        // Only offer night mode when the selected camera's HAL actually supports it.
+        const supported = selectedCameraInfo()?.supportsNightMode;
+        if (supported !== undefined) {
+          nightModeEl.disabled = supported === false;
+          if (!supported) nightModeEl.checked = false;
+        }
+      }
+
+      // OEM CameraX Night extension: an opt-in shown only when the selected camera can actually
+      // feed the streamed frames through the vendor's night algorithm.
+      const nightExtEl = getElById('nightExtensionCheckbox');
+      if (nightExtEl && settings.nightExtension !== undefined) {
+        nightExtEl.checked = settings.nightExtension === 'true';
+      }
+      refreshNightExtensionAvailability();
+
       const fps = getElById('fps');
       if (fps && settings.fps) {
         fps.value = settings.fps;
@@ -1492,6 +1559,7 @@
           cameraList = Array.isArray(data.cameras) ? data.cameras : [];
           if (applySettings) applyStreamSettings(data.settings);
           renderCameraControls();
+          try { refreshNightExtensionAvailability(); } catch (_) { }
           // If server provided per-camera lens settings for the selected camera,
           // apply them so UI controls (zoom/exposure/focus/rotate/scale/contrast)
           // reflect the values in `/info.json` on initial load.
@@ -1510,6 +1578,10 @@
             } catch (_) { }
           }
           updateStatusOverlay(data);
+          if (data.settings && data.settings.nightExtensionProbed === false && nightExtProbeAttempts < 6) {
+            nightExtProbeAttempts++;
+            setTimeout(() => loadDeviceInfo(true), 2500);
+          }
         })
         .catch(err => {
           console.error('Failed to fetch device info:', err);

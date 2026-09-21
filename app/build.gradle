@@ -139,6 +139,9 @@ dependencies {
     implementation 'androidx.camera:camera-camera2:1.4.0'
     implementation 'androidx.camera:camera-lifecycle:1.4.0'
     implementation 'androidx.camera:camera-view:1.4.0'
+    // OEM CameraX extensions (Night mode). Enables the opt-in Night Extension path, which uses the
+    // device vendor's tuned night algorithm instead of the raw low-light-boost control.
+    implementation 'androidx.camera:camera-extensions:1.4.0'
 
     // Coroutines for asynchronous operations
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'

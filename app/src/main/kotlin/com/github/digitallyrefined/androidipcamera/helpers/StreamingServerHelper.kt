@@ -276,6 +276,10 @@ class StreamingServerHelper(
             Toast.makeText(context, "Server starting...", Toast.LENGTH_SHORT).show()
         }
 
+        // Warm up the OEM CameraX extension probe so /info.json can report Night Extension support
+        // without the UI having to wait a full poll cycle.
+        NightExtensionSupport.prime(context)
+
         // Stop existing server BEFORE creating new one (outside the coroutine)
         // This must be done to avoid cancelling the new job
         val oldJob: Job?
@@ -1480,6 +1484,8 @@ class StreamingServerHelper(
                 "stream_scale_$cameraId", "stream_scale_$physical",
                 "camera_contrast_$cameraId", "camera_contrast_$physical",
                 "mirror_$cameraId", "mirror_$physical",
+                "night_mode_$cameraId", "night_mode_$physical",
+                "night_extension_$cameraId", "night_extension_$physical",
                 "snapshot_res_$cameraId", "snapshot_res_$physical"
             )
             keys.forEach { k -> if (prefs.contains(k)) editor.remove(k) }
@@ -1502,6 +1508,8 @@ class StreamingServerHelper(
                     "scale" to "1.0",
                     "contrast" to "0",
                     "mirror" to "false",
+                    "night_mode" to "false",
+                    "night_extension" to "false",
                     "fps" to "30",
                     "rotate" to "0"
                 )
@@ -1609,7 +1617,7 @@ class StreamingServerHelper(
 
     private data class InfoSize(val w: Int, val h: Int)
 
-    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val minZoom: Float?, val maxZoom: Float?)
+    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val minZoom: Float?, val maxZoom: Float?, val supportsNightMode: Boolean, val supportsNightExtension: Boolean)
 
     private data class CameraInfoSource(
         val id: String,
@@ -1630,6 +1638,9 @@ class StreamingServerHelper(
         val deviceHasFlash: Boolean,
         val audioGain: String,
         val snapshotRes: String,
+        /** True once the OEM CameraX extension support has finished probing, so the UI can tell
+         *  "no extension" apart from "not looked up yet" and re-fetch when it becomes ready. */
+        val nightExtensionProbed: Boolean,
     )
 
     private data class DeviceInfo(
@@ -1648,6 +1659,8 @@ class StreamingServerHelper(
                         put("label", camera.label)
                         put("hasFlash", camera.hasFlash)
                         put("sensorOrientation", camera.sensorOrientation)
+                        put("supportsNightMode", camera.supportsNightMode)
+                        put("supportsNightExtension", camera.supportsNightExtension)
                         try {
                             put("zoom", JSONObject().apply {
                                 try {
@@ -1693,6 +1706,7 @@ class StreamingServerHelper(
                 put("deviceHasFlash", settings.deviceHasFlash)
                 put("audioGain", settings.audioGain)
                 put("snapshotRes", settings.snapshotRes)
+                put("nightExtensionProbed", settings.nightExtensionProbed)
             })
         }.toString()
     }
@@ -1796,6 +1810,12 @@ class StreamingServerHelper(
             // Mirror
             map["mirror"] = storedPrefString("false", "mirror_") ?: "false"
 
+            // Night mode (low light boost)
+            map["nightMode"] = storedPrefString("false", "night_mode_") ?: "false"
+
+            // Opt-in OEM CameraX Night extension
+            map["nightExtension"] = storedPrefString("false", "night_extension_") ?: "false"
+
             // Snapshot resolution optional (per-camera)
             storedPrefString(null, "snapshot_res_")?.let { map["snapshotRes"] = it }
 
@@ -1836,6 +1856,7 @@ class StreamingServerHelper(
             deviceHasFlash = anyBackCameraWithFlash(),
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
             snapshotRes = prefs.getString("snapshot_res_$cameraId", "max") ?: "max",
+            nightExtensionProbed = NightExtensionSupport.isReady(),
         )
     }
 
@@ -1919,6 +1940,21 @@ class StreamingServerHelper(
                 // Some devices report flash on logical camera, others on physical
                 val hasFlash = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true ||
                     source.characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                // Whether the HAL advertises the low-light-boost sensitivity range (API 28+) that the
+                // Camera2 night-mode toggle drives; the Camera1 backend exposes the same idea via scene
+                // mode. A range whose upper bound is 100 (= neutral "1x" factor) means no boost at all.
+                val supportsNightMode = try {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) false
+                    else {
+                        val r = (ch.get(CameraCharacteristics.CONTROL_POST_RAW_SENSITIVITY_BOOST_RANGE)
+                            ?: source.characteristics.get(CameraCharacteristics.CONTROL_POST_RAW_SENSITIVITY_BOOST_RANGE))
+                        r != null && r.upper > 100
+                    }
+                } catch (_: Exception) { false }
+                // Opt-in OEM CameraX NIGHT extension: available only when the vendor extension exists
+                // AND can feed the streamed YUV ImageAnalysis frames (not just preview/stills). The
+                // answer is cached in NightExtensionSupport; prime() warms it up for the next poll.
+                val supportsNightExtension = NightExtensionSupport.isSupported(context, source.id)
                 val sensorOrientation = (ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
                     ?: source.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)) ?: 0
                 // Gather zoom-related characteristics and compute fallbacks
@@ -1995,7 +2031,7 @@ class StreamingServerHelper(
 
                     Pair(roundedMin, roundedMax)
                 } catch (_: Exception) { Pair(null, null) }
-                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom)
+                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom, supportsNightMode, supportsNightExtension)
             }
         } catch (_: Throwable) {
             emptyList()
