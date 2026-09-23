@@ -100,6 +100,8 @@ class CameraXCapture(
     @Volatile private var exposureIndex: Int? = null
     // Cached manual focus (0f..1f) so it can be re-applied after an async (re)bind; null = autofocus.
     @Volatile private var manualFocus: Float? = null
+    // Cached night/low-light state, re-applied after a rebind alongside manual focus.
+    @Volatile private var nightEnabled = false
     private val main = ContextCompat.getMainExecutor(ctx)
     private val analysisExec = Executors.newSingleThreadExecutor()
 
@@ -269,7 +271,7 @@ class CameraXCapture(
         if (torchEnabled && hasFlashUnit) try { cc?.enableTorch(true) } catch (_: Exception) {}
         zoomRatio?.let { applyZoomWithRetry(it) }
         exposureIndex?.let { try { cc?.setExposureCompensationIndex(it) } catch (_: Exception) {} }
-        manualFocus?.let { setManualFocus(it) }
+        applyCaptureRequestOptions()
     }
 
     /**
@@ -424,9 +426,9 @@ class CameraXCapture(
         try {
             val cam = camera ?: return
             // Drop any manual-focus override, else the lingering CONTROL_AF_MODE_OFF
-            // defeats the AF scan below.
+            // defeats the AF scan below. Night options (if any) are kept.
             manualFocus = null
-            try { Camera2CameraControl.from(cam.cameraControl).clearCaptureRequestOptions() } catch (_: Exception) {}
+            applyCaptureRequestOptions()
             val pt = SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f)
             cam.cameraControl.startFocusAndMetering(
                 FocusMeteringAction.Builder(pt, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
@@ -439,29 +441,133 @@ class CameraXCapture(
      * in diopters (0f = infinity, 1f = the lens' minimum focus distance / nearest). A negative
      * value clears the override and restores continuous autofocus.
      */
-    @OptIn(ExperimentalCamera2Interop::class)
     override fun setManualFocus(distance: Float) {
-        val cam = camera ?: run { manualFocus = distance.takeIf { it >= 0f }; return }
+        manualFocus = distance.takeIf { it >= 0f }
+        applyCaptureRequestOptions()
+    }
+
+    override fun setNightMode(on: Boolean) {
+        nightEnabled = on
+        applyCaptureRequestOptions()
+    }
+
+    /**
+     * Merge the cached manual-focus and night-mode overrides into one repeating CaptureRequest
+     * via Camera2 interop. Both features share a single [CaptureRequestOptions] slot on
+     * Camera2CameraControl, so they must be applied together — setting one would otherwise wipe
+     * the other. Falls back to a reduced option set if the HAL rejects the full one.
+     */
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun applyCaptureRequestOptions() {
+        val cam = camera ?: return
         try {
             val c2 = Camera2CameraControl.from(cam.cameraControl)
-            if (distance < 0f) {
-                // Clear the override so CameraX resumes its own continuous AF.
-                manualFocus = null
+            val focus = manualFocus
+            if (focus == null && !nightEnabled) {
                 c2.clearCaptureRequestOptions()
                 return
             }
-            val norm = distance.coerceIn(0f, 1f)
-            manualFocus = norm
-            // Nearest focus in diopters; 0f (fixed-focus lens) leaves us at infinity, which is fine.
-            val minDist = Camera2CameraInfo.from(cam.cameraInfo)
-                .getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
-            c2.captureRequestOptions = CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
-                .setCaptureRequestOption(
-                    CaptureRequest.LENS_FOCUS_DISTANCE, norm * minDist)
-                .build()
-        } catch (e: Exception) { Log.e(TAG, "manualFocus: ${e.message}") }
+
+            fun diopters(): Float {
+                val norm = focus!!.coerceIn(0f, 1f)
+                val minDist = Camera2CameraInfo.from(cam.cameraInfo)
+                    .getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+                return norm * minDist
+            }
+
+            fun build(withFocus: Boolean, withNight: Boolean): CaptureRequestOptions? = try {
+                val b = CaptureRequestOptions.Builder()
+                if (withFocus && focus != null) {
+                    b.setCaptureRequestOption(
+                        CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                    b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, diopters())
+                }
+                if (withNight && nightEnabled) applyNightRequestOptions(b, cam)
+                b.build()
+            } catch (_: Exception) { null }
+
+            // Richest option set first; if CameraX/the HAL rejects it, drop pieces until one sticks
+            // so a single unsupported night key never takes manual focus down with it.
+            val attempts = listOfNotNull(
+                build(withFocus = true, withNight = true),
+                build(withFocus = true, withNight = false),
+                build(withFocus = false, withNight = true),
+            ).distinct()
+            for (options in attempts) {
+                try {
+                    c2.captureRequestOptions = options
+                    return
+                } catch (e: Exception) {
+                    Log.w(TAG, "captureOptions rejected: ${e.message}")
+                }
+            }
+            // Everything was rejected — clear so we at least fall back to CameraX defaults.
+            try { c2.clearCaptureRequestOptions() } catch (_: Exception) {}
+        } catch (e: Exception) { Log.e(TAG, "captureOptions: ${e.message}") }
+    }
+
+    /**
+     * Camera2 night/low-light tuning: night scene mode, high-quality noise reduction (critical
+     * when AE pushes ISO in the dark), anti-banding, lens-shading maps for truer low-light color,
+     * and the AE fps range with the lowest ceiling so auto-exposure can hold long exposures.
+     * Every key is checked against the camera's available modes first.
+     */
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun applyNightRequestOptions(b: CaptureRequestOptions.Builder, cam: androidx.camera.core.Camera) {
+        val info = try { Camera2CameraInfo.from(cam.cameraInfo) } catch (_: Exception) { null }
+
+        val scenes = info?.getCameraCharacteristic(CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES)
+        if (scenes != null && CameraMetadata.CONTROL_SCENE_MODE_NIGHT in scenes) {
+            try {
+                b.setCaptureRequestOption(
+                    CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_NIGHT)
+            } catch (_: Exception) {}
+        }
+
+        val nrModes = info?.getCameraCharacteristic(
+            CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
+        val nr = nrModes?.let { modes ->
+            when {
+                CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY in modes ->
+                    CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY
+                CameraMetadata.NOISE_REDUCTION_MODE_FAST in modes ->
+                    CameraMetadata.NOISE_REDUCTION_MODE_FAST
+                else -> null
+            }
+        }
+        nr?.let {
+            try { b.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, it) }
+            catch (_: Exception) {}
+        }
+
+        val abModes = info?.getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES)
+        if (abModes != null && CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO in abModes) {
+            try {
+                b.setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
+                    CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO)
+            } catch (_: Exception) {}
+        }
+
+        val lsmModes = info?.getCameraCharacteristic(
+            CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES)
+        if (lsmModes != null && CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON in lsmModes) {
+            try {
+                b.setCaptureRequestOption(
+                    CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
+                    CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
+            } catch (_: Exception) {}
+        }
+
+        // Long exposures need a low frame-rate ceiling (15fps → ~66ms shutter). Pick the
+        // advertised range with the lowest upper bound so AE is free to dim-lit longer.
+        val fpsRange = info?.getCameraCharacteristic(
+            CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.minByOrNull { it.upper }
+        fpsRange?.let {
+            try { b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+            catch (_: Exception) {}
+        }
     }
 
     /** The camera's WIDEST advertised AE FPS range — leaves auto-exposure fully free while giving legacy

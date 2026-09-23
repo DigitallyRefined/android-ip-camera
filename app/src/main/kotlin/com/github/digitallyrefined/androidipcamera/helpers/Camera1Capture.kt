@@ -26,6 +26,8 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
     private var onPreviewFrame: ((ByteArray) -> Unit)? = null
     @Volatile private var torchEnabled = false
     @Volatile private var stopped = false
+    /** FPS range applied by start(); restored when night mode is turned back off. */
+    private var defaultFpsRange: IntArray? = null
     /** This lens can only drive the flash if the HAL advertises FLASH_MODE_TORCH. */
     override val hasFlashUnit: Boolean
 
@@ -47,7 +49,7 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         p.supportedPreviewFpsRange?.let { ranges ->
             val want = fps * 1000
             (ranges.filter { it[1] >= want }.minByOrNull { it[0] } ?: ranges.maxByOrNull { it[1] })
-                ?.let { p.setPreviewFpsRange(it[0], it[1]) }
+                ?.let { p.setPreviewFpsRange(it[0], it[1]); defaultFpsRange = it.copyOf() }
         }
         listOf(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO,
                Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE,
@@ -185,6 +187,33 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
                 else -> null
             }
             mode?.let { p.focusMode = it }
+        }
+    }
+
+    /**
+     * Low-light / night enhancement via Camera1 scene mode. [on] switches to NIGHT (or
+     * NIGHT_PORTRAIT as fallback) and lowers the preview FPS ceiling so the HAL can hold
+     * longer exposures; off restores AUTO scene mode and the FPS range chosen at start().
+     * Best-effort — not every HAL exposes scene modes or lets them change mid-preview.
+     */
+    override fun setNightMode(on: Boolean) = live { p ->
+        val scenes = p.supportedSceneModes
+        if (on) {
+            when {
+                scenes?.contains(Camera.Parameters.SCENE_MODE_NIGHT) == true ->
+                    p.sceneMode = Camera.Parameters.SCENE_MODE_NIGHT
+                scenes?.contains(Camera.Parameters.SCENE_MODE_NIGHT_PORTRAIT) == true ->
+                    p.sceneMode = Camera.Parameters.SCENE_MODE_NIGHT_PORTRAIT
+            }
+            // Lowest advertised ceiling → longest possible shutter (e.g. 15fps ≈ 66ms).
+            p.supportedPreviewFpsRange?.minByOrNull { it[1] }?.let {
+                p.setPreviewFpsRange(it[0], it[1])
+            }
+        } else {
+            if (scenes?.contains(Camera.Parameters.SCENE_MODE_AUTO) == true) {
+                p.sceneMode = Camera.Parameters.SCENE_MODE_AUTO
+            }
+            defaultFpsRange?.let { p.setPreviewFpsRange(it[0], it[1]) }
         }
     }
 

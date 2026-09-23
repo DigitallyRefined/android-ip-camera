@@ -871,6 +871,13 @@ class StreamingService : LifecycleService() {
             else -> null
         }
         focus?.toFloatOrNull()?.let { b.setManualFocus(it) }
+
+        val night = when {
+            p.contains("night_$id") -> p.getString("night_$id", null)
+            p.contains("night_$phys") -> p.getString("night_$phys", null)
+            else -> null
+        }
+        b.setNightMode(night?.toBoolean() == true)
     }
 
     /** Rear camera id that owns the flash unit (usually the main lens). Auxiliary rear lenses on
@@ -1174,7 +1181,7 @@ class StreamingService : LifecycleService() {
     /**
      * GET /?<key>=<value> (proxied as /api/video/control):
      *   torch=on|off|toggle   focus_distance=<0..1|-1>
-     *   exposure=<ev>   zoom=<ratio>
+     *   exposure=<ev>   zoom=<ratio>   night=true|false
      *   camera=<id>|front|back|toggle   resolution=WxH   api=auto|camerax|camera1
      */
     /** Last accepted client timestamp per control key. */
@@ -1326,6 +1333,16 @@ class StreamingService : LifecycleService() {
                     glPipe?.mirror = enabled
                     cameraXGlPipe?.mirror = enabled
                 }
+            }
+            "night" -> {
+                val on = when (value.lowercase()) {
+                    "true", "on", "1" -> true
+                    "false", "off", "0" -> false
+                    else -> return
+                }
+                prefs.edit().putString("night_$id", on.toString()).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("night_$physicalId", on.toString()).apply()
+                launchMain { backend?.setNightMode(on) }
             }
             "api" -> {
                 if (value in listOf("auto", "camerax", "camera1")) {

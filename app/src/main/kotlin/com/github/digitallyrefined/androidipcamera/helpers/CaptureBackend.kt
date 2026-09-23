@@ -29,5 +29,11 @@ interface CaptureBackend {
      * continuous autofocus. Backends apply this on a best-effort basis.
      */
     fun setManualFocus(distance: Float)
+    /**
+     * Low-light / night enhancement. [on] enables the backend's night tuning for the live
+     * stream: night scene mode (where supported), high-quality noise reduction, and an
+     * auto-exposure setup that favours longer exposures. Applied best-effort per HAL.
+     */
+    fun setNightMode(on: Boolean) {}
     fun stop()
 }

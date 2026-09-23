@@ -1480,6 +1480,7 @@ class StreamingServerHelper(
                 "stream_scale_$cameraId", "stream_scale_$physical",
                 "camera_contrast_$cameraId", "camera_contrast_$physical",
                 "mirror_$cameraId", "mirror_$physical",
+                "night_$cameraId", "night_$physical",
                 "snapshot_res_$cameraId", "snapshot_res_$physical"
             )
             keys.forEach { k -> if (prefs.contains(k)) editor.remove(k) }
@@ -1502,6 +1503,7 @@ class StreamingServerHelper(
                     "scale" to "1.0",
                     "contrast" to "0",
                     "mirror" to "false",
+                    "night" to "false",
                     "fps" to "30",
                     "rotate" to "0"
                 )
@@ -1795,6 +1797,9 @@ class StreamingServerHelper(
 
             // Mirror
             map["mirror"] = storedPrefString("false", "mirror_") ?: "false"
+
+            // Low-light / night mode
+            map["night"] = storedPrefString("false", "night_") ?: "false"
 
             // Snapshot resolution optional (per-camera)
             storedPrefString(null, "snapshot_res_")?.let { map["snapshotRes"] = it }

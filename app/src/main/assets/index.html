@@ -351,6 +351,11 @@
             <span style="vertical-align:middle;">Mirror</span>
           </label>
 
+          <label style="margin-top:8px;">
+            <input type="checkbox" id="nightCheckbox" onchange="sendControl('night', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
+            <span style="vertical-align:middle;">Low Light (Night mode)</span>
+          </label>
+
           <p class="group-title">Post Processing</p>
 
           <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
@@ -1401,6 +1406,10 @@
       const mirrorEl = getElById('mirrorCheckbox');
       if (mirrorEl && settings.mirror !== undefined) {
         mirrorEl.checked = settings.mirror === 'true';
+      }
+      const nightEl = getElById('nightCheckbox');
+      if (nightEl && settings.night !== undefined) {
+        nightEl.checked = settings.night === 'true' || settings.night === true;
       }
 
       const fps = getElById('fps');
