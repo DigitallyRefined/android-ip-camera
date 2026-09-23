@@ -150,17 +150,18 @@
       border-color: #007AFF;
     }
 
-    .fullscreen-active {
-      background: #007AFF !important;
-      border-color: #007AFF !important;
-    }
-
     .btn-action {
       width: 100%;
       margin-bottom: 15px;
       background: #444;
       border-color: #666;
       font-weight: bold;
+    }
+
+    .btn-action.ptt-active {
+      background: #d32f2f;
+      border-color: #b71c1c;
+      color: #fff;
     }
 
     .camera-controls {
@@ -236,15 +237,6 @@
       text-align: center;
     }
 
-    .stream-title {
-      font-size: 12px;
-      color: #aaa;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      font-weight: bold;
-      margin: 22px 0 6px;
-    }
-
     .stream-container:fullscreen,
     .stream-container:-webkit-full-screen {
       width: 100vw;
@@ -296,14 +288,19 @@
       <div class='controls-content'>
         <div class='setting-group'>
           <h3>Settings</h3>
-          <label for="cameraSelect">Camera <span class="val-badge" id="cameraFacingBadge">&mdash;</span></label>
-          <div class="camera-controls">
-            <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
+          <div style="display:flex; gap:8px; align-items:flex-end; margin-bottom:15px;">
+            <div style="width:calc(50% - 4px); min-width:0;">
+              <label for="cameraSelect">Camera <span class="val-badge" id="cameraFacingBadge">&mdash;</span></label>
+              <div class="camera-controls" style="margin-bottom:0;">
+                <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
+              </div>
+            </div>
+            <button id="flashBtn" class="btn btn-action" style="width:calc(50% - 4px); margin-bottom:0;">💡 Flash On</button>
           </div>
 
           <div>
             <button id="muteBtn" class="btn btn-action" style="width: 49%;">🔇 Unmute Audio</button>
-            <button id="flashBtn" class="btn btn-action" style="width: 49%;">💡 Flash On</button>
+            <button id="pttBtn" class="btn btn-action" style="width: 49%; margin-bottom: 0;">🎙️ Hold to Talk</button>
           </div>
 
           <div id="audioControls">
@@ -882,8 +879,6 @@
 
     function initStreamUi() {
       const h = getElById('modeH264Btn');
-      const ext = getElById('streamExtUrl');
-      if (ext) ext.value = baseUrl() + '/video/h264';
       const mj = getElById('modeMjpegBtn');
       if (mj) mj.addEventListener('click', () => setStreamMode('mjpeg'));
       if (h) h.addEventListener('click', () => {
@@ -1261,7 +1256,7 @@
     function setCamera(camera) {
       // Ask the server to switch cameras, then refresh device info so the
       // UI reflects any camera-specific settings the server provides.
-      const p = sendControl('camera', camera);
+      sendControl('camera', camera);
       // Update local selection immediately for snappy UI
       const newCameraInfo = cameraList.find(c => c.id === camera);
       currentCamera = camera;
@@ -1641,6 +1636,188 @@
 
     setInterval(checkRecordingStatus, 3000);
     checkRecordingStatus();
+
+    // ---- Push-to-talk: stream the browser microphone to the phone's speaker ----
+    let pttActive = false;
+    let pttStream = null;
+    let pttCtx = null;
+    let pttSource = null;
+    let pttProcessor = null;
+    let pttGain = null;
+    let pttPointerId = null;
+    let pttQueue = [];
+    let pttQueueBytes = 0;
+    const PTT_BUCKET = 44100;
+
+    function updatePttUi(active) {
+      const btn = getElById('pttBtn');
+      if (!btn) return;
+      btn.classList.toggle('ptt-active', active);
+      btn.textContent = active ? '🔴 Recording...' : '🎙️ Hold to Talk';
+    }
+
+    function startTalk() {
+      if (pttActive) return;
+      if (!window.isSecureContext) {
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        return;
+      }
+      let ctx;
+      try {
+        ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+      } catch (_) {
+        return;
+      }
+      pttCtx = ctx;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => { });
+      const constraints = {
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      };
+      navigator.mediaDevices.getUserMedia(constraints)
+        .then(stream => {
+          pttStream = stream;
+          pttActive = true;
+          updatePttUi(true);
+          try {
+            const source = ctx.createMediaStreamSource(stream);
+            pttSource = source;
+            const processor = ctx.createScriptProcessor(4096, 1, 1);
+            pttProcessor = processor;
+            const gain = ctx.createGain();
+            gain.gain.value = 0;
+            pttGain = gain;
+            pttQueue = [];
+            pttQueueBytes = 0;
+            processor.onaudioprocess = (e) => {
+              const input = e.inputBuffer.getChannelData(0);
+              const view = new DataView(new ArrayBuffer(input.length * 2));
+              for (let i = 0; i < input.length; i++) {
+                const s = Math.max(-1, Math.min(1, input[i]));
+                view.setInt16(i * 2, (s < 0 ? s * 0x8000 : s * 0x7FFF), true);
+              }
+              pttQueue.push(new Uint8Array(view.buffer));
+              pttQueueBytes += input.length * 2;
+            };
+            talkSenderLoop();
+            source.connect(processor);
+            processor.connect(gain);
+            gain.connect(ctx.destination);
+            if (ctx.state === 'suspended') ctx.resume().catch(() => { });
+          } catch (err) {
+            stopTalk();
+          }
+        })
+        .catch(err => {
+          try { ctx.close(); } catch (_) { }
+          pttCtx = null;
+          updatePttUi(false);
+        });
+    }
+
+    function stopTalk() {
+      if (!pttActive) return;
+      pttActive = false;
+      if (pttProcessor) {
+        try { pttProcessor.disconnect(); } catch (_) { }
+        pttProcessor.onaudioprocess = null;
+        pttProcessor = null;
+      }
+      if (pttSource) { try { pttSource.disconnect(); } catch (_) { } pttSource = null; }
+      if (pttGain) { try { pttGain.disconnect(); } catch (_) { } pttGain = null; }
+      if (pttStream) {
+        pttStream.getTracks().forEach(t => { try { t.stop(); } catch (_) { } });
+        pttStream = null;
+      }
+      if (pttCtx) { try { pttCtx.close(); } catch (_) { } pttCtx = null; }
+      updatePttUi(false);
+    }
+
+    function takeFromQueue(n) {
+      const out = new Uint8Array(n);
+      let off = 0;
+      while (off < n) {
+        const head = pttQueue[0];
+        const take = Math.min(head.length, n - off);
+        out.set(head.subarray(0, take), off);
+        off += take;
+        if (take === head.length) pttQueue.shift();
+        else pttQueue[0] = head.subarray(take);
+      }
+      pttQueueBytes -= n;
+      return out;
+    }
+
+    async function sendPacket(packet) {
+      try {
+        const res = await fetch('/audio/upload', {
+          method: 'POST',
+          body: packet,
+          credentials: 'include'
+        });
+        return res.ok;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // Chrome rejects fetch streaming uploads over HTTP/1.x (it demands H2/QUIC), so
+    // instead of a ReadableStream body we send fixed-size PCM packets with a
+    // Content-Length. The server plays each packet and replies, which paces this loop.
+    async function talkSenderLoop() {
+      while (pttActive) {
+        if (pttQueueBytes >= PTT_BUCKET) {
+          const packet = takeFromQueue(PTT_BUCKET);
+          if (!await sendPacket(packet)) return;
+        } else {
+          await new Promise(r => setTimeout(r, 30));
+        }
+      }
+      if (pttQueueBytes > 0) {
+        const packet = takeFromQueue(pttQueueBytes);
+        await sendPacket(packet);
+      }
+    }
+
+    const pttBtn = getElById('pttBtn');
+    if (pttBtn) {
+      pttBtn.addEventListener('pointerdown', (e) => {
+        pttPointerId = e.pointerId;
+        try { pttBtn.setPointerCapture(e.pointerId); } catch (_) { }
+        e.preventDefault();
+        startTalk();
+      });
+      const endTalk = (e) => {
+        if (e.pointerId !== undefined && e.pointerId !== pttPointerId) return;
+        pttPointerId = null;
+        stopTalk();
+      };
+      pttBtn.addEventListener('pointerup', endTalk);
+      pttBtn.addEventListener('pointercancel', endTalk);
+      pttBtn.addEventListener('lostpointercapture', () => {
+        pttPointerId = null;
+        stopTalk();
+      });
+      // Space/Enter for keyboard accessibility
+      pttBtn.addEventListener('keydown', (e) => {
+        if ((e.key === ' ' || e.key === 'Enter') && !pttActive) {
+          e.preventDefault();
+          startTalk();
+        }
+      });
+      pttBtn.addEventListener('keyup', (e) => {
+        if ((e.key === ' ' || e.key === 'Enter') && pttActive) {
+          e.preventDefault();
+          stopTalk();
+        }
+      });
+    }
   </script>
 </body>
 

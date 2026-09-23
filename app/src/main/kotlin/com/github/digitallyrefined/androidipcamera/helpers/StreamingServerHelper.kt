@@ -6,8 +6,10 @@ import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
@@ -97,6 +99,16 @@ class StreamingServerHelper(
     private var appInForeground: Boolean = true
     @Volatile
     private var serverGeneration: Long = 0
+
+    // One shared AudioTrack for push-to-talk playback, so packets stream into a single
+    // continuous speaker session instead of one track per request. A watchdog stops it
+    // after a moment of silence, and the next packet lazily re-creates it.
+    private val talkLock = Any()
+    private var talkTrack: AudioTrack? = null
+    private var talkTrackActive = false
+    private var talkLastWriteAt = 0L
+    @Volatile
+    private var talkWatchdogStarted = false
 
     // SECURITY: Rate limiting constants (only for unauthenticated connections)
     private val MAX_FAILED_ATTEMPTS = 5  // 5 failed attempts allowed
@@ -602,7 +614,9 @@ class StreamingServerHelper(
             } catch (_: Exception) {
             }
 
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+            // ISO-8859-1 is byte-preserving (1 byte == 1 char), which lets the same reader
+            // safely decode binary request bodies (e.g. chunked PCM audio) after the headers.
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), StandardCharsets.ISO_8859_1))
 
             // Read the request line (e.g., GET /video/mjpeg HTTP/1.1)
             val requestLine = reader.readLine() ?: return
@@ -782,7 +796,7 @@ class StreamingServerHelper(
             }
 
             if (!isStreamingEnabled() &&
-                (path.startsWith("/video") || path == "/audio" || path == "/audio/raw")
+                (path.startsWith("/video") || path == "/audio" || path == "/audio/raw" || path == "/audio/upload")
             ) {
                 writer.print("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")
                 writer.print("Streaming is disabled. POST /control/start to re-enable.\r\n")
@@ -1045,6 +1059,23 @@ class StreamingServerHelper(
                 return
             }
 
+            // ---- Push-to-talk: browser streams mic PCM to the phone's speaker ----
+            if (path == "/audio/upload" && httpMethod == "POST") {
+                val headerMap = headers.mapNotNull { hdr ->
+                    val idx = hdr.indexOf(":")
+                    if (idx == -1) return@mapNotNull null
+                    hdr.substring(0, idx).trim().lowercase() to hdr.substring(idx + 1).trim()
+                }.toMap()
+                if (headerMap["expect"]?.contains("100-continue", ignoreCase = true) == true) {
+                    writer.print("HTTP/1.1 100 Continue\r\n\r\n")
+                    writer.flush()
+                }
+                val contentLength = headerMap["content-length"]?.toIntOrNull()
+                val chunked = headerMap["transfer-encoding"]?.contains("chunked", ignoreCase = true) == true
+                handleTalkUpload(socket, reader, writer, contentLength, chunked)
+                return
+            }
+
             if (path == "/info.json") {
                 val info = buildDeviceInfo()
                 writer.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
@@ -1192,6 +1223,207 @@ class StreamingServerHelper(
             result[i + 1] = ((amplified shr 8) and 0xFF).toByte()
         }
         return result
+    }
+
+    /**
+     * Push-to-talk upload: the web UI sends the browser-microphone 16-bit PCM (mono, 44.1 kHz)
+     * as fixed-size POST packets with Content-Length (Chrome refuses streamed upload bodies over
+     * HTTP/1.x). Each packet is appended to one shared [AudioTrack] and the response is sent
+     * immediately, so the browser stays ahead of playback (no growing latency). The blocking
+     * AudioTrack.write() provides natural back-pressure and keeps the phone's speaker in sync.
+     */
+    private fun handleTalkUpload(
+        socket: Socket,
+        reader: BufferedReader,
+        writer: PrintWriter,
+        contentLength: Int?,
+        chunked: Boolean
+    ) {
+        var headersSent = false
+        try {
+            ensureTalkWatchdog()
+            val completed: Boolean
+            if (chunked || contentLength == null) {
+                completed = readChunkedBody(reader) { chunk -> writeTalkBytes(chunk) }
+            } else {
+                var remaining = contentLength
+                val charBuf = CharArray(8192)
+                var clean = true
+                while (remaining > 0 && clean) {
+                    val want = minOf(charBuf.size, remaining)
+                    val n = reader.read(charBuf, 0, want)
+                    if (n <= 0) {
+                        clean = false
+                        break
+                    }
+                    val chunk = ByteArray(n)
+                    for (i in 0 until n) chunk[i] = charBuf[i].code.toByte()
+                    remaining -= n
+                    clean = writeTalkBytes(chunk)
+                }
+                completed = clean && remaining <= 0
+            }
+            if (completed) {
+                writer.print("HTTP/1.1 200 OK\r\n")
+                writer.print("Connection: close\r\n")
+                writer.print("Content-Type: text/plain\r\n\r\n")
+                writer.print("OK\r\n")
+                writer.flush()
+                headersSent = true
+            } else {
+                onLog("Talk: packet dropped (incomplete body)")
+            }
+        } catch (e: Exception) {
+            onLog("Talk upload error: ${e.message}")
+            if (!headersSent) {
+                try {
+                    writer.print("HTTP/1.1 500 Internal Server Error\r\n")
+                    writer.print("Content-Type: text/plain\r\n")
+                    writer.print("Connection: close\r\n\r\n")
+                    writer.print("Talk streaming failed.\r\n")
+                    writer.flush()
+                } catch (_: Exception) {
+                }
+            }
+        } finally {
+            try {
+                socket.close()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun writeTalkBytes(chunk: ByteArray): Boolean {
+        return synchronized(talkLock) {
+            try {
+                if (talkTrack == null) {
+                    val minBuf = AudioTrack.getMinBufferSize(
+                        44100,
+                        AudioFormat.CHANNEL_OUT_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT
+                    )
+                    if (minBuf <= 0) {
+                        onLog("Talk: invalid AudioTrack min buffer ($minBuf)")
+                        return@writeTalkBytes false
+                    }
+                    val track = AudioTrack.Builder()
+                        .setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build()
+                        )
+                        .setAudioFormat(
+                            AudioFormat.Builder()
+                                .setSampleRate(44100)
+                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                                .build()
+                        )
+                        .setBufferSizeInBytes(maxOf(minBuf * 2, 88 * 1024))
+                        .setTransferMode(AudioTrack.MODE_STREAM)
+                        .build()
+                    if (track.state != AudioTrack.STATE_INITIALIZED) {
+                        track.release()
+                        onLog("Talk: AudioTrack could not be initialized (no audio output available)")
+                        return@writeTalkBytes false
+                    }
+                    talkTrack = track
+                }
+                val track = talkTrack!!
+                if (!talkTrackActive) {
+                    track.play()
+                    talkTrackActive = true
+                }
+                var off = 0
+                while (off < chunk.size) {
+                    val written = track.write(chunk, off, chunk.size - off)
+                    if (written <= 0) {
+                        onLog("Talk: AudioTrack.write returned $written")
+                        return@writeTalkBytes false
+                    }
+                    off += written
+                }
+                talkLastWriteAt = System.currentTimeMillis()
+                true
+            } catch (e: Exception) {
+                onLog("Talk: AudioTrack write error: ${e.message}")
+                false
+            }
+        }
+    }
+
+    private fun ensureTalkWatchdog() {
+        if (talkWatchdogStarted) return
+        synchronized(talkLock) {
+            if (talkWatchdogStarted) return
+            talkWatchdogStarted = true
+        }
+        Thread {
+            try {
+                while (true) {
+                    try {
+                        Thread.sleep(500)
+                    } catch (_: InterruptedException) {
+                        break
+                    }
+                    if (talkLastWriteAt != 0L && System.currentTimeMillis() - talkLastWriteAt > 1500) {
+                        synchronized(talkLock) {
+                            if (System.currentTimeMillis() - talkLastWriteAt > 1500) {
+                                talkLastWriteAt = 0L
+                                try {
+                                    talkTrack?.stop()
+                                } catch (_: Exception) {
+                                }
+                                try {
+                                    talkTrack?.release()
+                                } catch (_: Exception) {
+                                }
+                                talkTrack = null
+                                talkTrackActive = false
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    /**
+     * Reads a chunked transfer-encoded HTTP request body (RFC 7230 §4.1), handing each decoded
+     * chunk to [onChunk]. Returns false if the stream ended uncleanly or [onChunk] aborted it.
+     * Relies on the reader being byte-preserving (ISO-8859-1) so binary payloads survive the
+     * char round-trip intact.
+     */
+    private fun readChunkedBody(reader: BufferedReader, onChunk: (ByteArray) -> Boolean): Boolean {
+        val charBuf = CharArray(8192)
+        while (true) {
+            val sizeLine = reader.readLine() ?: return false
+            // Chunk size may carry `;extensions` which we ignore.
+            val hex = sizeLine.substringBefore(';').trim()
+            val size = hex.toIntOrNull(16) ?: return false
+            if (size == 0) break
+            val chunk = ByteArray(size)
+            var off = 0
+            while (off < size) {
+                val want = minOf(charBuf.size, size - off)
+                val n = reader.read(charBuf, 0, want)
+                if (n <= 0) return false
+                for (i in 0 until n) chunk[off + i] = charBuf[i].code.toByte()
+                off += n
+            }
+            // Consume the CRLF that terminates each chunk's data.
+            if (reader.read() < 0) return false
+            if (reader.read() < 0) return false
+            if (!onChunk(chunk)) return false
+        }
+        // Trailer section ends at the first blank line after the terminal zero chunk.
+        while (true) {
+            val line = reader.readLine() ?: break
+            if (line.isEmpty()) break
+        }
+        return true
     }
 
     fun handleMaxClients(socket: Socket, isAuthenticated: Boolean = false): Boolean {
