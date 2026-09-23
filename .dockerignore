@@ -1,0 +1,5 @@
+# Keep the build context as small as possible - only what the image build needs.
+# The repo sources and signing secrets are bind-mounted at run time instead.
+*
+!Dockerfile
+!scripts/docker/

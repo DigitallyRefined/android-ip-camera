@@ -216,6 +216,8 @@ This project uses [reproducible builds](https://f-droid.org/docs/Reproducible_Bu
 
 The release variant will automatically sign the APK build. Build-tools 35+ is known to produce signatures that fail reproducibility verification.
 
+You can also build the debug or signed release APKs with Docker: `docker build -t android-ip-camera:builder .` then `docker run --rm -v "$PWD":/workspace -v "$PWD/.cache/gradle":/cache/gradle android-ip-camera:builder debug` (or `release` to build with a signing key). See the [Dockerfile](Dockerfile) for caching and advanced usage.
+
 ### Build Variants
 
 By default, release builds generate architecture-specific APK splits (armeabi-v7a, arm64-v8a) in addition to a universal APK. For F-Droid and other scenarios where a single universal APK is preferred, you can disable ABI splits:
