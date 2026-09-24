@@ -83,7 +83,7 @@ class FileManager(
             }
         }
         val json = JSONObject().apply {
-            put("folder", RecordingsHelper.relativePath)
+            put("folder", RecordingsHelper.folderLabel(context))
             put("files", files)
         }
         writer.print("HTTP/1.1 200 OK\r\n")

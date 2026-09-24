@@ -7,17 +7,31 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
+import androidx.documentfile.provider.DocumentFile
+import androidx.preference.PreferenceManager
 import java.io.File
 import java.io.InputStream
 
 /**
- * Read/delete access to the recordings folder (Movies/AndroidIPCamera) that [LocalRecorder]
- * writes to. Mirrors its storage split: MediaStore on API 29+ (scoped storage), plain file
- * I/O below. Only files directly inside that folder are exposed — no subfolder browsing.
+ * Read/delete access to the recordings folder that [LocalRecorder] writes to.
+ *
+ * By default this is Movies/AndroidIPCamera on internal storage (MediaStore on API 29+,
+ * plain file I/O below). The user can also pick a custom folder via the settings
+ * (Storage Access Framework tree URI, e.g. an SD card) — recordings then go there.
+ * Only files directly inside that folder are exposed — no subfolder browsing.
  */
 object RecordingsHelper {
 
     private const val TAG = "RecordingsHelper"
+
+    /** SharedPreferences key storing the tree URI of the user-chosen recording folder. */
+    const val PREF_RECORDING_STORAGE_URI = "recording_storage_uri"
+
+    /** Default location inside the public Movies directory. */
+    val DEFAULT_RELATIVE_PATH = "${Environment.DIRECTORY_MOVIES}/${LocalRecorder.SUBDIR}"
+
+    /** Backwards-compatible alias used by the web UI and other helpers. */
+    val relativePath = DEFAULT_RELATIVE_PATH
 
     data class RecordingFile(val name: String, val sizeBytes: Long, val lastModifiedMs: Long)
 
@@ -26,7 +40,27 @@ object RecordingsHelper {
 
     enum class DeleteResult { DELETED, NOT_FOUND, FAILED }
 
-    val relativePath = "${Environment.DIRECTORY_MOVIES}/${LocalRecorder.SUBDIR}"
+    /** Returns the user-chosen folder tree URI, or null when the default location is used. */
+    fun customStorageUri(context: Context): Uri? {
+        val s = PreferenceManager.getDefaultSharedPreferences(context)
+            .getString(PREF_RECORDING_STORAGE_URI, null)
+        if (s.isNullOrBlank()) return null
+        return try { Uri.parse(s) } catch (_: Exception) { null }
+    }
+
+    /** Human-readable folder label for the web UI: the custom folder name or the default path. */
+    fun folderLabel(context: Context): String {
+        val uri = customStorageUri(context) ?: return DEFAULT_RELATIVE_PATH
+        val root = try { DocumentFile.fromTreeUri(context, uri) } catch (_: Exception) { null }
+        return root?.name ?: DEFAULT_RELATIVE_PATH
+    }
+
+    /** Resolves the user-chosen folder to a DocumentFile, or null when the default is used. */
+    internal fun customRoot(context: Context): DocumentFile? {
+        val uri = customStorageUri(context) ?: return null
+        val root = try { DocumentFile.fromTreeUri(context, uri) } catch (_: Exception) { null }
+        return root.takeIf { it?.exists() == true }
+    }
 
     /**
      * Accepts only plain names that resolve inside the recordings folder: no separators,
@@ -37,17 +71,83 @@ object RecordingsHelper {
             name.none { it == '/' || it == '\\' || it.code < 32 || it.code == 127 }
 
     fun list(context: Context): List<RecordingFile> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) listMediaStore(context) else listLegacy()
+        when {
+            customRoot(context) != null -> listCustom(context)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> listMediaStore(context)
+            else -> listLegacy()
+        }
 
     /** Returns null when the file does not exist in the recordings folder. */
     fun open(context: Context, name: String): OpenRecording? {
         if (!isValidFileName(name)) return null
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) openMediaStore(context, name) else openLegacy(name)
+        return when {
+            customRoot(context) != null -> openCustom(context, name)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> openMediaStore(context, name)
+            else -> openLegacy(name)
+        }
     }
 
     fun delete(context: Context, name: String): DeleteResult {
         if (!isValidFileName(name)) return DeleteResult.NOT_FOUND
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) deleteMediaStore(context, name) else deleteLegacy(name)
+        return when {
+            customRoot(context) != null -> deleteCustom(context, name)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> deleteMediaStore(context, name)
+            else -> deleteLegacy(name)
+        }
+    }
+
+    // ---- Custom folder (Storage Access Framework / SD card) ----
+
+    private fun listCustom(context: Context): List<RecordingFile> {
+        val root = customRoot(context) ?: return emptyList()
+        return try {
+            root.listFiles()
+                .filter { it.isFile }
+                .mapNotNull { file ->
+                    val name = file.name
+                    if (name.isNullOrBlank()) null
+                    else RecordingFile(name, safeSize(file), safeLastModified(file))
+                }
+                .sortedByDescending { it.lastModifiedMs }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun findCustom(context: Context, name: String): DocumentFile? {
+        val root = customRoot(context) ?: return null
+        return try {
+            root.listFiles().firstOrNull { it.isFile && it.name == name }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun openCustom(context: Context, name: String): OpenRecording? = try {
+        val file = findCustom(context, name) ?: return null
+        val stream = context.contentResolver.openInputStream(file.uri) ?: return null
+        OpenRecording(stream, if (safeSize(file) > 0) safeSize(file) else stream.available().toLong())
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun deleteCustom(context: Context, name: String): DeleteResult = try {
+        val file = findCustom(context, name) ?: return DeleteResult.NOT_FOUND
+        if (file.delete()) DeleteResult.DELETED else DeleteResult.FAILED
+    } catch (_: Exception) {
+        DeleteResult.FAILED
+    }
+
+    private fun safeSize(file: DocumentFile): Long = try {
+        file.length()
+    } catch (_: Exception) {
+        0L
+    }
+
+    private fun safeLastModified(file: DocumentFile): Long = try {
+        file.lastModified()
+    } catch (_: Exception) {
+        0L
     }
 
     // ---- API 29+ (MediaStore / scoped storage) ----

@@ -12,6 +12,7 @@ import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
+import androidx.documentfile.provider.DocumentFile
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -27,8 +28,10 @@ import java.util.Locale
  * main/service thread. All muxer access is serialized via [muxerLock], and a volatile
  * [released] flag provides a fast-path exit for [feedFrame] after [stop] completes.
  *
- * Storage: Uses MediaStore on API 29+ (scoped storage, no permissions needed) and
- * legacy file I/O on API 24–28 (requires WRITE_EXTERNAL_STORAGE).
+ * Storage: When a custom folder is configured (settings, e.g. an SD card) recordings go
+ * there through the Storage Access Framework. Otherwise: MediaStore on API 29+ (scoped
+ * storage, no permissions needed) and legacy file I/O on API 24–28 (requires
+ * WRITE_EXTERNAL_STORAGE).
  */
 class LocalRecorder(
     private val context: Context,
@@ -56,6 +59,7 @@ class LocalRecorder(
 
     // --- Output references ---
     private var mediaStoreUri: Uri? = null
+    private var outputUri: Uri? = null
     private var outputFile: File? = null
     private var pfd: ParcelFileDescriptor? = null
 
@@ -78,7 +82,18 @@ class LocalRecorder(
             val filename = generateFilename()
 
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val customFolder = RecordingsHelper.customRoot(context)
+                if (customFolder != null) {
+                    // User-chosen folder (SAF tree, possibly on an SD card)
+                    val document = customFolder.createFile("video/mp4", filename)
+                        ?: throw IllegalStateException("Failed to create file in custom folder")
+                    val uri = document.uri
+                    val fd = context.contentResolver.openFileDescriptor(uri, "rw")
+                        ?: throw IllegalStateException("Failed to open file descriptor for $uri")
+                    outputUri = uri
+                    pfd = fd
+                    muxer = MediaMuxer(fd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // API 29+: MediaStore (scoped storage)
                     val values = ContentValues().apply {
                         put(MediaStore.Video.Media.DISPLAY_NAME, filename)
@@ -172,8 +187,9 @@ class LocalRecorder(
         }
     }
 
-    /** Returns a display-friendly location (content:// URI on API 29+, file path on older). */
+    /** Returns a display-friendly location (content:// URI or file path). */
     fun recordingLocation(): String = when {
+        outputUri != null -> outputUri.toString()
         mediaStoreUri != null -> mediaStoreUri.toString()
         outputFile != null -> outputFile!!.absolutePath
         else -> ""
@@ -294,6 +310,12 @@ class LocalRecorder(
             Log.e(TAG, "close pfd: ${e.message}")
         }
 
+        if (outputUri != null) {
+            // Custom SAF folder: the file is already visible through the folder picker
+            // (and any file manager browsing that folder); no MediaStore / scan needed.
+            return
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             // Clear IS_PENDING to make the file visible
             mediaStoreUri?.let { uri ->
@@ -328,7 +350,15 @@ class LocalRecorder(
             Log.e(TAG, "close pfd in cleanup: ${e.message}")
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (outputUri != null) {
+            outputUri?.let { uri ->
+                try {
+                    DocumentFile.fromSingleUri(context, uri)?.delete()
+                } catch (e: Exception) {
+                    Log.e(TAG, "cleanup SAF file: ${e.message}")
+                }
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             mediaStoreUri?.let { uri ->
                 try {
                     context.contentResolver.delete(uri, null, null)
@@ -346,6 +376,7 @@ class LocalRecorder(
             }
         }
         mediaStoreUri = null
+        outputUri = null
         outputFile = null
     }
 

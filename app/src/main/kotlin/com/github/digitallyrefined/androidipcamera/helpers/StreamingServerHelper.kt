@@ -863,7 +863,7 @@ class StreamingServerHelper(
                 return
             }
 
-            // ---- Recorded files endpoints (Movies/AndroidIPCamera) ----
+            // ---- Recorded files endpoints (Movies/AndroidIPCamera or the custom folder) ----
             if (fileManager.handleRequest(httpMethod, path, writer, outputStream)) {
                 try { socket.close() } catch (_: Exception) {}
                 return
