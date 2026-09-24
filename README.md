@@ -54,7 +54,7 @@ The app runs as a foreground service with a persistent notification, so it won't
 
 ## 🎥 Frigate config
 
-Use the example config below to add your phones camera to [Frigate](https://github.com/blakeblackshear/frigate), optionally uncommenting the audio lines (if required) & update the `rtsp` stream:
+Use the example config below to add your phone's camera to [Frigate](https://github.com/blakeblackshear/frigate) & update the URLs. The `android-cam` composite stream additionally wires up **two-way talk / push-to-talk** from the Frigate live view (it needs a `GO2RTC_ALLOW_ARBITRARY_EXEC=true` environment variable set).
 
 ### Settings > Configuration Editor
 
@@ -62,27 +62,35 @@ Use the example config below to add your phones camera to [Frigate](https://gith
 go2rtc:
   streams:
     android-cam-video:
-      ## For example: https://test:Testing123@192.168.0.5:4444/video/h264
-      ## Or use to use a .env file:
-      ## https://{ANDROID_CAM_USER}:{ANDROID_CAM_PASSWORD}@[ip_address]:4444/video/h264
-      - "https://[username]:[password]@[ip_address]:4444/video/h264" 
-    # android-cam-audio:
-    #   - "https://[username]:[password]@[ip_address]:4444/audio"
-    # android-cam:
-    #  - ffmpeg:android-cam-video#video=copy
-    #  - ffmpeg:android-cam-audio#audio=copy
+      # For example: https://test:Testing123@192.168.0.5:4444/video/h264
+      # Or use to use a .env file:
+      # https://{ANDROID_CAM_USER}:{ANDROID_CAM_PASSWORD}@[ip_address]:4444/video/h264
+      - "https://[username]:[password]@[ip_address]:4444/video/h264"
+    android-cam-audio:
+      - "https://[username]:[password]@[ip_address]:4444/audio"
+    android-cam:
+      # Video
+      - ffmpeg:android-cam-video#video=copy
+      # Phone audio
+      - ffmpeg:android-cam-audio#audio=copy
+      # Push-to-talk (from Frigate, requires GO2RTC_ALLOW_ARBITRARY_EXEC=true)
+      - "exec:/usr/lib/ffmpeg/8.0/bin/ffmpeg -hide_banner -v error -f alaw -ar 8000 -ac 1 -i - -ar 44100 -ac 1 -c:a pcm_s16le -f s16le -method POST -tls_verify 0 https://[username]:[password]@[ip_address]:4444/audio/upload#backchannel=1#audio=alaw/8000"
 
 cameras:
   android-cam:
     enabled: true
     ffmpeg:
       inputs:
-        - path: rtsp://127.0.0.1:8554/android-cam-video ## or android-cam
+        - path: rtsp://127.0.0.1:8554/android-cam # "android-cam-video" can be used if just the video is required
           input_args: preset-rtsp-restream
           roles:
             - detect
             - record
-    #        - audio
+            - audio
+
+  webrtc:
+    candidates:
+      - 127.0.0.1:8555
 ```
 
 **Note:** if your username or password contains special characters, you'll need to URL encode them via:  
@@ -112,6 +120,10 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Listen to the raw (unprocessed) microphone source, bypassing any system audio processing (e.g. noise suppression, echo cancellation, AGC). On Android 7.0+ (API 24+) this uses the `UNPROCESSED` audio source; on older devices it falls back to the standard microphone.
   * **Format:** `audio/wav` chunked transfer-encoding (WAV container, 16-bit PCM mono, 44.1kHz).
     * **VLC/MPV:** Run `vlc https://[ip_address]:[port]/audio/raw` or `mpv https://[ip_address]:[port]/audio/raw`.
+* **Two-Way Audio Upload (`/audio/upload`, POST)**
+  * **Usage:** Send raw audio to the phone, whose speaker plays it live. Used by the built-in web control panel's push-to-talk button and by go2rtc/Frigate two-way talk (see the Frigate config above).
+  * **Body:** Raw 16-bit PCM mono 44.1kHz. Accepts `Content-Length`, `chunked` transfer-encoding and `Expect: 100-continue`.
+  * **Responses:** `200 OK` per complete body; `503 Service Unavailable` if streaming is disabled.
 * **Still Snapshot (`/video/snapshot`)**
   * **Usage:** Fetch a single high-resolution image.
   * **Format:** `image/jpeg`
@@ -215,6 +227,8 @@ This project uses [reproducible builds](https://f-droid.org/docs/Reproducible_Bu
 ```
 
 The release variant will automatically sign the APK build. Build-tools 35+ is known to produce signatures that fail reproducibility verification.
+
+You can also build the debug or signed release APKs with Docker: `docker build -t android-ip-camera:builder .` then `docker run --rm -v "$PWD":/workspace -v "$PWD/.cache/gradle":/cache/gradle android-ip-camera:builder debug` (or `release` to build with a signing key). See the [Dockerfile](Dockerfile) for caching and advanced usage.
 
 ### Build Variants
 

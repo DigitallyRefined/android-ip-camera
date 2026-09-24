@@ -14,5 +14,8 @@ app/signing-key.jks
 certificates
 .venv
 
+# Docker builder caches (see Dockerfile usage)
+.cache
+
 # local build helpers (machine-specific paths)
 _wsl_*.sh
