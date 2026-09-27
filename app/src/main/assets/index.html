@@ -351,6 +351,28 @@
             <span style="vertical-align:middle;">Mirror</span>
           </label>
 
+          <p class="group-title">Low Light</p>
+
+          <label for="lowlightLevel"
+            title="Longer exposures collect more light in a dark room. The frame rate drops to match, so moving subjects blur and the stream uses far less bandwidth — the trade is worth it for a room that is otherwise pitch black.">
+            Night Vision <span class='val-badge' id='lowlightVal'>Off</span>
+          </label>
+          <select id="lowlightLevel" data-control="lowlight" onchange="updateLowLightNote()"
+            style="margin-bottom: 8px;">
+            <option value="0">Off</option>
+            <option value="1">Low — up to 1/15s exposure</option>
+            <option value="2">Medium — up to 1/8s exposure</option>
+            <option value="3">High — up to 1/4s exposure</option>
+            <option value="4">Maximum — up to 1s exposure</option>
+          </select>
+          <div id="lowlightNote" style="font-size:12px;color:#aaa;margin:0 0 12px 0;line-height:1.4;"></div>
+
+          <label id="nightExtLabel" style="display:none;margin-bottom: 12px;"
+            title="Uses the phone manufacturer's own night algorithm instead of the app's long-exposure mode. Available only on devices that ship a CameraX NIGHT extension. Restarts the camera stream.">
+            <input type="checkbox" id="nightExtCheckbox" onchange="onNightExtToggle(this)" style="margin:0;vertical-align:middle;">
+            <span style="vertical-align:middle;">Use device Night mode (OEM)</span>
+          </label>
+
           <p class="group-title">Post Processing</p>
 
           <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
@@ -566,7 +588,7 @@
     function normalizeValueForKey(key, val) {
       if (val === null || val === undefined) return val;
       // Numeric settings should be stored as numbers when possible
-      if (['zoom', 'exposure', 'rotate', 'scale', 'contrast', 'focusDistance'].includes(key)) {
+      if (['zoom', 'exposure', 'rotate', 'scale', 'contrast', 'focusDistance', 'lowlight'].includes(key)) {
         const n = parseFloat(val);
         return Number.isFinite(n) ? n : val;
       }
@@ -583,6 +605,102 @@
       cam.lensSettings[key] = normalizeValueForKey(key, val);
       // Reflect the change in the visible controls without re-sending to server
       try { applyStreamSettings(cam.lensSettings); } catch (_) { }
+      // Night vision has extra state (reachable levels, note text, OEM exclusivity).
+      try { applyLowLightState(cam.lensSettings, null); } catch (_) { }
+    }
+
+    // ---- Night vision (low light) ----
+    // The server reports what each lens can actually reach (longest exposure, whether a boost range
+    // exists, the slowest fps range it will go to). Levels above that would be a no-op, so they are
+    // disabled rather than offered and silently doing nothing.
+    const LOWLIGHT_MAX_LEVEL = 4;
+    const LOWLIGHT_LABELS = ['Off', 'Low', 'Medium', 'High', 'Maximum'];
+    // Matches LowLight.Profile.targetFps in the app.
+    const LOWLIGHT_FPS = [30, 15, 8, 4, 1];
+    let nightExtProbed = false;
+    let nightExtAvailable = {};
+
+    function lowLightCaps() {
+      return selectedCameraInfo()?.lowLight || null;
+    }
+
+    function clampLowLightLevel(level) {
+      const caps = lowLightCaps();
+      const max = (caps && Number.isFinite(caps.maxLevel)) ? caps.maxLevel : LOWLIGHT_MAX_LEVEL;
+      return Math.max(0, Math.min(max, parseInt(level, 10) || 0));
+    }
+
+    function updateLowLightNote() {
+      const sel = getElById('lowlightLevel');
+      const note = getElById('lowlightNote');
+      const val = getElById('lowlightVal');
+      if (!sel) return;
+      const caps = lowLightCaps();
+      const max = (caps && Number.isFinite(caps.maxLevel)) ? caps.maxLevel : LOWLIGHT_MAX_LEVEL;
+      // Disable the levels this lens cannot deliver rather than letting them look available.
+      Array.from(sel.options).forEach(o => {
+        const v = parseInt(o.value, 10) || 0;
+        o.disabled = v > max;
+      });
+      const level = clampLowLightLevel(sel.value);
+      if (String(level) !== sel.value) sel.value = String(level);
+      if (val) val.textContent = LOWLIGHT_LABELS[level] || LOWLIGHT_LABELS[0];
+      if (!note) return;
+      if (level === 0) {
+        note.textContent = '';
+        return;
+      }
+      const fps = LOWLIGHT_FPS[level];
+      const shutterMs = Math.round(1000 / fps);
+      // Cap the advertised shutter at what the sensor reports, so the hint cannot promise more
+      // light than the hardware can physically collect.
+      const sensorMs = (caps && Number.isFinite(caps.maxExposureMs)) ? caps.maxExposureMs : null;
+      const realMs = sensorMs != null ? Math.min(shutterMs, sensorMs) : shutterMs;
+      const parts = [`~1/${Math.round(1000 / realMs)}s exposure`, `${fps} fps`];
+      if (caps && caps.maxIso) parts.push(`up to ISO ${caps.maxIso}`);
+      if (caps && caps.boostUpper > 100) parts.push('+ sensitivity boost');
+      note.textContent = parts.join(' · ') + '. Moving subjects will blur; bandwidth drops with the frame rate.';
+    }
+
+    function onNightExtToggle(el) {
+      const on = !!(el && el.checked);
+      // The OEM extension and the app's long-exposure levels are alternatives — enabling one
+      // clears the other so a frame is never processed twice.
+      if (on) {
+        const sel = getElById('lowlightLevel');
+        if (sel && sel.value !== '0') { sel.value = '0'; sendControl('lowlight', '0'); }
+      }
+      sendControl('night_ext', on ? 'true' : 'false');
+    }
+
+    function applyLowLightState(settings, deviceInfo) {
+      const sel = getElById('lowlightLevel');
+      if (settings && settings.lowlight !== undefined && sel) {
+        sel.value = String(clampLowLightLevel(settings.lowlight));
+      }
+      if (deviceInfo) {
+        nightExtProbed = !!deviceInfo.nightExtProbed;
+        nightExtAvailable = deviceInfo.nightExtAvailable || {};
+      }
+      const label = getElById('nightExtLabel');
+      const box = getElById('nightExtCheckbox');
+      if (label && box) {
+        const cam = selectedCameraInfo();
+        const logical = cam ? String(cam.id).split(':')[0] : '';
+        const supported = nightExtProbed && !!nightExtAvailable[logical];
+        label.style.display = supported ? '' : 'none';
+        box.disabled = !supported;
+        if (!supported) box.checked = false;
+      }
+      if (settings && settings.nightExt !== undefined && box) {
+        box.checked = settings.nightExt === 'true' || settings.nightExt === true;
+      }
+      // Long exposure and the OEM extension are alternatives; reflect that in the UI too.
+      if (box && box.checked) {
+        const s = getElById('lowlightLevel');
+        if (s && s.value !== '0') { s.value = '0'; sendControl('lowlight', '0'); }
+      }
+      updateLowLightNote();
     }
 
     function formatControlValue(el) {
@@ -1294,6 +1412,9 @@
           }
           // applyStreamSettings expects camelCase keys (e.g. focusDistance)
           applyStreamSettings(newCameraInfo.lensSettings);
+          // Night vision is per-lens: its reachable levels and OEM-extension support differ
+          // between lenses, so it has to be re-evaluated on every switch.
+          applyLowLightState(newCameraInfo.lensSettings, null);
         }
       } catch (_) { }
     }
@@ -1424,7 +1545,14 @@
         const serverVal = settings[key];
         // If server provided a value, set it in the control (but don't send back).
         if (serverVal !== undefined && serverVal !== null) {
-          try { el.value = serverVal; } catch (_) { }
+          // A <select> whose value matches no option renders as blank, which looks broken. This
+          // happens legitimately here: a stored level can exceed what the current lens supports
+          // (e.g. saved on another phone). Leave it to that control's own handler to clamp.
+          const isSelect = el.tagName === 'SELECT';
+          const known = !isSelect || Array.from(el.options).some(o => o.value === String(serverVal));
+          if (known) {
+            try { el.value = serverVal; } catch (_) { }
+          }
         } else {
           // Ensure selects default to their first option if not set
           if (el.tagName === 'SELECT' && !el.value) {
@@ -1505,6 +1633,7 @@
                 }
                 applyStreamSettings(cam.lensSettings);
               }
+              applyLowLightState(cam?.lensSettings, data);
               // Ensure zoom max and clamps reflect newly applied lens settings
               try { updateZoomMax(); } catch (_) { }
             } catch (_) { }

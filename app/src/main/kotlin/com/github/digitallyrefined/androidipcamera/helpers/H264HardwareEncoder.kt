@@ -96,6 +96,7 @@ class H264HardwareEncoder(
      */
     fun feed(image: ImageProxy, ptsUs: Long, mirror: Boolean = false, rotation: Int = 0) {
         if (useSurface) return
+        val yLut = yLut()
         synchronized(codecLock) {
             if (!running) return
             try {
@@ -107,8 +108,8 @@ class H264HardwareEncoder(
                     // we copy source pixels in reversed column order instead of post-mirroring.
                     val dstImage = codec.getInputImage(idx)
                     if (dstImage != null) {
-                        if (mirror) mirroredCopyYuv(image, dstImage)
-                        else copyYuv(image, dstImage)
+                        if (mirror) mirroredCopyYuv(image, dstImage, yLut)
+                        else copyYuv(image, dstImage, yLut)
                         val size = width * height * 3 / 2
                         codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
                         return
@@ -120,7 +121,7 @@ class H264HardwareEncoder(
                     val size = width * height * 3 / 2
                     var arr = yuv
                     if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
-                    toYuv420(image, arr)
+                    toYuv420(image, arr, yLut = yLut)
                     buf.clear(); buf.put(arr, 0, size)
                     codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
                     return
@@ -136,7 +137,7 @@ class H264HardwareEncoder(
                     val srcSize = image.width * image.height * 3 / 2
                     var srcArr = yuv
                     if (srcArr == null || srcArr.size != srcSize) { srcArr = ByteArray(srcSize); yuv = srcArr }
-                    toYuv420(image, srcArr, image.width, image.height)
+                    toYuv420(image, srcArr, image.width, image.height, yLut)
                     val dstSize = width * height * 3 / 2
                     var dstArr = rotYuv
                     if (dstArr == null || dstArr.size != dstSize) { dstArr = ByteArray(dstSize); rotYuv = dstArr }
@@ -150,7 +151,7 @@ class H264HardwareEncoder(
                 val srcSize = image.width * image.height * 3 / 2
                 var srcArr = yuv
                 if (srcArr == null || srcArr.size != srcSize) { srcArr = ByteArray(srcSize); yuv = srcArr }
-                toYuv420(image, srcArr, image.width, image.height)
+                toYuv420(image, srcArr, image.width, image.height, yLut)
                 val dstSize = width * height * 3 / 2
                 var dstArr = rotYuv
                 if (dstArr == null || dstArr.size != dstSize) { dstArr = ByteArray(dstSize); rotYuv = dstArr }
@@ -163,6 +164,27 @@ class H264HardwareEncoder(
                 if (running) Log.e(TAG, "feed: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Luma tone curve for the software (byte-buffer) encode path, or null for none. The surface path
+     * renders through [CameraGlPipe], which applies the same curve on the GPU, so this is only set
+     * when [useSurface] is false. Null / identity means the frame is passed through untouched.
+     */
+    @Volatile var lowLightTone: LowLight.LumaTone? = null
+    @Volatile private var yLutCache: Pair<LowLight.LumaTone, ByteArray>? = null
+
+    /** Cached 256-entry LUT for [lowLightTone]; the curve only changes when the level does, so this
+     *  is rebuilt on change instead of per frame. */
+    private fun yLut(): ByteArray? {
+        if (useSurface) return null
+        val tone = lowLightTone ?: return null
+        if (tone.isIdentity) return null
+        val cached = yLutCache
+        if (cached != null && cached.first == tone) return cached.second
+        val lut = tone.toLut()
+        yLutCache = tone to lut
+        return lut
     }
 
     /**
@@ -283,18 +305,19 @@ class H264HardwareEncoder(
         }
     }
 
-    private fun copyYuv(src: ImageProxy, dst: Image) {
+    private fun copyYuv(src: ImageProxy, dst: Image, yLut: ByteArray?) {
         val srcPlanes = src.planes
         val dstPlanes = dst.planes
 
-        // Y plane
-        copyPlane(srcPlanes[0], dstPlanes[0], src.width, src.height)
+        // Y plane — the only one that gets the low-light tone curve; chroma is left alone so colour
+        // and white balance are preserved (see LowLight.LumaTone).
+        copyPlane(srcPlanes[0], dstPlanes[0], src.width, src.height, yLut)
 
         // U and V planes
         val uvW = src.width / 2
         val uvH = src.height / 2
-        copyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
-        copyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
+        copyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH, null)
+        copyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH, null)
     }
 
     /**
@@ -379,24 +402,30 @@ class H264HardwareEncoder(
 
     /** Like [copyYuv] but copies source pixels in reversed column order to achieve a horizontal
      *  mirror. Uses the [getInputImage] path so codec stride/padding requirements are met. */
-    private fun mirroredCopyYuv(src: ImageProxy, dst: Image) {
+    private fun mirroredCopyYuv(src: ImageProxy, dst: Image, yLut: ByteArray?) {
         val srcPlanes = src.planes
         val dstPlanes = dst.planes
-        mirroredCopyPlane(srcPlanes[0], dstPlanes[0], src.width, src.height)
+        mirroredCopyPlane(srcPlanes[0], dstPlanes[0], src.width, src.height, yLut)
         val uvW = src.width / 2
         val uvH = src.height / 2
-        mirroredCopyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
-        mirroredCopyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
+        mirroredCopyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH, null)
+        mirroredCopyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH, null)
     }
 
     private var planeRowBuf: ByteArray? = null
     private var planeDstRowBuf: ByteArray? = null
 
+    /**
+     * Copy one plane, optionally mapping it through a luma [yLut] on the way. The curve is applied to
+     * the destination row (which is dense and pixel-stride-1 in the normal luma case) rather than to
+     * the source row, whose interleaved bytes are not all pixels when pixelStride > 1.
+     */
     private fun copyPlane(
         src: ImageProxy.PlaneProxy,
         dst: Image.Plane,
         w: Int,
-        h: Int
+        h: Int,
+        yLut: ByteArray? = null
     ) {
         val sBuf = src.buffer
         val dBuf = dst.buffer
@@ -422,6 +451,7 @@ class H264HardwareEncoder(
             dBuf.position(row * dRow)
             if (sPix == 1 && dPix == 1) {
                 val bytesToWrite = minOf(w, dBuf.remaining())
+                if (yLut != null) LowLight.applyLut(rBuf, 0, bytesToWrite, yLut)
                 dBuf.put(rBuf, 0, bytesToWrite)
             } else if (dRBuf != null) {
                 val limit = minOf(w * dPix, dRow)
@@ -439,6 +469,7 @@ class H264HardwareEncoder(
                         dRBuf[dstIdx] = rBuf[srcIdx]
                     }
                 }
+                if (yLut != null && dPix == 1) LowLight.applyLut(dRBuf, 0, w, yLut)
                 dBuf.put(dRBuf, 0, bytesToCopy)
             }
         }
@@ -449,7 +480,8 @@ class H264HardwareEncoder(
         src: ImageProxy.PlaneProxy,
         dst: Image.Plane,
         w: Int,
-        h: Int
+        h: Int,
+        yLut: ByteArray? = null
     ) {
         val sBuf = src.buffer
         val dBuf = dst.buffer
@@ -475,9 +507,13 @@ class H264HardwareEncoder(
             dBuf.position(row * dRow)
             if (sPix == 1 && dPix == 1) {
                 val bytesToWrite = minOf(w, dBuf.remaining())
-                for (i in 0 until bytesToWrite) {
-                    dBuf.put(rBuf[bytesToWrite - 1 - i])
-                }
+                // Mirror the source row into a scratch buffer so the tone curve can run on whole
+                // pixels; writing the LUT output straight from rBuf would reverse the curve too.
+                var rowBuf = mirrorRowBuf
+                if (rowBuf == null || rowBuf.size < bytesToWrite) { rowBuf = ByteArray(bytesToWrite); mirrorRowBuf = rowBuf }
+                for (i in 0 until bytesToWrite) rowBuf[i] = rBuf[bytesToWrite - 1 - i]
+                if (yLut != null) LowLight.applyLut(rowBuf, 0, bytesToWrite, yLut)
+                dBuf.put(rowBuf, 0, bytesToWrite)
             } else if (dRBuf != null) {
                 val limit = minOf(w * dPix, dRow)
                 val bytesToCopy = minOf(limit, dBuf.remaining())
@@ -494,11 +530,13 @@ class H264HardwareEncoder(
                         dRBuf[dstIdx] = rBuf[srcIdx]
                     }
                 }
+                if (yLut != null && dPix == 1) LowLight.applyLut(dRBuf, 0, w, yLut)
                 dBuf.put(dRBuf, 0, bytesToCopy)
             }
         }
     }
 
+    private var mirrorRowBuf: ByteArray? = null
     private var yRowBuf: ByteArray? = null
     private var uRowBuf: ByteArray? = null
     private var vRowBuf: ByteArray? = null
@@ -507,8 +545,9 @@ class H264HardwareEncoder(
      * YUV_420_888 (any plane stride) -> Y plane, then NV12 interleaved UV or I420 planar U,V per [semiPlanar].
      * Reads each source row in ONE bulk ByteBuffer.get into a reused array, then strides in the array —
      * per-pixel ByteBuffer.get() is the throughput killer (bounds-checked native read per byte).
+     * [yLut], when given, develops the Y plane only, as soon as it is dense in [out].
      */
-    private fun toYuv420(image: ImageProxy, out: ByteArray, w: Int = width, h: Int = height) {
+    private fun toYuv420(image: ImageProxy, out: ByteArray, w: Int = width, h: Int = height, yLut: ByteArray? = null) {
         val yP = image.planes[0]; val uP = image.planes[1]; val vP = image.planes[2]
         val yB = yP.buffer; val uB = uP.buffer; val vB = vP.buffer
         val yRow = yP.rowStride; val yPix = yP.pixelStride
@@ -524,6 +563,7 @@ class H264HardwareEncoder(
                 o += w
             }
         }
+        if (yLut != null) LowLight.applyLut(out, 0, w, h, yLut)
         val uRow = uP.rowStride; val uPix = uP.pixelStride
         val vRow = vP.rowStride; val vPix = vP.pixelStride
         val cw = w / 2; val ch = h / 2

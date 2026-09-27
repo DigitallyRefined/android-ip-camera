@@ -29,5 +29,30 @@ interface CaptureBackend {
      * continuous autofocus. Backends apply this on a best-effort basis.
      */
     fun setManualFocus(distance: Float)
+
+    /**
+     * Low-light level, 0 = off and 1..[LowLight.MAX_LEVEL] = progressively longer exposures
+     * (see [LowLight.Profile]). The frame-rate ceiling is what actually buys the light, so this
+     * also slows the stream down. Backends clamp to what their HAL supports.
+     */
+    fun setLowLight(level: Int) {}
+
+    /**
+     * What this camera can actually reach, so the UI can cap the level at real hardware limits
+     * rather than offering a setting that would silently do nothing.
+     */
+    val lowLightCaps: LowLight.Caps get() = LowLight.Caps.UNKNOWN
+
+    /**
+     * Opt-in alternative to [setLowLight]: bind through the OEM CameraX NIGHT extension so the
+     * vendor's tuned night algorithm enhances the stream. Only offered where the extension exists
+     * and can feed the software YUV paths, and it needs a rebind. Mutually exclusive with
+     * [setLowLight] — turning one on turns the other off.
+     */
+    fun setNightExtension(on: Boolean) {}
+
+    /** True when the active camera exposes an OEM NIGHT extension usable for the stream. */
+    fun isNightExtensionSupported(): Boolean = false
+
     fun stop()
 }

@@ -26,6 +26,8 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
     private var onPreviewFrame: ((ByteArray) -> Unit)? = null
     @Volatile private var torchEnabled = false
     @Volatile private var stopped = false
+    /** FPS range applied by start(); restored when low light is turned back off. */
+    private var defaultFpsRange: IntArray? = null
     /** This lens can only drive the flash if the HAL advertises FLASH_MODE_TORCH. */
     override val hasFlashUnit: Boolean
 
@@ -47,7 +49,7 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         p.supportedPreviewFpsRange?.let { ranges ->
             val want = fps * 1000
             (ranges.filter { it[1] >= want }.minByOrNull { it[0] } ?: ranges.maxByOrNull { it[1] })
-                ?.let { p.setPreviewFpsRange(it[0], it[1]) }
+                ?.let { p.setPreviewFpsRange(it[0], it[1]); defaultFpsRange = it.copyOf() }
         }
         listOf(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO,
                Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE,
@@ -191,6 +193,59 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
     private fun live(block: (Camera.Parameters) -> Unit) {
         try { val p = camera.parameters; block(p); camera.parameters = p } catch (_: Exception) {}
     }
+
+    /**
+     * Low-light tuning for the legacy HAL. Camera1 has no exposure-time or sensitivity control, so
+     * the only real lever is the preview FPS range: the HAL cannot expose longer than one frame
+     * period, so dropping the ceiling is what lets it gather more light. The vendor NIGHT scene mode
+     * and the `denoise` tag are requested as a bonus, since neither is universally supported.
+     */
+    override fun setLowLight(level: Int) = live { p ->
+        val profile = LowLight.profile(level)
+        if (profile.level == 0) {
+            if (p.supportedSceneModes?.contains(Camera.Parameters.SCENE_MODE_AUTO) == true) {
+                p.sceneMode = Camera.Parameters.SCENE_MODE_AUTO
+            }
+            val restored = defaultFpsRange
+            if (restored != null) p.setPreviewFpsRange(restored[0], restored[1])
+            Log.i(TAG, "low light off, fps=${restored?.get(0)?.div(1000)}-${restored?.get(1)?.div(1000)} scene=${p.sceneMode}")
+            return@live
+        }
+        // Slowest advertised range: the longest shutter the HAL will hold. This deliberately ignores
+        // the level's target rate and just takes the floor of what the camera offers — the upper
+        // bound is the frame-rate ceiling, and a range that merely spans the target (e.g. [0,30] for
+        // an 8 fps level) would let the HAL keep running fast and the level would do nothing.
+        // Camera.Parameters ranges are in thousandths of a frame per second, as in start() above.
+        val slowest = p.supportedPreviewFpsRange?.minWithOrNull(compareBy({ it[1] }, { it[0] }))
+        slowest?.let { p.setPreviewFpsRange(it[0], it[1]) }
+        if (profile.sceneModeNight) {
+            when {
+                p.supportedSceneModes?.contains(Camera.Parameters.SCENE_MODE_NIGHT) == true ->
+                    p.sceneMode = Camera.Parameters.SCENE_MODE_NIGHT
+                p.supportedSceneModes?.contains(Camera.Parameters.SCENE_MODE_NIGHT_PORTRAIT) == true ->
+                    p.sceneMode = Camera.Parameters.SCENE_MODE_NIGHT_PORTRAIT
+            }
+        }
+        Log.i(TAG, "low light L${profile.level} fps=${slowest?.get(0)?.div(1000)}-${slowest?.get(1)?.div(1000)} scene=${p.sceneMode}")
+    }
+
+    /** Legacy HALs expose no sensitivity/exposure-time ranges, so only the FPS ceiling is reportable. */
+    override val lowLightCaps: LowLight.Caps
+        get() = try {
+            // Thousandths of fps, as Camera.Parameters reports them.
+            val minFps = camera.parameters.supportedPreviewFpsRange?.minOfOrNull { it[1] / 1000 } ?: 30
+            LowLight.Caps(
+                maxExposureMs = (1000f / minFps).toInt().coerceAtLeast(1),
+                maxIso = 0,
+                boostUpper = 100,
+                minFpsUpper = minFps,
+                manualSensor = false,
+            )
+        } catch (_: Exception) { LowLight.Caps.UNKNOWN }
+
+    /** No CameraX on the Camera1 backend, so the OEM extension is never available there. */
+    override fun isNightExtensionSupported(): Boolean = false
+    override fun setNightExtension(on: Boolean) = Unit
 
     override fun stop() {
         stopped = true

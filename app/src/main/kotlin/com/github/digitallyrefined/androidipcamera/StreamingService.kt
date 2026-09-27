@@ -716,6 +716,7 @@ class StreamingService : LifecycleService() {
             val pipe = CameraGlPipe(enc.inputSurface!!, want.width, want.height, fpsCoerced, standardBuffer = true).also {
                 it.mirror = readMirrorPref()
                 it.rotation = quantizedRotation(readRotatePref())
+                it.lowLightTone = storedLowLightTone()
                 it.start()
                 cameraXGlPipe = it
             }
@@ -745,7 +746,12 @@ class StreamingService : LifecycleService() {
             onEncoderSurfaceFallback = {
                 Log.i(TAG, "CameraX SurfaceProvider fallback triggered: switching H.264 to software YUV mode")
                 h264?.setEncoder(null)
-            }
+            },
+            // Seeded here rather than left to applyStored(), which only runs once the camera is
+            // already bound: the low-light AE fps range is baked into each use case at build time, so
+            // it has to be known before the bind or the first session of a session starts un-tuned.
+            initialLowLightLevel = readLowLightPref(),
+            initialNightExtension = readNightExtPref(),
         ) { img ->
             try {
                 cameraXGlPipe?.let { pipe ->
@@ -832,6 +838,7 @@ class StreamingService : LifecycleService() {
         return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also {
             it.mirror = readMirrorPref()
             it.rotation = quantizedRotation(readRotatePref())
+            it.lowLightTone = storedLowLightTone()
             it.start()
             glPipe = it
         }
@@ -871,6 +878,62 @@ class StreamingService : LifecycleService() {
             else -> null
         }
         focus?.toFloatOrNull()?.let { b.setManualFocus(it) }
+
+        // Low light. Applied after the other camera controls because it is the one that changes how
+        // long the sensor exposes, and the pixel-side curve below must be pushed to the encoders too.
+        b.setLowLight(readLowLightPref())
+        b.setNightExtension(readNightExtPref())
+        applyLowLightTone()
+    }
+
+    /** Stored low-light level for the active camera (token key, then physical id). */
+    private fun readLowLightPref(): Int {
+        val p = PreferenceManager.getDefaultSharedPreferences(this)
+        val id = camId()
+        val phys = id.substringAfter(':', id)
+        val raw = when {
+            p.contains("lowlight_$id") -> p.getString("lowlight_$id", null)
+            p.contains("lowlight_$phys") -> p.getString("lowlight_$phys", null)
+            else -> null
+        } ?: return 0
+        return raw.toIntOrNull()?.coerceIn(0, LowLight.MAX_LEVEL) ?: 0
+    }
+
+    /**
+     * Push the low-light tone curve to every pixel path so the *streamed* image is developed, not
+     * just the camera capture settings. Without this the sensor would collect the light and the
+     * encoder would still throw most of it away into the bottom of the luma range.
+     * The H.264 surface path renders through a GL pipe, so that pipe needs the curve as well.
+     */
+    private fun applyLowLightTone() {
+        val effective = storedLowLightTone()
+        cameraXGlPipe?.lowLightTone = effective
+        glPipe?.lowLightTone = effective
+        encoders.forEach { it.lowLightTone = effective }
+    }
+
+    /** The tone curve implied by the stored level, or null when the frame must pass through as-is. */
+    private fun storedLowLightTone(): LowLight.LumaTone? {
+        // Prefs are cleared in tandem with the controls, but a tone curve is a pure function of the
+        // stored level, so this stays correct even if a stale pair survives (e.g. restored prefs from
+        // an older build). The OEM extension does its own brightening — adding ours on top of it
+        // would lift the blacks twice and wash the image out.
+        if (readNightExtPref()) return null
+        val tone = LowLight.profile(readLowLightPref()).tone
+        return if (tone.isIdentity) null else tone
+    }
+
+    /** Stored OEM-night-extension opt-in for the active camera (token key, then physical id). */
+    private fun readNightExtPref(): Boolean {
+        val p = PreferenceManager.getDefaultSharedPreferences(this)
+        val id = camId()
+        val phys = id.substringAfter(':', id)
+        val raw = when {
+            p.contains("night_ext_$id") -> p.getString("night_ext_$id", "false")
+            p.contains("night_ext_$phys") -> p.getString("night_ext_$phys", "false")
+            else -> null
+        }
+        return raw?.toBoolean() == true
     }
 
     /** Rear camera id that owns the flash unit (usually the main lens). Auxiliary rear lenses on
@@ -1335,6 +1398,45 @@ class StreamingService : LifecycleService() {
                     if (value != "camera1") prefs.edit().putBoolean("camera2_unusable", false).apply()
                     debouncedStartCamera()
                 }
+            }
+            "lowlight" -> {
+                // Low-light level: 0 = off, 1..MAX_LEVEL = progressively longer exposures.
+                val level = value.toIntOrNull()?.coerceIn(0, LowLight.MAX_LEVEL) ?: return
+                prefs.edit().putString("lowlight_$id", level.toString()).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("lowlight_$physicalId", level.toString()).apply()
+                // The OEM NIGHT extension and the app's own long exposure are two different ways to
+                // gather light; running both would double-process every frame. Turning a level on
+                // therefore turns the extension off, and the stored value is cleared so a restart
+                // cannot resurrect it and leave the two prefs disagreeing with what is applied.
+                if (level > 0) {
+                    prefs.edit().putString("night_ext_$id", "false").apply()
+                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("night_ext_$physicalId", "false").apply()
+                    launchMain { backend?.setNightExtension(false) }
+                }
+                // Push the pixel-side curve immediately so the very next frame is developed, even
+                // before the camera comes back up.
+                applyLowLightTone()
+                launchMain { backend?.setLowLight(level) }
+                // The AE fps range that unlocks the long exposure is also baked into every use case
+                // at bind time (that is the only way to reach the surface-mode Preview stream), so the
+                // camera has to be restarted for the new level to reach /video/h264. Same cost as a
+                // resolution change, which the UI already warns about.
+                debouncedStartCamera()
+            }
+            "night_ext" -> {
+                // Opt-in OEM CameraX NIGHT extension. Needs a rebind, so it is not debounced — the
+                // backend schedules the rebind itself once the async manager is ready.
+                val on = value == "true"
+                prefs.edit().putString("night_ext_$id", on.toString()).apply()
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("night_ext_$physicalId", on.toString()).apply()
+                // The extension already brightens the frame in its own pipeline, so our own curve
+                // must come off and the level is zeroed for the same reason as above.
+                if (on) {
+                    prefs.edit().putString("lowlight_$id", "0").apply()
+                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("lowlight_$physicalId", "0").apply()
+                }
+                applyLowLightTone()
+                launchMain { backend?.setNightExtension(on) }
             }
         }
 

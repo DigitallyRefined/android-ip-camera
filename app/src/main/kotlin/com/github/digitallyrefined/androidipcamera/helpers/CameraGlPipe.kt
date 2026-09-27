@@ -45,7 +45,16 @@ class CameraGlPipe(
     private var texId = 0
     private var program = 0
     private var aPos = 0; private var aTex = 0; private var uST = 0; private var uMirror = 0
+    private var uTonemap = 0; private var uBlack = 0; private var uGain = 0; private var uGamma = 0
     @Volatile var mirror = false
+    /**
+     * Luma tone curve applied on the GPU to every frame drawn through this pipe, or null for none.
+     * This is what makes a long-exposure dark frame legible as outlines rather than a black
+     * rectangle — the sensor collected the light, but its absolute level is still far down the
+     * luma range, so it has to be developed before encoding. Read per frame from the GL thread, so
+     * it can be changed live without rebinding the camera or restarting the encoder.
+     */
+    @Volatile var lowLightTone: LowLight.LumaTone? = null
     /** Extra clockwise rotation (degrees) applied on top of the camera's own transform. The sensor
      *  rotation is already baked in by the SurfaceTexture transform, so this is the per-camera
      *  rotate= control (quantised to 90° steps). Mirrors what the MJPEG encoder bakes in. */
@@ -175,6 +184,14 @@ class CameraGlPipe(
         GLES20.glEnableVertexAttribArray(aTex)
         GLES20.glUniformMatrix4fv(uST, 1, false, stMatrix, 0)
         GLES20.glUniform1f(uMirror, if (mirror) 1f else 0f)
+        // Low-light tone curve: null / identity means leave the frame completely untouched.
+        val tone = lowLightTone?.takeIf { !it.isIdentity }
+        GLES20.glUniform1f(uTonemap, if (tone != null) 1f else 0f)
+        if (tone != null) {
+            GLES20.glUniform1f(uBlack, tone.blackLevel.toFloat())
+            GLES20.glUniform1f(uGain, tone.gain)
+            GLES20.glUniform1f(uGamma, tone.gamma.coerceIn(0.05f, 20f))
+        }
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -211,9 +228,43 @@ class CameraGlPipe(
     private fun buildProgram(): Int {
         val vs = "attribute vec4 aPos; attribute vec4 aTex; uniform mat4 uST; varying vec2 vTex;\n" +
                  "void main(){ gl_Position = aPos; vTex = (uST * aTex).xy; }"
+        // Low-light development, mirroring LowLight.LumaTone.toLut() step for step (that function is
+        // the reference definition; the two must be changed together):
+        //
+        //   1. luma to the 0..255 scale the curve is defined on,
+        //   2. subtract uBlack, scale by uGain, normalise to 0..1,
+        //   3. raise to uGamma — which is < 1 and therefore lifts,
+        //   4. fold back as a per-pixel scale, so colour and white balance survive (a per-channel
+        //      curve on a noisy dark frame shifts hue frame to frame).
+        //
+        // Two mistakes are easy to make here and both are silent: applying the curve to the 0..1
+        // colour without lifting it to 0..255 drives (luma - uBlack) negative and blacks the frame
+        // out, and inverting the exponent blows the highlights out to solid white.
+        //
+        // highp is requested because pow() in half precision visibly bands the shadow gradients
+        // this pass exists to reveal, but it is only *optional* in a GLES2 fragment shader, so the
+        // mediump fallback is kept. A precision failure would fail shader compilation and take the
+        // whole H.264 stream down, which is far worse than slightly banded shadows.
         val fs = "#extension GL_OES_EGL_image_external : require\n" +
-                 "precision mediump float; varying vec2 vTex; uniform samplerExternalOES sTex; uniform float uMirror;\n" +
-                 "void main(){ vec2 tc = vec2(mix(vTex.x, 1.0 - vTex.x, uMirror), vTex.y); gl_FragColor = texture2D(sTex, tc); }"
+                 "#ifdef GL_FRAGMENT_PRECISION_HIGH\n" +
+                 "precision highp float;\n" +
+                 "#else\n" +
+                 "precision mediump float;\n" +
+                 "#endif\n" +
+                 "varying vec2 vTex; uniform samplerExternalOES sTex;\n" +
+                 "uniform float uMirror; uniform float uTonemap; uniform float uBlack;\n" +
+                 "uniform float uGain; uniform float uGamma;\n" +
+                 "void main(){\n" +
+                 "  vec2 tc = vec2(mix(vTex.x, 1.0 - vTex.x, uMirror), vTex.y);\n" +
+                 "  vec3 c = texture2D(sTex, tc).rgb;\n" +
+                 "  if (uTonemap > 0.5) {\n" +
+                 "    float l = dot(c, vec3(0.2126, 0.7152, 0.0722)) * 255.0;\n" +
+                 "    float x = clamp((l - uBlack) * uGain / 255.0, 0.0, 1.0);\n" +
+                 "    float v = pow(x, uGamma) * 255.0;\n" +
+                 "    c = c * (v / max(l, 1.0e-3));\n" +
+                 "  }\n" +
+                 "  gl_FragColor = vec4(c, 1.0);\n" +
+                 "}"
         val p = GLES20.glCreateProgram()
         GLES20.glAttachShader(p, compile(GLES20.GL_VERTEX_SHADER, vs))
         GLES20.glAttachShader(p, compile(GLES20.GL_FRAGMENT_SHADER, fs))
@@ -222,6 +273,10 @@ class CameraGlPipe(
         aTex = GLES20.glGetAttribLocation(p, "aTex")
         uST = GLES20.glGetUniformLocation(p, "uST")
         uMirror = GLES20.glGetUniformLocation(p, "uMirror")
+        uTonemap = GLES20.glGetUniformLocation(p, "uTonemap")
+        uBlack = GLES20.glGetUniformLocation(p, "uBlack")
+        uGain = GLES20.glGetUniformLocation(p, "uGain")
+        uGamma = GLES20.glGetUniformLocation(p, "uGamma")
         return p
     }
 

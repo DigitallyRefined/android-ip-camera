@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -59,6 +60,18 @@ class CameraXCapture(
     private val previewSurfaceProvider: Preview.SurfaceProvider? = null,
     private val encoderSurfaceProvider: Preview.SurfaceProvider? = null,
     private val onEncoderSurfaceFallback: (() -> Unit)? = null,
+    /**
+     * Stored low-light level to start from. It has to be known *before* the bind, because the AE fps
+     * range that unlocks the long exposure is baked into each use case at build time — seeding it
+     * here is what makes the very first camera start of a session already correct, instead of
+     * relying on a camera-level option applied after the session is already configured.
+     */
+    private val initialLowLightLevel: Int = 0,
+    /**
+     * Stored OEM NIGHT extension opt-in, likewise seeded before the bind so the camera does not
+     * have to be rebound once just to turn it on.
+     */
+    private val initialNightExtension: Boolean = false,
     private val onFrame: (ImageProxy) -> Unit
 ) : CaptureBackend {
     @Volatile override var width = desired.width; private set
@@ -100,6 +113,12 @@ class CameraXCapture(
     @Volatile private var exposureIndex: Int? = null
     // Cached manual focus (0f..1f) so it can be re-applied after an async (re)bind; null = autofocus.
     @Volatile private var manualFocus: Float? = null
+    // Cached low-light level, applied to every use case at bind time and re-applied after a rebind.
+    // Seeded from [initialLowLightLevel] so the first bind already carries the right AE fps range.
+    @Volatile private var lowLightLevel = initialLowLightLevel.coerceIn(0, LowLight.MAX_LEVEL)
+    // Opt-in OEM NIGHT extension. Applied through the bind selector (not interop), so toggling it
+    // forces a rebind; mutually exclusive with lowLightLevel.
+    @Volatile private var nightExtensionRequested = initialNightExtension && lowLightLevel == 0
     private val main = ContextCompat.getMainExecutor(ctx)
     private val analysisExec = Executors.newSingleThreadExecutor()
 
@@ -118,6 +137,32 @@ class CameraXCapture(
     private val physicalCameraId: String? = cameraId
         ?.substringAfter(':', "")
         ?.takeIf { it.isNotBlank() }
+
+    /**
+     * Static characteristics of the camera this backend will bind, resolved once. Both the AE fps
+     * range choice and the "is low light even worth offering" question are answered from these,
+     * and they never change for a given lens, so there is no reason to re-read them per frame.
+     */
+    private val characteristics: CameraCharacteristics? by lazy {
+        try {
+            val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val want = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+            val id = logicalCameraId?.takeIf { it in cm.cameraIdList }
+                ?: cm.cameraIdList.firstOrNull {
+                    runCatching { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }.getOrDefault(false)
+                }
+                ?: cm.cameraIdList.firstOrNull()
+            id?.let { cm.getCameraCharacteristics(it) }
+        } catch (e: Exception) {
+            Log.w(TAG, "characteristics: ${e.message}")
+            null
+        }
+    }
+
+    /** Real low-light limits of this camera, so the UI never offers an unreachable level. */
+    override val lowLightCaps: LowLight.Caps by lazy {
+        characteristics?.let { LowLight.capsOf(it) } ?: LowLight.Caps.UNKNOWN
+    }
 
     @OptIn(ExperimentalCamera2Interop::class)
     fun start() {
@@ -140,12 +185,20 @@ class CameraXCapture(
                 val analysisInterop = Camera2Interop.Extender(aBuilder)
                 physicalCameraId?.let { analysisInterop.setPhysicalCameraId(it) }
                 // Some legacy HALs (e.g. this phone's rear cam) stall the analysis stream unless an AE
-                // target FPS range is set. Use the WIDEST advertised range, not a fixed lock — AE stays
-                // fully auto (drops low for light in the dark, up to 30 in good light).
-                aeFpsRange()?.let {
-                    analysisInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
-                    Log.i(TAG, "AE fps range $it (auto within range)")
+                // target FPS range is set. In low light the *slowest* advertised range is used instead —
+                // that is what lets auto-exposure hold a long shutter and actually collect light.
+                val profile = LowLight.profile(lowLightLevel)
+                val fpsRange = if (profile.level > 0) {
+                    LowLight.fpsRangeFor(characteristics, profile.targetFps)
+                } else {
+                    aeFpsRange()
                 }
+                fpsRange?.let {
+                    analysisInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
+                    Log.i(TAG, "AE fps range $it (${if (profile.level > 0) "low light L${profile.level}" else "auto within range"})")
+                }
+                applyLowLightToUseCase(analysisInterop, profile)
+
                 analysisUseCase = aBuilder.build()
                     .also { a -> a.setAnalyzer(analysisExec) { img ->
                         width = img.width; height = img.height
@@ -177,12 +230,21 @@ class CameraXCapture(
                 imageCapture = imageCaptureBuilder.build()
                 previewSurfaceProvider?.let { pv ->
                     val previewBuilder = Preview.Builder().setResolutionSelector(sel)
-                    physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
+                    // In surface mode this Preview *is* the video stream, so the low-light AE fps
+                    // range has to reach it too — tuning only ImageAnalysis would improve the
+                    // software paths and leave /video/h264 exactly as dark as before.
+                    Camera2Interop.Extender(previewBuilder).also {
+                        physicalCameraId?.let { pid -> it.setPhysicalCameraId(pid) }
+                        applyLowLightToUseCase(it, profile)
+                    }
                     previewUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
                 encoderSurfaceProvider?.let { pv ->
                     val previewBuilder = Preview.Builder().setResolutionSelector(sel)
-                    physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
+                    Camera2Interop.Extender(previewBuilder).also {
+                        physicalCameraId?.let { pid -> it.setPhysicalCameraId(pid) }
+                        applyLowLightToUseCase(it, profile)
+                    }
                     encoderUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
                 boundSelector = logicalCameraId?.let { requestedId ->
@@ -192,6 +254,9 @@ class CameraXCapture(
                         }
                         .build()
                 } ?: if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+                // Load the OEM extension manager in the background so a stored/opt-in Night
+                // Extension preference can be honoured on the next rebind.
+                NightExtensionSupport.prime(ctx)
                 rebind()
                 ready = true
                 Log.i(TAG, "bound desired ${desired.width}x${desired.height} front=$front cameraId=${cameraId ?: "default"}")
@@ -205,7 +270,7 @@ class CameraXCapture(
     private fun rebind() {
         if (released) return
         val p = provider ?: return
-        val sel = boundSelector ?: return
+        val baseSel = boundSelector ?: return
         val analysis = analysisUseCase ?: return
         val cases = mutableListOf<androidx.camera.core.UseCase>()
         previewUseCase?.let { cases.add(it) }
@@ -217,6 +282,54 @@ class CameraXCapture(
         // bindToLifecycle() may fail if the HAL hasn't finished tearing down. Retry a few
         // times before falling back to degraded surface combinations.
         val maxRetries = 3
+
+        // When the OEM NIGHT extension was requested, try its selector first: it is the only way to
+        // reach the vendor's tuned night algorithm, and it is applied here because the extension is
+        // part of the bind, not a per-request option. Some HALs advertise it and then refuse to
+        // configure a session that also carries ImageAnalysis, so a failure falls back to the normal
+        // selector rather than losing the camera.
+        if (nightExtensionRequested && NightExtensionSupport.isReady()) {
+            val extSel = NightExtensionSupport.extensionSelector(baseSel)
+            if (extSel == null) {
+                // Manager ready but this camera cannot do NIGHT with analysis — stop asking.
+                Log.i(TAG, "Night extension requested but unavailable for this camera; staying off")
+                nightExtensionRequested = false
+            } else {
+                var extensionBound = false
+                for (attempt in 1..maxRetries) {
+                    try {
+                        camera = p.bindToLifecycle(owner, extSel, *cases.toTypedArray())
+                        encoderSurfaceBound = encoderUseCase != null && cases.any { it === encoderUseCase }
+                        extensionBound = true
+                        Log.i(TAG, "bound with OEM NIGHT extension")
+                        break
+                    } catch (e: Exception) {
+                        if (attempt < maxRetries) Thread.sleep(500)
+                        else Log.w(TAG, "Night extension bind failed (${e.message}); using standard selector")
+                    }
+                }
+                if (extensionBound) {
+                    reapplyControlsAfterRebind()
+                    return
+                }
+                // Do not keep retrying a selector this HAL cannot configure. Unbind first: the failed
+                // extension attempt may have left a half-configured session, and dropping straight
+                // into the standard bind below would be building on top of it.
+                nightExtensionRequested = false
+                try { p.unbindAll() } catch (_: Exception) {}
+            }
+        }
+
+        val sel = baseSel
+        // The extension was requested but the ExtensionsManager has not finished loading, so the
+        // branch above could not run. Bind normally now so the stream works in the meantime, and
+        // rebind once the manager arrives — otherwise a stored "on" would be silently ignored on a
+        // cold start, because the state is already set and setNightExtension() would see no change.
+        if (nightExtensionRequested && !NightExtensionSupport.isReady()) {
+            Log.i(TAG, "Night extension requested; waiting for ExtensionsManager before rebinding")
+            NightExtensionSupport.prime(ctx)
+            NightExtensionSupport.whenReady { if (!released) rebind() }
+        }
         var lastException: Exception? = null
         for (attempt in 1..maxRetries) {
             try {
@@ -265,11 +378,21 @@ class CameraXCapture(
             }
         }
         // Re-apply cached controls, since rebinding replaces the camera control.
+        reapplyControlsAfterRebind()
+    }
+
+    /**
+     * Re-apply the cached controls after a rebind replaced the camera control: torch, zoom,
+     * exposure, and the single merged Camera2 interop option set (manual focus + low light).
+     */
+    private fun reapplyControlsAfterRebind() {
         val cc = camera?.cameraControl
         if (torchEnabled && hasFlashUnit) try { cc?.enableTorch(true) } catch (_: Exception) {}
         zoomRatio?.let { applyZoomWithRetry(it) }
         exposureIndex?.let { try { cc?.setExposureCompensationIndex(it) } catch (_: Exception) {} }
-        manualFocus?.let { setManualFocus(it) }
+        // Manual focus and low light share one CaptureRequestOptions slot on Camera2CameraControl,
+        // so they are always applied together (see applyCaptureRequestOptions).
+        applyCaptureRequestOptions()
     }
 
     /**
@@ -424,9 +547,9 @@ class CameraXCapture(
         try {
             val cam = camera ?: return
             // Drop any manual-focus override, else the lingering CONTROL_AF_MODE_OFF
-            // defeats the AF scan below.
+            // defeats the AF scan below. Low-light options (if any) are kept.
             manualFocus = null
-            try { Camera2CameraControl.from(cam.cameraControl).clearCaptureRequestOptions() } catch (_: Exception) {}
+            applyCaptureRequestOptions()
             val pt = SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f)
             cam.cameraControl.startFocusAndMetering(
                 FocusMeteringAction.Builder(pt, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
@@ -439,29 +562,166 @@ class CameraXCapture(
      * in diopters (0f = infinity, 1f = the lens' minimum focus distance / nearest). A negative
      * value clears the override and restores continuous autofocus.
      */
-    @OptIn(ExperimentalCamera2Interop::class)
     override fun setManualFocus(distance: Float) {
-        val cam = camera ?: run { manualFocus = distance.takeIf { it >= 0f }; return }
+        // Cached and re-applied through the merged option set, so enabling low light never wipes an
+        // active focus override and vice versa (they share one CaptureRequestOptions slot).
+        manualFocus = distance.takeIf { it >= 0f }?.coerceIn(0f, 1f)
+        applyCaptureRequestOptions()
+    }
+
+    override fun setLowLight(level: Int) {
+        val clamped = level.coerceIn(0, LowLight.MAX_LEVEL)
+        if (clamped == lowLightLevel) return
+        lowLightLevel = clamped
+        // The extension and the app's own levels are alternatives; enabling the levels drops the
+        // extension so the two never double-process the same frame.
+        if (clamped > 0 && nightExtensionRequested) {
+            nightExtensionRequested = false
+            mainHandler.post { if (!released) rebind() }
+        }
+        // The AE fps range is also baked into every use case at bind time (that is the only way to
+        // reach the surface-mode Preview stream), so the service restarts the camera after a level
+        // change. Applying here as well makes the change visible immediately on the paths that honour
+        // camera-level options, and covers a restart that has not happened yet.
+        applyCaptureRequestOptions()
+        Log.i(TAG, "low light L$clamped (caps=${lowLightCaps})")
+    }
+
+    override fun setNightExtension(on: Boolean) {
+        // Mutually exclusive with the app's own low-light levels.
+        if (on && lowLightLevel > 0) { lowLightLevel = 0; applyCaptureRequestOptions() }
+        val changed = nightExtensionRequested != on
+        nightExtensionRequested = on
+        // No rebind needed when the state is unchanged (e.g. the stored "false" default at startup).
+        if (!changed) return
+        if (!on) {
+            mainHandler.post { if (!released) rebind() }
+            return
+        }
+        // The extension is applied through the bind selector, so this needs a rebind once the async
+        // ExtensionsManager is ready. If it isn't yet, wait for it instead of binding without it.
+        NightExtensionSupport.prime(ctx)
+        val requestRebind: () -> Unit = { mainHandler.post { if (!released) rebind() } }
+        if (NightExtensionSupport.isReady()) requestRebind() else NightExtensionSupport.whenReady(requestRebind)
+    }
+
+    override fun isNightExtensionSupported(): Boolean {
+        val base = boundSelector ?: return false
+        return NightExtensionSupport.isExtensionAvailable(base) &&
+            NightExtensionSupport.isImageAnalysisSupported(base)
+    }
+
+    /**
+     * Merge the cached manual-focus and low-light overrides into ONE repeating CaptureRequest via
+     * Camera2 interop. Both features share a single [CaptureRequestOptions] slot on
+     * Camera2CameraControl, so applying one independently would silently wipe the other.
+     * Falls back to a reduced option set if the HAL rejects the full one.
+     */
+    private fun applyCaptureRequestOptions() {
+        val cam = camera ?: return
+        val focus = manualFocus
+        val profile = LowLight.profile(lowLightLevel)
+        if (focus == null && profile.level == 0) {
+            // Nothing to express. A fresh bind already starts from a clean CaptureRequestOptions, so
+            // there is nothing to clear here — clearing unconditionally just pokes the running session
+            // on every rebind for no gain. Clearing is reserved for the explicit "back to auto focus"
+            // path in setManualFocus, which is the only case that can have stale options to drop.
+            return
+        }
         try {
             val c2 = Camera2CameraControl.from(cam.cameraControl)
-            if (distance < 0f) {
-                // Clear the override so CameraX resumes its own continuous AF.
-                manualFocus = null
-                c2.clearCaptureRequestOptions()
-                return
+            val minFocusDistance = if (focus != null) {
+                Camera2CameraInfo.from(cam.cameraInfo)
+                    .getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+            } else 0f
+
+            fun build(withFocus: Boolean, withNight: Boolean): CaptureRequestOptions? = try {
+                val b = CaptureRequestOptions.Builder()
+                if (withFocus && focus != null) {
+                    b.setCaptureRequestOption(
+                        CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                    // Nearest focus in diopters; 0f (fixed-focus lens) leaves us at infinity, fine.
+                    b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focus * minFocusDistance)
+                }
+                if (withNight && profile.level > 0) applyLowLightRequestOptions(b)
+                b.build()
+            } catch (_: Exception) { null }
+
+            // Richest option set first; if CameraX/the HAL rejects it, drop pieces until one sticks so
+            // a single unsupported night key never takes manual focus down with it.
+            val attempts = listOfNotNull(
+                build(withFocus = true, withNight = true),
+                build(withFocus = true, withNight = false),
+                build(withFocus = false, withNight = true),
+            ).distinct()
+            for (options in attempts) {
+                try {
+                    c2.captureRequestOptions = options
+                    return
+                } catch (e: Exception) {
+                    Log.w(TAG, "captureOptions rejected: ${e.message}")
+                }
             }
-            val norm = distance.coerceIn(0f, 1f)
-            manualFocus = norm
-            // Nearest focus in diopters; 0f (fixed-focus lens) leaves us at infinity, which is fine.
-            val minDist = Camera2CameraInfo.from(cam.cameraInfo)
-                .getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
-            c2.captureRequestOptions = CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
-                .setCaptureRequestOption(
-                    CaptureRequest.LENS_FOCUS_DISTANCE, norm * minDist)
-                .build()
-        } catch (e: Exception) { Log.e(TAG, "manualFocus: ${e.message}") }
+            // Everything was rejected — clear so we at least fall back to CameraX defaults.
+            try { c2.clearCaptureRequestOptions() } catch (_: Exception) {}
+        } catch (e: Exception) { Log.e(TAG, "captureOptions: ${e.message}") }
+    }
+
+    /**
+     * Low-light keys for the repeating request:
+     *  - the slowest advertised AE fps range, which is what actually lets auto-exposure hold a long
+     *    shutter (auto-exposure cannot expose longer than one frame period, whatever the ISO);
+     *  - max `CONTROL_POST_RAW_SENSITIVITY_BOOST` for HALs that allow sensitivity past the ISO range;
+     *  - FAST noise reduction — in a dark frame HIGH_QUALITY averages away exactly the faint
+     *    shadow signal the longer exposure just collected, and at low fps its latency is very visible;
+     *  - the vendor NIGHT scene mode, kept only as a bonus since most HALs ignore it.
+     * Every key is checked against the camera's advertised modes first.
+     */
+    private fun applyLowLightRequestOptions(b: CaptureRequestOptions.Builder) {
+        val profile = LowLight.profile(lowLightLevel)
+        val caps = lowLightCaps
+        val range = LowLight.fpsRangeFor(characteristics, profile.targetFps)
+        if (range != null) {
+            try { b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, range) } catch (_: Exception) {}
+        } else {
+            Log.w(TAG, "low light L${profile.level}: no usable AE fps range (min ${caps.minFpsUpper}fps)")
+        }
+        if (profile.useBoost && caps.hasBoost && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try { b.setCaptureRequestOption(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, caps.boostUpper) }
+            catch (_: Exception) {}
+        }
+        try { b.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_FAST) }
+        catch (_: Exception) {}
+        val scenes = characteristics?.get(CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES)
+        if (profile.sceneModeNight && scenes != null && CameraMetadata.CONTROL_SCENE_MODE_NIGHT in scenes) {
+            try { b.setCaptureRequestOption(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_NIGHT) }
+            catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Same low-light keys, applied to a *use case* builder instead of the camera control. This is the
+     * path that reaches the surface-mode Preview use case, which is what /video/h264 actually renders
+     * from — a camera-level option alone would leave the main video stream untouched. Use-case options
+     * are fixed at build time, so a level change is picked up on the next camera start.
+     */
+    private fun applyLowLightToUseCase(extender: Camera2Interop.Extender<*>, profile: LowLight.Profile) {
+        if (profile.level == 0) return
+        val caps = lowLightCaps
+        LowLight.fpsRangeFor(characteristics, profile.targetFps)?.let {
+            try { extender.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) } catch (_: Exception) {}
+        }
+        if (profile.useBoost && caps.hasBoost && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try { extender.setCaptureRequestOption(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, caps.boostUpper) }
+            catch (_: Exception) {}
+        }
+        try { extender.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_FAST) }
+        catch (_: Exception) {}
+        val scenes = characteristics?.get(CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES)
+        if (profile.sceneModeNight && scenes != null && CameraMetadata.CONTROL_SCENE_MODE_NIGHT in scenes) {
+            try { extender.setCaptureRequestOption(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_NIGHT) }
+            catch (_: Exception) {}
+        }
     }
 
     /** The camera's WIDEST advertised AE FPS range — leaves auto-exposure fully free while giving legacy
@@ -473,7 +733,9 @@ class CameraXCapture(
             ?: cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
             ?: cm.cameraIdList.first()
         cm.getCameraCharacteristics(id).get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            // Widest advertised range, converted from thousandths to fps — the request key wants fps.
             ?.maxWithOrNull(compareBy({ it.upper - it.lower }, { it.upper }))
+            ?.let { Range(it.lower / 1000, it.upper / 1000) }
     } catch (e: Exception) { Log.e(TAG, "aeRange: ${e.message}"); null }
 
     override fun stop() {

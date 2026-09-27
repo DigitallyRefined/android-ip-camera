@@ -27,6 +27,17 @@ class H264StreamingEncoder(
 
     var h264HardwareEncoder: H264HardwareEncoder? = null
         private set
+
+    /**
+     * Forwarded to the hardware encoder. In surface mode the frames are drawn by [CameraGlPipe],
+     * which applies the same curve on the GPU instead, so [H264HardwareEncoder.yLut] no-ops there —
+     * exactly one of the two ever does work, whatever mode the stream ends up in.
+     */
+    override var lowLightTone: LowLight.LumaTone? = null
+        set(value) {
+            field = value
+            h264HardwareEncoder?.lowLightTone = value
+        }
     private val releasingEncoders = java.util.concurrent.CopyOnWriteArrayList<H264HardwareEncoder>()
     private var glPipe: CameraGlPipe? = null
     private var backend: CaptureBackend? = null
@@ -76,6 +87,7 @@ class H264StreamingEncoder(
                     false
                 ) { d, k -> broadcastH264(d, k) }
                 h264HardwareEncoder = encMutable
+                encMutable.lowLightTone = lowLightTone
                 encMutable.requestKeyFrame()
                 streamingServerHelper?.resetH264Wait()
             }
@@ -251,6 +263,7 @@ class H264StreamingEncoder(
             }
         }
         h264HardwareEncoder = encoder
+        encoder?.lowLightTone = lowLightTone
     }
 
     private fun invalidatePendingWrites() {

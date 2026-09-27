@@ -1480,6 +1480,8 @@ class StreamingServerHelper(
                 "stream_scale_$cameraId", "stream_scale_$physical",
                 "camera_contrast_$cameraId", "camera_contrast_$physical",
                 "mirror_$cameraId", "mirror_$physical",
+                "lowlight_$cameraId", "lowlight_$physical",
+                "night_ext_$cameraId", "night_ext_$physical",
                 "snapshot_res_$cameraId", "snapshot_res_$physical"
             )
             keys.forEach { k -> if (prefs.contains(k)) editor.remove(k) }
@@ -1502,6 +1504,8 @@ class StreamingServerHelper(
                     "scale" to "1.0",
                     "contrast" to "0",
                     "mirror" to "false",
+                    "lowlight" to "0",
+                    "night_ext" to "false",
                     "fps" to "30",
                     "rotate" to "0"
                 )
@@ -1609,7 +1613,7 @@ class StreamingServerHelper(
 
     private data class InfoSize(val w: Int, val h: Int)
 
-    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val minZoom: Float?, val maxZoom: Float?)
+    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val minZoom: Float?, val maxZoom: Float?, val lowLight: LowLight.Caps = LowLight.Caps.UNKNOWN)
 
     private data class CameraInfoSource(
         val id: String,
@@ -1638,6 +1642,8 @@ class StreamingServerHelper(
         val wifiStrength: Int,
         val settings: StreamSettings,
         val perCameraSettings: Map<String, Map<String, String>> = emptyMap(),
+        val nightExtProbed: Boolean = false,
+        val nightExtAvailable: Map<String, Boolean> = emptyMap(),
     ) {
         fun toJsonString(): String = JSONObject().apply {
             put("cameras", JSONArray().apply {
@@ -1668,6 +1674,17 @@ class StreamingServerHelper(
                                 })
                             }
                         })
+                        // What this lens can really reach in low light, so the UI caps the level
+                        // slider at the hardware's limits instead of offering a no-op setting.
+                        try {
+                            put("lowLight", JSONObject().apply {
+                                put("maxExposureMs", camera.lowLight.maxExposureMs)
+                                put("maxIso", camera.lowLight.maxIso)
+                                put("boostUpper", camera.lowLight.boostUpper)
+                                put("minFpsUpper", camera.lowLight.minFpsUpper)
+                                put("maxLevel", camera.lowLight.maxUsableLevel())
+                            })
+                        } catch (_: Exception) {}
                         // Attach any stored per-camera lens/settings if available
                         val lensMap = perCameraSettings[camera.id]
                         if (lensMap != null && lensMap.isNotEmpty()) {
@@ -1693,6 +1710,12 @@ class StreamingServerHelper(
                 put("deviceHasFlash", settings.deviceHasFlash)
                 put("audioGain", settings.audioGain)
                 put("snapshotRes", settings.snapshotRes)
+            })
+            // OEM NIGHT extension availability, per camera id. The probe loads asynchronously, so
+            // nightExtProbed tells the UI whether "false" means "unavailable" or "not checked yet".
+            put("nightExtProbed", nightExtProbed)
+            put("nightExtAvailable", JSONObject().apply {
+                nightExtAvailable.forEach { (id, ok) -> put(id, ok) }
             })
         }.toString()
     }
@@ -1796,10 +1819,26 @@ class StreamingServerHelper(
             // Mirror
             map["mirror"] = storedPrefString("false", "mirror_") ?: "false"
 
+            // Low-light level (0 = off). The stored value is passed through verbatim even if the
+            // current camera cannot reach it: clamping here would silently rewrite the user's
+            // setting for a camera they may switch back to.
+            map["lowlight"] = storedPrefString("0", "lowlight_") ?: "0"
+
+            // OEM CameraX NIGHT extension opt-in (see NightExtensionSupport).
+            map["nightExt"] = storedPrefString("false", "night_ext_") ?: "false"
+
             // Snapshot resolution optional (per-camera)
             storedPrefString(null, "snapshot_res_")?.let { map["snapshotRes"] = it }
 
             id to map
+        }
+
+        // Kick the async probe off on the first /info.json build so the OEM-extension opt-in appears
+        // without the user having to restart anything. It caches per camera id, so repeat calls are
+        // cheap and the answer stops flipping once the manager is ready.
+        NightExtensionSupport.prime(context)
+        val nightExtAvailable = cameraList.associate { cam ->
+            cam.id.substringBefore(':') to NightExtensionSupport.isSupported(context, cam.id)
         }
 
         return DeviceInfo(
@@ -1808,6 +1847,8 @@ class StreamingServerHelper(
             wifiStrength = getWifiStrength(),
             settings = getStreamSettings(cameraList),
             perCameraSettings = perCamera,
+            nightExtProbed = NightExtensionSupport.isReady(),
+            nightExtAvailable = nightExtAvailable,
         )
     }
 
@@ -1995,11 +2036,24 @@ class StreamingServerHelper(
 
                     Pair(roundedMin, roundedMax)
                 } catch (_: Exception) { Pair(null, null) }
-                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom)
+                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom, lowLightCapsFor(source))
             }
         } catch (_: Throwable) {
             emptyList()
         }
+    }
+
+    /**
+     * Real low-light limits for a camera, so `/info.json` can tell the UI which levels this lens can
+     * actually reach. Reporting these rather than a fixed ladder is the whole point: a level that
+     * would silently do nothing (no boost range, no slow fps range, no long exposure) is worse than
+     * not offering it.
+     */
+    private fun lowLightCapsFor(source: CameraInfoSource): LowLight.Caps = try {
+        val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        LowLight.capsOf(cm.getCameraCharacteristics(source.logicalId))
+    } catch (_: Exception) {
+        LowLight.Caps.UNKNOWN
     }
 
     private fun cameraInfoSources(cm: CameraManager): List<CameraInfoSource> {

@@ -43,6 +43,32 @@ class MjpegStreamingEncoder(
     private var nv21Buffer: ByteArray? = null
     private var nv21RowBuffer: ByteArray? = null
 
+    /**
+     * Luma tone curve for the MJPEG path, or null for none. Low-light levels trade frame rate for a
+     * long exposure, and a long exposure of a dim room still lands most pixels near the bottom of the
+     * luma range — this develops that signal so the stream shows outlines instead of a black frame.
+     * Null / identity passes the frame through untouched.
+     */
+    @Volatile override var lowLightTone: LowLight.LumaTone? = null
+    private var nv21LutCache: Pair<LowLight.LumaTone, ByteArray>? = null
+
+    /** Cached 256-entry LUT for [lowLightTone]; rebuilt only when the curve changes. */
+    private fun nv21Lut(): ByteArray? {
+        val tone = lowLightTone ?: return null
+        if (tone.isIdentity) return null
+        val cached = nv21LutCache
+        if (cached != null && cached.first == tone) return cached.second
+        val lut = tone.toLut()
+        nv21LutCache = tone to lut
+        return lut
+    }
+
+    /** Develop the Y plane of a dense NV21 buffer in place. Chroma is untouched, so colour survives. */
+    private fun developNv21(nv21: ByteArray, w: Int, h: Int) {
+        val lut = nv21Lut() ?: return
+        LowLight.applyLut(nv21, 0, w, h, lut)
+    }
+
     private fun invalidatePendingWrites() {
         writerGeneration.incrementAndGet()
         networkWriter.queue.clear()
@@ -100,6 +126,7 @@ class MjpegStreamingEncoder(
                 }
             }
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
+            developNv21(nv21, image.width, image.height)
             var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height, quality)
             val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror
             if (needsTransform) {
@@ -149,6 +176,7 @@ class MjpegStreamingEncoder(
             } else false
 
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
+            developNv21(nv21, width, height)
             var jpegBytes = convertNV21toJPEG(nv21, width, height, quality)
             val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror
             if (needsTransform) {

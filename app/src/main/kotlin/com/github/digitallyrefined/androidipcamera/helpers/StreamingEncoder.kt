@@ -35,4 +35,16 @@ interface StreamingEncoder {
      * Check if this encoder has any active clients.
      */
     fun hasClients(): Boolean
+
+    /**
+     * Luma tone curve this encoder must apply to the frames it feeds out, or null for none.
+     *
+     * Low-light levels buy a long exposure at the camera, but a long exposure of a dim room still
+     * lands most pixels near the bottom of the luma range — the curve is what develops that signal
+     * into something a viewer can actually read. It has to live here (rather than only on the camera
+     * backend) so it reaches the *streamed* pixels, not just the capture request.
+     */
+    var lowLightTone: LowLight.LumaTone?
+        get() = null
+        set(_) {}
 }
