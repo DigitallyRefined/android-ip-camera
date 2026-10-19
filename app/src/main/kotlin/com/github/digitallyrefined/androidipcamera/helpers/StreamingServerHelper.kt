@@ -65,7 +65,8 @@ class StreamingServerHelper(
     private val onSnapshot: (String) -> ByteArray? = { null },
     private val onRecordStart: () -> Triple<Boolean, String, String> = { Triple(false, "503 Service Unavailable", """{"error":"unavailable"}""") },
     private val onRecordStop: () -> Triple<Boolean, String, String> = { Triple(false, "409 Conflict", """{"error":"not_recording"}""") },
-    private val onRecordStatus: () -> String = { """{"recording":false}""" }
+    private val onRecordStatus: () -> String = { """{"recording":false}""" },
+    private val onStreamingEnabledChanged: (Boolean) -> Unit = {}
 ) {
     data class Client(
         val socket: Socket,
@@ -183,6 +184,7 @@ class StreamingServerHelper(
             .putBoolean(PREF_STREAMING_ENABLED, enabled).apply()
         onLog(if (enabled) "Streaming enabled" else "Streaming disabled")
         if (!enabled) closeClientConnection()
+        onStreamingEnabledChanged(enabled)
     }
 
     /**

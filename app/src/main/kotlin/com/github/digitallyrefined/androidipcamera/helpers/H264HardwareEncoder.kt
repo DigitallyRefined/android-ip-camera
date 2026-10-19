@@ -18,7 +18,8 @@ import androidx.camera.core.ImageProxy
  *    real 30fps, supports 1080p). Used for H.264-only viewers.
  *  - byte-buffer mode: fed YUV from CameraX ImageAnalysis frames via [feed] (CPU-bound; the color
  *    layout, NV12 or I420, is chosen from the codec's caps for cross-device compatibility).
- * Emits Annex-B NAL units via [onNal] (bytes, isKeyframe); SPS/PPS prepended to keyframes.
+ * Emits Annex-B NAL units via [onNal] (bytes, isKeyframe, presentationTimeUs); SPS/PPS prepended
+ * to keyframes.
  */
 class H264HardwareEncoder(
     val width: Int,
@@ -26,7 +27,7 @@ class H264HardwareEncoder(
     frameRate: Int,
     bitRate: Int,
     val useSurface: Boolean,
-    private val onNal: (ByteArray, Boolean) -> Unit
+    private val onNal: (ByteArray, Boolean, Long) -> Unit
 ) {
     private val codec: MediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val codecLock = Any()
@@ -585,7 +586,7 @@ class H264HardwareEncoder(
                     // Never retain a MediaCodec output buffer while network work is scheduled.
                     prepared?.let {
                         onRecordFrame?.invoke(it.bytes, it.isKeyframe, partialPtsUs)
-                        onNal(it.bytes, it.isKeyframe)
+                        onNal(it.bytes, it.isKeyframe, partialPtsUs)
                     }
                 }
             }

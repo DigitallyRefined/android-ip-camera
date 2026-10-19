@@ -27,6 +27,8 @@ class H264StreamingEncoder(
 
     var h264HardwareEncoder: H264HardwareEncoder? = null
         private set
+    /** RTSP server sharing this encoder's output, when RTSP is enabled. */
+    @Volatile internal var rtspServer: RtspServer? = null
     private val releasingEncoders = java.util.concurrent.CopyOnWriteArrayList<H264HardwareEncoder>()
     private var glPipe: CameraGlPipe? = null
     private var backend: CaptureBackend? = null
@@ -74,7 +76,7 @@ class H264StreamingEncoder(
                     fpsCoerced,
                     H264HardwareEncoder.bitrateFor(outW, outH),
                     false
-                ) { d, k -> broadcastH264(d, k) }
+                ) { d, k, pts -> broadcastH264(d, k, pts) }
                 h264HardwareEncoder = encMutable
                 encMutable.requestKeyFrame()
                 streamingServerHelper?.resetH264Wait()
@@ -159,13 +161,16 @@ class H264StreamingEncoder(
     }
 
     override fun hasClients(): Boolean {
-        return streamingServerHelper?.getH264Clients()?.isNotEmpty() == true
+        return streamingServerHelper?.getH264Clients()?.isNotEmpty() == true ||
+            rtspServer?.hasVideoClients() == true
     }
 
     /**
-     * Broadcast H.264 data to all connected H.264 clients.
+     * Broadcast H.264 data to all connected H.264 clients (HTTP and RTSP).
      */
-    fun broadcastH264(data: ByteArray, isKey: Boolean) {
+    fun broadcastH264(data: ByteArray, isKey: Boolean, ptsUs: Long) {
+        // RTSP sessions queue frames on their own sender threads, so this never blocks the codec.
+        rtspServer?.onVideoFrame(data, isKey, ptsUs)
         val helper = streamingServerHelper ?: return
         val clients = helper.getH264Clients()
         if (clients.isEmpty()) return

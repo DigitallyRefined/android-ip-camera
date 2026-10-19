@@ -26,6 +26,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 ## Features
 
 * 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a camera for [Frigate](https://github.com/blakeblackshear/frigate) or a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/video/mjpeg`)
+* 📡 Optional RTSP server (H.264 video + AAC audio) for VLC, Frigate/go2rtc, NVRs and other RTSP clients (using `rtsp://[ip_address]:8554/live`)
 * 📴 Option to turn the display off while streaming
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
@@ -52,7 +53,55 @@ The app runs as a foreground service with a persistent notification, so it won't
 * The display can be safely turned off while streaming.
 * Enable **Start on Boot** in the app settings for unattended setups.
 
+## 📡 RTSP stream
+
+The app can also serve the camera over RTSP, the protocol most NVRs, home automation systems and video players expect from an IP camera. It is off by default: enable it in **Settings > RTSP Stream > Enable RTSP Server**. The address is then shown on the main screen:
+
+```
+rtsp://[username]:[password]@[ip_address]:8554/live
+```
+
+* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, rotation and mirror follow the web controls). Each client starts at a keyframe.
+* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
+* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
+* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front). Repeated wrong passwords block the address for 15 minutes, like the web server.
+* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming port).
+* The camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
+
+RTSP has no encryption, so only use it on a trusted network (or through a VPN).
+
+Examples:
+
+* **VLC:** `vlc rtsp://[username]:[password]@[ip_address]:8554/live`
+* **ffplay:** `ffplay -rtsp_transport tcp rtsp://[username]:[password]@[ip_address]:8554/live`
+* **mpv:** `mpv rtsp://[username]:[password]@[ip_address]:8554/live`
+
 ## 🎥 Frigate config
+
+### Using the RTSP stream
+
+With the RTSP server enabled, go2rtc can take the camera (video and audio) directly:
+
+```yaml
+go2rtc:
+  streams:
+    android-cam:
+      - "rtsp://[username]:[password]@[ip_address]:8554/live"
+
+cameras:
+  android-cam:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/android-cam
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+            - record
+            - audio
+```
+
+### Using the HTTPS streams
 
 Use the example config below to add your phone's camera to [Frigate](https://github.com/blakeblackshear/frigate) & update the URLs. The `android-cam` composite stream additionally wires up **two-way talk / push-to-talk** from the Frigate live view (it needs a `GO2RTC_ALLOW_ARBITRARY_EXEC=true` environment variable set).
 
@@ -167,7 +216,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Re-enable streaming of the media routes after it has been disabled (e.g. by a home-automation system).
   * **Format:** `application/json` — `{"streaming":true}`
 * **Disable Streaming (`/control/stop`)**
-  * **Usage:** Stop serving the media routes (`/video/*`, `/audio*`) without closing the listening port, and disconnect any viewers that are currently connected. The `/control/*` endpoints remain reachable so streaming can be turned back on remotely. When disabled, media routes return `503 Service Unavailable` with a hint to POST `/control/start`.
+  * **Usage:** Stop serving the media routes (`/video/*`, `/audio*`, and the RTSP stream when enabled) without closing the listening port, and disconnect any viewers that are currently connected. The `/control/*` endpoints remain reachable so streaming can be turned back on remotely. When disabled, media routes return `503 Service Unavailable` with a hint to POST `/control/start`.
   * **Format:** `application/json` — `{"streaming":false}`
 * **Streaming Status (`/control/status`)**
   * **Usage:** Query whether streaming is currently enabled.

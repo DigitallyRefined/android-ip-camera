@@ -58,6 +58,8 @@ class StreamingService : LifecycleService() {
 
     private val binder = LocalBinder()
     var streamingServerHelper: StreamingServerHelper? = null
+    /** Optional RTSP server (Settings > RTSP Stream) sharing the H.264 encoder with the HTTP server. */
+    private var rtspServer: RtspServer? = null
 
     // Streaming encoders (initialized when server is created)
     private var h264StreamingEncoder: H264StreamingEncoder? = null
@@ -173,8 +175,10 @@ class StreamingService : LifecycleService() {
     private fun restartServer() {
         lifecycleScope.launch(Dispatchers.IO) {
             streamingServerHelper?.stopServer()
+            rtspServer?.stop()
             kotlinx.coroutines.delay(500)
             streamingServerHelper?.startStreamingServer()
+            startRtspServerIfEnabled()
         }
     }
 
@@ -227,6 +231,8 @@ class StreamingService : LifecycleService() {
         // A setTorchMode torch outlives the process — release it explicitly or the LED burns
         // forever after the service is stopped.
         if (deviceTorchOn) setDeviceTorch(false)
+        // Plain thread: the lifecycle scope is already cancelled once the service is destroyed.
+        rtspServer?.let { server -> Thread { server.stop() }.start() }
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
 
@@ -327,61 +333,87 @@ class StreamingService : LifecycleService() {
             streamingServerHelper = StreamingServerHelper(
                 this,
                 onLog = { Log.i(TAG, "Server: $it"); onLog?.invoke(it) },
-                onClientConnected = {
-                    launchMain {
-                        onClientConnected?.invoke()
-                        // While recording, the camera is already running and feeding the encoder; a
-                        // restart would finalize the recording, and new viewers pick up the existing
-                        // stream, so no reconfiguration is needed.
-                        if (localRecorder?.isRecording == true) return@launchMain
-                        if (captureRunning) {
-                            debouncedStartCamera()
-                        } else {
-                            startCameraIfNeeded()
-                        }
-                    }
-                },
-                onClientDisconnected = {
-                    launchMain {
-                        onClientDisconnected?.invoke()
-                        // Recording owns the camera: stopping or restarting it now would finalize
-                        // the file, and remaining viewers keep their existing stream as-is.
-                        if (localRecorder?.isRecording == true) return@launchMain
-                        if (!hasActiveClients()) {
-                            // Reload/idle: keep the LED lit across the session gap before the
-                            // shed-restart tears the streaming camera down.
-                            bridgeTorchAcrossIdle()
-                            if (currentSurfaceProvider == null) {
-                                // Last client gone and no on-screen preview: shed the H.264
-                                // surface encoder / GL pipe and keep the camera warm in a plain,
-                                // snapshot-friendly configuration. Force ignores the hasClients()
-                                // bypass so the reconfiguration actually happens.
-                                pendingStartJob?.cancel()
-                                pendingStartJob = lifecycleScope.launch(Dispatchers.Main) {
-                                    kotlinx.coroutines.delay(300)
-                                    if (!captureRunning) return@launch   // camera stopped meanwhile
-                                    if (encoders.any { it.hasClients() } || currentSurfaceProvider != null) return@launch
-                                    startCamera(force = true)
-                                }
-                            } else {
-                                debouncedStartCamera()
-                            }
-                        } else if (captureRunning) {
-                            debouncedStartCamera()
-                        }
-                    }
-                },
+                onClientConnected = { handleClientConnected() },
+                onClientDisconnected = { handleClientDisconnected() },
                 onControlCommand = { key, value, ts -> handleRemoteControl(key, value, ts) },
                 onSnapshot = { id -> snapshot(id) },
                 onRecordStart = { startRecording() },
                 onRecordStop = { stopRecording() },
-                onRecordStatus = { getRecordingStatus() }
+                onRecordStatus = { getRecordingStatus() },
+                // /control/stop must also drop RTSP viewers, which the HTTP server does not own.
+                onStreamingEnabledChanged = { enabled -> if (!enabled) rtspServer?.disconnectAll() }
             )
             // Initialize encoders with the streaming server helper
             h264StreamingEncoder = H264StreamingEncoder(this, streamingServerHelper!!) { Log.i(TAG, "H264: $it"); onLog?.invoke(it) }
             mjpegStreamingEncoder = MjpegStreamingEncoder(this, streamingServerHelper!!) { Log.i(TAG, "MJPEG: $it"); onLog?.invoke(it) }
+            rtspServer = RtspServer(
+                AndroidRtspHost(
+                    this,
+                    onLog = { Log.i(TAG, "RTSP: $it"); onLog?.invoke(it) },
+                    clientConnected = { handleClientConnected() },
+                    clientDisconnected = { handleClientDisconnected() },
+                    keyFrameRequest = { h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame() },
+                    streamingEnabled = { streamingServerHelper?.isStreamingEnabled() != false }
+                ),
+                DeviceMemoryHelper.rtspSendQueueCapacity(this)
+            )
+            h264StreamingEncoder?.rtspServer = rtspServer
         }
         streamingServerHelper?.startStreamingServer()
+        startRtspServerIfEnabled()
+    }
+
+    /** Starts (or stops) the RTSP server to match the "Enable RTSP Server" setting. */
+    private fun startRtspServerIfEnabled() {
+        val enabled = PreferenceManager.getDefaultSharedPreferences(this).getBoolean(RtspServer.PREF_ENABLED, false)
+        if (enabled) rtspServer?.start() else rtspServer?.stop()
+    }
+
+    /** A viewer (HTTP or RTSP) connected: make sure the camera runs in a configuration that serves it. */
+    private fun handleClientConnected() {
+        launchMain {
+            onClientConnected?.invoke()
+            // While recording, the camera is already running and feeding the encoder; a
+            // restart would finalize the recording, and new viewers pick up the existing
+            // stream, so no reconfiguration is needed.
+            if (localRecorder?.isRecording == true) return@launchMain
+            if (captureRunning) {
+                debouncedStartCamera()
+            } else {
+                startCameraIfNeeded()
+            }
+        }
+    }
+
+    private fun handleClientDisconnected() {
+        launchMain {
+            onClientDisconnected?.invoke()
+            // Recording owns the camera: stopping or restarting it now would finalize
+            // the file, and remaining viewers keep their existing stream as-is.
+            if (localRecorder?.isRecording == true) return@launchMain
+            if (!hasActiveClients()) {
+                // Reload/idle: keep the LED lit across the session gap before the
+                // shed-restart tears the streaming camera down.
+                bridgeTorchAcrossIdle()
+                if (currentSurfaceProvider == null) {
+                    // Last client gone and no on-screen preview: shed the H.264
+                    // surface encoder / GL pipe and keep the camera warm in a plain,
+                    // snapshot-friendly configuration. Force ignores the hasClients()
+                    // bypass so the reconfiguration actually happens.
+                    pendingStartJob?.cancel()
+                    pendingStartJob = lifecycleScope.launch(Dispatchers.Main) {
+                        kotlinx.coroutines.delay(300)
+                        if (!captureRunning) return@launch   // camera stopped meanwhile
+                        if (encoders.any { it.hasClients() } || currentSurfaceProvider != null) return@launch
+                        startCamera(force = true)
+                    }
+                } else {
+                    debouncedStartCamera()
+                }
+            } else if (captureRunning) {
+                debouncedStartCamera()
+            }
+        }
     }
 
     private fun launchMain(block: suspend () -> Unit) { lifecycleScope.launch(Dispatchers.Main) { block() } }
@@ -706,7 +738,7 @@ class StreamingService : LifecycleService() {
                 fpsCoerced,
                 H264HardwareEncoder.bitrateFor(want.width, want.height),
                 true // useSurface = true
-            ) { d, k -> h264.broadcastH264(d, k) }
+            ) { d, k, pts -> h264.broadcastH264(d, k, pts) }
 
             h264.setEncoder(enc)
             streamingServerHelper?.resetH264Wait()
@@ -826,7 +858,7 @@ class StreamingService : LifecycleService() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
         val fpsCoerced = fps.coerceIn(1, 60)
-        val enc = H264HardwareEncoder(sz.width, sz.height, fpsCoerced, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k -> h264StreamingEncoder?.broadcastH264(d, k) }
+        val enc = H264HardwareEncoder(sz.width, sz.height, fpsCoerced, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k, pts -> h264StreamingEncoder?.broadcastH264(d, k, pts) }
         h264StreamingEncoder?.setEncoder(enc)
         streamingServerHelper?.resetH264Wait()
         return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also {

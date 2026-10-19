@@ -37,6 +37,26 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="RTSP Stream">
+        <CheckBoxPreference
+            android:key="rtsp_enabled"
+            android:title="Enable RTSP Server"
+            android:summary="Also serve the camera at rtsp://[ip_address]:[port]/live (H.264 video, AAC audio) for VLC, Frigate and NVRs, using the same username and password"
+            android:defaultValue="false" />
+        <EditTextPreference
+            android:key="rtsp_port"
+            android:title="RTSP Port"
+            android:summary="Port for the RTSP server (default: 8554)"
+            android:defaultValue="8554"
+            android:inputType="number"
+            android:singleLine="true" />
+        <CheckBoxPreference
+            android:key="rtsp_audio"
+            android:title="Include Audio"
+            android:summary="Add the microphone to the RTSP stream as an AAC audio track (requires the microphone permission)"
+            android:defaultValue="true" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Recording">
         <Preference
             android:key="recording_storage_uri"

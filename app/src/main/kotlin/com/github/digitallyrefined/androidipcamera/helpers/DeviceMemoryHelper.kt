@@ -38,6 +38,10 @@ object DeviceMemoryHelper {
             else -> 30
         }
 
+    /** Frames (video access units + AAC frames) buffered per RTSP session before it skips ahead. */
+    fun rtspSendQueueCapacity(context: Context): Int =
+        if (isLowRamDevice(context)) 64 else 256
+
     fun mjpegWriterQueueCapacity(context: Context): Int =
         if (isLowRamDevice(context) || isUnderMemoryPressure()) 2 else 3
 

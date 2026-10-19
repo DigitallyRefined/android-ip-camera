@@ -17,6 +17,7 @@ import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
 import com.github.digitallyrefined.androidipcamera.helpers.RecordingsHelper
+import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 
 class SettingsActivity : AppCompatActivity() {
@@ -168,6 +169,51 @@ class SettingsActivity : AppCompatActivity() {
                             "Port must be between 1 and 65535",
                             Toast.LENGTH_LONG
                         ).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (isRtspEnabled() && port == configuredRtspPort()) {
+                        Toast.makeText(requireContext(), "Port is already used by the RTSP server", Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    summary = "Port $port"
+                    restartStreamingServer()
+                    true
+                }
+            }
+
+            // Optional RTSP server: shares the camera, encoder and credentials with the HTTP server
+            findPreference<androidx.preference.CheckBoxPreference>(RtspServer.PREF_ENABLED)?.apply {
+                findPreference<EditTextPreference>(RtspServer.PREF_PORT)?.isVisible = isChecked
+                findPreference<androidx.preference.CheckBoxPreference>(RtspServer.PREF_AUDIO)?.isVisible = isChecked
+
+                setOnPreferenceChangeListener { _, newValue ->
+                    val enabled = newValue as Boolean
+                    if (enabled && configuredRtspPort() == configuredHttpPort()) {
+                        Toast.makeText(requireContext(),
+                            "RTSP port must differ from the streaming port",
+                            Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    findPreference<EditTextPreference>(RtspServer.PREF_PORT)?.isVisible = enabled
+                    findPreference<androidx.preference.CheckBoxPreference>(RtspServer.PREF_AUDIO)?.isVisible = enabled
+                    restartStreamingServer()
+                    true
+                }
+            }
+
+            findPreference<EditTextPreference>(RtspServer.PREF_PORT)?.apply {
+                setOnBindEditTextListener { editText ->
+                    editText.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                }
+
+                setOnPreferenceChangeListener { _, newValue ->
+                    val port = newValue.toString().toIntOrNull()
+                    if (port == null || port !in 1..65535) {
+                        Toast.makeText(requireContext(), "Port must be between 1 and 65535", Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (port == configuredHttpPort()) {
+                        Toast.makeText(requireContext(), "RTSP port must differ from the streaming port", Toast.LENGTH_LONG).show()
                         return@setOnPreferenceChangeListener false
                     }
                     summary = "Port $port"
@@ -370,6 +416,16 @@ class SettingsActivity : AppCompatActivity() {
             val name = DocumentFile.fromTreeUri(requireContext(), uri)?.name
             return "Custom folder: ${name ?: uri}"
         }
+
+        private fun configuredHttpPort(): Int =
+            preferenceManager.sharedPreferences?.getString("server_port", null)?.toIntOrNull() ?: 4444
+
+        private fun configuredRtspPort(): Int =
+            preferenceManager.sharedPreferences?.getString(RtspServer.PREF_PORT, null)?.toIntOrNull()
+                ?: RtspServer.DEFAULT_PORT
+
+        private fun isRtspEnabled(): Boolean =
+            preferenceManager.sharedPreferences?.getBoolean(RtspServer.PREF_ENABLED, false) == true
 
         private fun restartStreamingServer() {
             val intent = Intent(requireContext(), StreamingService::class.java).apply {

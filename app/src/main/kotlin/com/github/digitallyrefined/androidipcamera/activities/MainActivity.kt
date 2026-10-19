@@ -28,6 +28,7 @@ import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
+import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -208,7 +209,13 @@ class MainActivity : AppCompatActivity() {
         val tlsVersion = prefs.getString("tls_version", "1.3") ?: "1.3"
         val protocol = if (tlsVersion == "disabled") "http" else "https"
         val port = prefs.getString("server_port", "4444")?.toIntOrNull() ?: 4444
-        ipAddressText.text = "$protocol://$ipAddress:$port"
+        val rtspUrl = if (prefs.getBoolean(RtspServer.PREF_ENABLED, false)) {
+            val rtspPort = prefs.getString(RtspServer.PREF_PORT, null)?.toIntOrNull() ?: RtspServer.DEFAULT_PORT
+            "\nrtsp://$ipAddress:$rtspPort${RtspServer.PATH}"
+        } else {
+            ""
+        }
+        ipAddressText.text = "$protocol://$ipAddress:$port$rtspUrl"
     }
 
     private fun checkNotificationChannelEnabled() {
