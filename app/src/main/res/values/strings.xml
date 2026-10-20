@@ -11,4 +11,12 @@
         <item>disabled</item>
     </string-array>
     <string name="streaming_active">🔴 Streaming active</string>
+    <string-array name="motion_sensitivity_entries">
+        <item>1 (least sensitive)</item><item>2</item><item>3</item><item>4</item><item>5 (default)</item>
+        <item>6</item><item>7</item><item>8</item><item>9</item><item>10 (most sensitive)</item>
+    </string-array>
+    <string-array name="motion_sensitivity_values">
+        <item>1</item><item>2</item><item>3</item><item>4</item><item>5</item>
+        <item>6</item><item>7</item><item>8</item><item>9</item><item>10</item>
+    </string-array>
 </resources>

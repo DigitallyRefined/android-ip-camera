@@ -27,6 +27,10 @@ class H264StreamingEncoder(
 
     var h264HardwareEncoder: H264HardwareEncoder? = null
         private set
+    /** Extra consumer of every access unit (the RTSP server); must not block. */
+    @Volatile var accessUnitSink: ((ByteArray, Boolean) -> Unit)? = null
+    /** Extra viewers outside the HTTP server (RTSP sessions) that need the encoder running. */
+    @Volatile var extraClients: () -> Boolean = { false }
     private val releasingEncoders = java.util.concurrent.CopyOnWriteArrayList<H264HardwareEncoder>()
     private var glPipe: CameraGlPipe? = null
     private var backend: CaptureBackend? = null
@@ -159,13 +163,14 @@ class H264StreamingEncoder(
     }
 
     override fun hasClients(): Boolean {
-        return streamingServerHelper?.getH264Clients()?.isNotEmpty() == true
+        return streamingServerHelper?.getH264Clients()?.isNotEmpty() == true || extraClients()
     }
 
     /**
      * Broadcast H.264 data to all connected H.264 clients.
      */
     fun broadcastH264(data: ByteArray, isKey: Boolean) {
+        accessUnitSink?.invoke(data, isKey)
         val helper = streamingServerHelper ?: return
         val clients = helper.getH264Clients()
         if (clients.isEmpty()) return

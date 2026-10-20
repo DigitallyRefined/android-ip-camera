@@ -33,6 +33,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🛂 Username and password protection
 * 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS
 * 🥾 Optional start on boot
+* 📡 Optional ONVIF camera mode with an RTSP stream and motion events, for UniFi Protect (third-party camera adoption), Home Assistant's ONVIF integration, and other NVRs
 
 ## ⚠️ Warning
 
@@ -51,6 +52,27 @@ The app runs as a foreground service with a persistent notification, so it won't
 * Don't dismiss the persistent notification or the server may get stopped.
 * The display can be safely turned off while streaming.
 * Enable **Start on Boot** in the app settings for unattended setups.
+
+## 📡 ONVIF / RTSP (UniFi Protect, Home Assistant)
+
+Enable **Settings > ONVIF / RTSP > Enable ONVIF camera**. The camera then stays on and the phone appears as a standard ONVIF camera:
+
+* **RTSP:** `rtsp://[username]:[password]@[ip_address]:8554/live` (H.264, TCP or UDP, Digest/Basic auth)
+* **ONVIF:** `http://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery)
+* **Motion events:** the app runs its own motion detection and publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`). Lighting changes, such as a TV changing scenes, are ignored. Sensitivity is set in the same settings section.
+* **Snapshot:** `http://[ip_address]:8000/onvif/snapshot.jpg`
+
+The ONVIF and RTSP services use the username and password from the Authentication settings.
+
+### UniFi Protect
+
+1. If the phone is on the same network as the console, it shows up under third-party cameras. Otherwise, use **UniFi Devices > ? > Try advanced adoption** and enter `[ip_address]:8000` with the app's username and password.
+2. In the camera's Protect settings, turn **off audio recording**. The stream has no audio track, and Protect won't record without one while audio recording is on.
+3. Protect needs a motion zone for third-party cameras before it creates motion events. If none exists, add a full-frame one through the Protect API (the settings UI doesn't offer zones for third-party cameras).
+
+### Home Assistant
+
+Add the phone with the **ONVIF** integration (host = phone IP, port `8000`), or adopt it in UniFi Protect and use the Protect integration. Both expose the camera and a motion binary sensor.
 
 ## 🎥 Frigate config
 

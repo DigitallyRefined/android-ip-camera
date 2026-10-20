@@ -37,6 +37,46 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="ONVIF / RTSP (UniFi Protect, Home Assistant)">
+        <SwitchPreferenceCompat
+            android:key="onvif_enabled"
+            android:title="Enable ONVIF camera"
+            android:summary="Keep the camera on and expose it as an ONVIF camera with an RTSP stream (rtsp://[ip]:8554/live). Uses the username/password above."
+            android:defaultValue="false" />
+        <EditTextPreference
+            android:key="onvif_name"
+            android:title="Camera name"
+            android:summary="Name shown to ONVIF clients (default: device model)"
+            android:defaultValue=""
+            android:singleLine="true" />
+        <EditTextPreference
+            android:key="rtsp_port"
+            android:title="RTSP Port"
+            android:summary="Port for the RTSP stream (default: 8554)"
+            android:defaultValue="8554"
+            android:inputType="number"
+            android:singleLine="true" />
+        <EditTextPreference
+            android:key="onvif_port"
+            android:title="ONVIF Port"
+            android:summary="Port for the ONVIF service (default: 8000)"
+            android:defaultValue="8000"
+            android:inputType="number"
+            android:singleLine="true" />
+        <SwitchPreferenceCompat
+            android:key="motion_detection_enabled"
+            android:title="Motion detection"
+            android:summary="Send ONVIF motion events (Home Assistant motion sensor, UniFi Protect motion)"
+            android:defaultValue="true" />
+        <ListPreference
+            android:key="motion_sensitivity"
+            android:title="Motion sensitivity"
+            android:summary="%s"
+            android:entries="@array/motion_sensitivity_entries"
+            android:entryValues="@array/motion_sensitivity_values"
+            android:defaultValue="5" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Recording">
         <Preference
             android:key="recording_storage_uri"
