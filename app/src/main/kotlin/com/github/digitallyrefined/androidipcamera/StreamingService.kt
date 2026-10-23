@@ -58,12 +58,22 @@ class StreamingService : LifecycleService() {
 
     private val binder = LocalBinder()
     var streamingServerHelper: StreamingServerHelper? = null
+    /** Optional RTSP server (Settings > RTSP Stream) sharing the H.264 encoder with the HTTP server. */
+    private var rtspServer: RtspServer? = null
+    /** Optional ONVIF service (Settings > ONVIF) advertising the RTSP stream and motion events. */
+    @Volatile private var onvifServer: OnvifServer? = null
+    private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
+    /** Motion detection over the capture frames already delivered to the streaming pipeline. */
+    private var motionMonitor: MotionMonitor? = null
 
     // Streaming encoders (initialized when server is created)
     private var h264StreamingEncoder: H264StreamingEncoder? = null
     private var mjpegStreamingEncoder: MjpegStreamingEncoder? = null
     private val encoders: List<StreamingEncoder>
         get() = listOfNotNull(h264StreamingEncoder, mjpegStreamingEncoder)
+
+    /** Motion detection is on: the camera must keep delivering frames even with no viewer. */
+    private fun motionEnabled(): Boolean = motionMonitor?.enabled == true
 
     @Volatile private var glPipe: CameraGlPipe? = null          // Camera1 H.264 GL pipe
     @Volatile private var cameraXGlPipe: CameraGlPipe? = null   // CameraX H.264 GL pipe
@@ -80,6 +90,8 @@ class StreamingService : LifecycleService() {
      *  session-bound torch, a setTorchMode torch survives process death. */
     @Volatile private var deviceTorchOn = false
     @Volatile private var localRecorder: LocalRecorder? = null
+    /** Smaller encoder feeding the RTSP sub stream (/live/sub) while it has viewers. */
+    @Volatile private var subEncoder: H264HardwareEncoder? = null
 
     @Volatile private var frontFacing = false             // false = back camera (read across threads)
     @Volatile private var selectedCameraId: String? = null
@@ -126,6 +138,8 @@ class StreamingService : LifecycleService() {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "streaming_service_channel"
         private const val PREF_CAMERA_ID = "camera_id"
+        private const val PREF_ONVIF_NAME = "onvif_name"
+        private const val PREF_ONVIF_PORT = "onvif_port"
         /** "on"/"off". Already surfaced by /info.json, which until now reported a value nobody wrote. */
         private const val PREF_CAMERA_TORCH = "camera_torch"
         /** Hard cap for a single /video/snapshot pipeline run (switch + capture). */
@@ -173,8 +187,12 @@ class StreamingService : LifecycleService() {
     private fun restartServer() {
         lifecycleScope.launch(Dispatchers.IO) {
             streamingServerHelper?.stopServer()
+            rtspServer?.stop()
+            stopOnvif()
             kotlinx.coroutines.delay(500)
             streamingServerHelper?.startStreamingServer()
+            startRtspServerIfEnabled()
+            startOnvifIfEnabled()
         }
     }
 
@@ -227,6 +245,10 @@ class StreamingService : LifecycleService() {
         // A setTorchMode torch outlives the process — release it explicitly or the LED burns
         // forever after the service is stopped.
         if (deviceTorchOn) setDeviceTorch(false)
+        // Plain thread: the lifecycle scope is already cancelled once the service is destroyed.
+        rtspServer?.let { server -> Thread { server.stop() }.start() }
+        motionMonitor?.detector?.reset()
+        stopOnvif()
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
 
@@ -262,7 +284,7 @@ class StreamingService : LifecycleService() {
         // Recording owns the camera session: stopping or restarting the camera now would tear
         // down the encoder and finalize the file, so leave the pipeline alone until it stops.
         if (localRecorder?.isRecording == true) return
-        val shouldRun = encoders.any { it.hasClients() } || currentSurfaceProvider != null
+        val shouldRun = encoders.any { it.hasClients() } || currentSurfaceProvider != null || motionEnabled()
         if (shouldRun) {
             debouncedStartCamera()
         } else {
@@ -273,7 +295,7 @@ class StreamingService : LifecycleService() {
         }
     }
     fun isCameraRunning() = captureRunning
-    fun hasActiveClients() = encoders.any { it.hasClients() } || localRecorder?.isRecording == true
+    fun hasActiveClients() = encoders.any { it.hasClients() } || localRecorder?.isRecording == true || motionEnabled()
     fun switchCamera() {
         selectCamera(!frontFacing, null)
         PreferenceManager.getDefaultSharedPreferences(this).edit()
@@ -327,61 +349,206 @@ class StreamingService : LifecycleService() {
             streamingServerHelper = StreamingServerHelper(
                 this,
                 onLog = { Log.i(TAG, "Server: $it"); onLog?.invoke(it) },
-                onClientConnected = {
-                    launchMain {
-                        onClientConnected?.invoke()
-                        // While recording, the camera is already running and feeding the encoder; a
-                        // restart would finalize the recording, and new viewers pick up the existing
-                        // stream, so no reconfiguration is needed.
-                        if (localRecorder?.isRecording == true) return@launchMain
-                        if (captureRunning) {
-                            debouncedStartCamera()
-                        } else {
-                            startCameraIfNeeded()
-                        }
-                    }
-                },
-                onClientDisconnected = {
-                    launchMain {
-                        onClientDisconnected?.invoke()
-                        // Recording owns the camera: stopping or restarting it now would finalize
-                        // the file, and remaining viewers keep their existing stream as-is.
-                        if (localRecorder?.isRecording == true) return@launchMain
-                        if (!hasActiveClients()) {
-                            // Reload/idle: keep the LED lit across the session gap before the
-                            // shed-restart tears the streaming camera down.
-                            bridgeTorchAcrossIdle()
-                            if (currentSurfaceProvider == null) {
-                                // Last client gone and no on-screen preview: shed the H.264
-                                // surface encoder / GL pipe and keep the camera warm in a plain,
-                                // snapshot-friendly configuration. Force ignores the hasClients()
-                                // bypass so the reconfiguration actually happens.
-                                pendingStartJob?.cancel()
-                                pendingStartJob = lifecycleScope.launch(Dispatchers.Main) {
-                                    kotlinx.coroutines.delay(300)
-                                    if (!captureRunning) return@launch   // camera stopped meanwhile
-                                    if (encoders.any { it.hasClients() } || currentSurfaceProvider != null) return@launch
-                                    startCamera(force = true)
-                                }
-                            } else {
-                                debouncedStartCamera()
-                            }
-                        } else if (captureRunning) {
-                            debouncedStartCamera()
-                        }
-                    }
-                },
+                onClientConnected = { handleClientConnected() },
+                onClientDisconnected = { handleClientDisconnected() },
                 onControlCommand = { key, value, ts -> handleRemoteControl(key, value, ts) },
                 onSnapshot = { id -> snapshot(id) },
                 onRecordStart = { startRecording() },
                 onRecordStop = { stopRecording() },
-                onRecordStatus = { getRecordingStatus() }
+                onRecordStatus = { getRecordingStatus() },
+                // /control/stop must also drop RTSP viewers, which the HTTP server does not own.
+                onStreamingEnabledChanged = { enabled -> if (!enabled) rtspServer?.disconnectAll() }
             )
             // Initialize encoders with the streaming server helper
             h264StreamingEncoder = H264StreamingEncoder(this, streamingServerHelper!!) { Log.i(TAG, "H264: $it"); onLog?.invoke(it) }
             mjpegStreamingEncoder = MjpegStreamingEncoder(this, streamingServerHelper!!) { Log.i(TAG, "MJPEG: $it"); onLog?.invoke(it) }
+            motionMonitor = MotionMonitor(this) { active ->
+                Log.i(TAG, "Motion ${if (active) "started" else "ended"}")
+                onvifServer?.setMotion(active)
+            }
+            rtspServer = RtspServer(
+                AndroidRtspHost(
+                    this,
+                    onLog = { Log.i(TAG, "RTSP: $it"); onLog?.invoke(it) },
+                    clientConnected = { handleClientConnected() },
+                    clientDisconnected = { handleClientDisconnected() },
+                    keyFrameRequest = { stream ->
+                        val sub = subEncoder
+                        if (stream == RtspStream.SUB && sub != null) sub.requestKeyFrame()
+                        else h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
+                    },
+                    streamingEnabled = { streamingServerHelper?.isStreamingEnabled() != false }
+                ),
+                DeviceMemoryHelper.rtspSendQueueCapacity(this),
+                // Same certificate as the web server; null when TLS is disabled.
+                tls = { TlsHelper.serverConfig(this) }
+            )
+            h264StreamingEncoder?.rtspServer = rtspServer
         }
         streamingServerHelper?.startStreamingServer()
+        startRtspServerIfEnabled()
+        startOnvifIfEnabled()
+        // Motion detection persisted as on keeps the camera running with no viewer.
+        if (motionEnabled()) launchMain { startCameraIfNeeded() }
+    }
+
+    /** Starts (or stops) the RTSP server to match the RTSP/ONVIF setting. ONVIF is enabled by the
+     *  same preference and advertises this stream. */
+    private fun startRtspServerIfEnabled() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val enabled = prefs.getBoolean(RtspServer.PREF_ENABLED, false)
+        if (enabled) rtspServer?.start() else rtspServer?.stop()
+    }
+
+    // ---------------- ONVIF ----------------
+
+    private fun stopOnvif() {
+        try { onvifServer?.stop() } catch (e: Exception) { Log.w(TAG, "onvif stop: ${e.message}") }
+        onvifServer = null
+        try { multicastLock?.takeIf { it.isHeld }?.release() } catch (_: Exception) {}
+        multicastLock = null
+    }
+
+    /** Starts the ONVIF service when RTSP/ONVIF is enabled. It never keeps the camera open by
+     *  itself: video viewers (RTSP/HTTP) and motion detection do that on demand. */
+    private fun startOnvifIfEnabled() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        if (!prefs.getBoolean(RtspServer.PREF_ENABLED, false)) {
+            stopOnvif()
+            return
+        }
+        if (onvifServer != null) return
+        val rtspPort = prefPort(RtspServer.PREF_PORT, RtspServer.DEFAULT_PORT)
+        val version = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (_: Exception) { "" }
+        val onvif = OnvifServer(
+            port = prefPort(PREF_ONVIF_PORT, 8000),
+            host = { getLocalIpAddress() },
+            info = {
+                OnvifDeviceInfo(
+                    manufacturer = Build.MANUFACTURER.replaceFirstChar { it.uppercase() },
+                    model = Build.MODEL,
+                    firmware = "AndroidIPCamera $version",
+                    serial = deviceId(),
+                    hardwareId = Build.DEVICE,
+                    mac = pseudoMac(),
+                    name = prefs.getString(PREF_ONVIF_NAME, null)?.takeIf { it.isNotBlank() } ?: Build.MODEL,
+                )
+            },
+            stream = {
+                val size = desiredSize()
+                val fps = (prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30).coerceIn(1, 60)
+                val scheme = if (TlsHelper.isEnabled(this)) "rtsps" else "rtsp"
+                OnvifStreamInfo(
+                    rtspUrl = "$scheme://${getLocalIpAddress()}:$rtspPort${RtspServer.PATH}",
+                    width = size.width, height = size.height, fps = fps,
+                    bitrateKbps = H264HardwareEncoder.bitrateFor(size.width, size.height) / 1000,
+                )
+            },
+            credentials = { streamCredentials() },
+            // Snapshots use the regular still-capture path, so they work whether or not a
+            // stream is running (a snapshot opens the camera on demand and restores the stream).
+            snapshot = { snapshot(camId()) },
+            onLog = { Log.i(TAG, "ONVIF: $it"); onLog?.invoke("ONVIF: $it") },
+            // Same certificate as the web server; null when TLS is disabled.
+            tls = { TlsHelper.serverConfig(this) }
+        )
+        try {
+            multicastLock = (applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager)
+                .createMulticastLock("onvif-discovery").apply { setReferenceCounted(false); acquire() }
+        } catch (e: Exception) { Log.w(TAG, "multicast lock: ${e.message}") }
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                onvif.start()
+                // Settings may have changed while the service was binding.
+                if (!PreferenceManager.getDefaultSharedPreferences(this@StreamingService)
+                        .getBoolean(RtspServer.PREF_ENABLED, false)) {
+                    onvif.stop()
+                    return@launch
+                }
+                onvifServer = onvif
+                motionMonitor?.detector?.let { if (it.active) onvif.setMotion(true) }
+            } catch (e: Exception) {
+                Log.e(TAG, "ONVIF start failed", e)
+                onLog?.invoke("ONVIF failed to start: ${e.message}")
+                try { multicastLock?.takeIf { it.isHeld }?.release() } catch (_: Exception) {}
+                multicastLock = null
+            }
+        }
+    }
+
+    private fun streamCredentials(): Pair<String, String>? {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        if (!prefs.getBoolean("enable_auth", true)) return null
+        val ss = SecureStorage(this)
+        val u = InputValidator.validateAndSanitizeUsername(ss.getSecureString(SecureStorage.KEY_USERNAME, "") ?: "")
+        val p = InputValidator.validateAndSanitizePassword(ss.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: "")
+        return if (u.isNullOrBlank() || p.isNullOrBlank()) null else u to p
+    }
+
+    private fun prefPort(key: String, def: Int): Int =
+        PreferenceManager.getDefaultSharedPreferences(this).getString(key, null)?.toIntOrNull()?.takeIf { it in 1..65535 } ?: def
+
+    /** Stable pseudo-MAC/serial from ANDROID_ID (Android hides the real Wi-Fi MAC from apps). */
+    private fun deviceId(): String =
+        android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "0000000000000000"
+
+    private fun pseudoMac(): String {
+        val h = java.security.MessageDigest.getInstance("SHA-256").digest(deviceId().toByteArray())
+        h[0] = ((h[0].toInt() and 0xFC) or 0x02).toByte()   // locally administered, unicast
+        return (0 until 6).joinToString(":") { String.format(Locale.US, "%02x", h[it]) }
+    }
+
+    /** A viewer (HTTP or RTSP) connected: make sure the camera runs in a configuration that serves it. */
+    private fun handleClientConnected() {
+        launchMain {
+            onClientConnected?.invoke()
+            // While recording, the camera is already running and feeding the encoder; a
+            // restart would finalize the recording, and new viewers pick up the existing
+            // stream, so no reconfiguration is needed (the sub stream encoder needs no restart).
+            if (localRecorder?.isRecording == true) {
+                updateSubStream()
+                return@launchMain
+            }
+            if (captureRunning) {
+                debouncedStartCamera()
+            } else {
+                startCameraIfNeeded()
+            }
+        }
+    }
+
+    private fun handleClientDisconnected() {
+        launchMain {
+            onClientDisconnected?.invoke()
+            // Recording owns the camera: stopping or restarting it now would finalize
+            // the file, and remaining viewers keep their existing stream as-is.
+            if (localRecorder?.isRecording == true) {
+                updateSubStream()
+                return@launchMain
+            }
+            if (!hasActiveClients()) {
+                // Reload/idle: keep the LED lit across the session gap before the
+                // shed-restart tears the streaming camera down.
+                bridgeTorchAcrossIdle()
+                if (currentSurfaceProvider == null) {
+                    // Last client gone and no on-screen preview: shed the H.264
+                    // surface encoder / GL pipe and keep the camera warm in a plain,
+                    // snapshot-friendly configuration. Force ignores the hasClients()
+                    // bypass so the reconfiguration actually happens.
+                    pendingStartJob?.cancel()
+                    pendingStartJob = lifecycleScope.launch(Dispatchers.Main) {
+                        kotlinx.coroutines.delay(300)
+                        if (!captureRunning) return@launch   // camera stopped meanwhile
+                        if (encoders.any { it.hasClients() } || currentSurfaceProvider != null || motionEnabled()) return@launch
+                        startCamera(force = true)
+                    }
+                } else {
+                    debouncedStartCamera()
+                }
+            } else if (captureRunning) {
+                debouncedStartCamera()
+            }
+        }
     }
 
     private fun launchMain(block: suspend () -> Unit) { lifecycleScope.launch(Dispatchers.Main) { block() } }
@@ -510,6 +677,23 @@ class StreamingService : LifecycleService() {
         id?.let { cm.getCameraCharacteristics(it).get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) }
     } catch (_: Exception) { null }
 
+    /** SENSOR_ORIENTATION of the selected camera, or null if it cannot be read. */
+    private fun sensorOrientation(): Int? = try {
+        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val id = selectedCameraId
+            ?.let { parseCameraToken(it).logicalId }
+            ?.takeIf { it in cm.cameraIdList }
+            ?: firstCameraIdForFacing(frontFacing)
+        id?.let { cm.getCameraCharacteristics(it).get(CameraCharacteristics.SENSOR_ORIENTATION) }
+    } catch (_: Exception) { null }
+
+    /** Encoder frame for the CameraX surface path: [want] turned to the picture's orientation. */
+    private fun surfaceEncoderSize(want: Size): Size {
+        val sensor = sensorOrientation() ?: return want
+        val (w, h) = CameraGlPipe.frameSize(want.width, want.height, sensor, quantizedRotation(readRotatePref()))
+        return Size(w, h)
+    }
+
     private fun supportsSurfaceEncoder(): Boolean {
         if (frontFacing) return false
         val level = cameraHardwareLevel(selectedCameraId) ?: return false
@@ -573,7 +757,7 @@ class StreamingService : LifecycleService() {
             return@withLock
         }
         val hasClients = encoders.any { it.hasClients() }
-        if (!force && !hasClients && currentSurfaceProvider == null) {
+        if (!force && !hasClients && currentSurfaceProvider == null && !motionEnabled()) {
             Log.i(TAG, "startCamera bypassed: no force, no clients, and preview surface is null")
             return@withLock
         }
@@ -606,7 +790,7 @@ class StreamingService : LifecycleService() {
             // frames are actually needed (clients / recording / snapshot in flight): then honor the
             // API preference and the known-bad-Camera2 flag, which route to the Camera1 backend.
             val needsFrames = snapshotInProgress || recordingNeeded ||
-                encoders.any { it.hasClients() } || localRecorder?.isRecording == true
+                encoders.any { it.hasClients() } || localRecorder?.isRecording == true || motionEnabled()
             val useCamera1 = needsFrames && (chooseApi() == "camera1" || camxUnusable)
             if (useCamera1) {
                 if (camxUnusable) {
@@ -635,6 +819,7 @@ class StreamingService : LifecycleService() {
 
             captureRunning = true
             encoders.forEach { it.start() }
+            updateSubStream()
             // Still no viewers? The camera is open purely to keep the torch lit.
             if (resumeTorchHold && !hasActiveClients() && currentSurfaceProvider == null) {
                 cameraHeldForTorch = true
@@ -682,9 +867,12 @@ class StreamingService : LifecycleService() {
         val cap = Camera1Capture(camera1IndexForSelectedOrFacing(frontFacing), want.width, want.height)
         val pipe = newPipe(Size(cap.chosenW, cap.chosenH))
         cap.start(pipe.surfaceTexture)
-        mjpegStreamingEncoder?.takeIf { it.hasClients() }?.let { mjpeg ->
+        val mjpeg = mjpegStreamingEncoder?.takeIf { it.hasClients() }
+        val motion = motionMonitor?.takeIf { it.enabled }
+        if (mjpeg != null || motion != null) {
             cap.setPreviewFrameCallback { nv21 ->
-                mjpeg.processNv21Frame(nv21, cap.chosenW, cap.chosenH, cap.previewRotation)
+                mjpeg?.processNv21Frame(nv21, cap.chosenW, cap.chosenH, cap.previewRotation)
+                motion?.processNv21Frame(nv21, cap.chosenW, cap.chosenH)
             }
         }
         backend = cap
@@ -700,20 +888,31 @@ class StreamingService : LifecycleService() {
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
             val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
             val fpsCoerced = fps.coerceIn(1, 60)
-            val enc = H264HardwareEncoder(
-                want.width,
-                want.height,
+            fun newEncoder(size: Size) = H264HardwareEncoder(
+                size.width,
+                size.height,
                 fpsCoerced,
-                H264HardwareEncoder.bitrateFor(want.width, want.height),
+                H264HardwareEncoder.bitrateFor(size.width, size.height),
                 true // useSurface = true
-            ) { d, k -> h264.broadcastH264(d, k) }
+            ) { d, k, pts -> h264.broadcastH264(d, k, pts) }
+
+            // Encode in the picture's shape (portrait when the camera image is upright portrait).
+            // Some older encoders reject portrait sizes; they keep the landscape frame instead.
+            val frame = surfaceEncoderSize(want)
+            val enc = try {
+                newEncoder(frame)
+            } catch (e: Exception) {
+                if (frame == want) throw e
+                Log.w(TAG, "H.264 encoder rejected ${frame.width}x${frame.height}, using ${want.width}x${want.height}: ${e.message}")
+                newEncoder(want)
+            }
 
             h264.setEncoder(enc)
             streamingServerHelper?.resetH264Wait()
 
             // Route CameraX frames through a GL pipe so mirror can be applied
             // without restarting the camera (the pipe reads mirror on each frame).
-            val pipe = CameraGlPipe(enc.inputSurface!!, want.width, want.height, fpsCoerced, standardBuffer = true).also {
+            val pipe = CameraGlPipe(enc.inputSurface!!, enc.width, enc.height, fpsCoerced, standardBuffer = true).also {
                 it.mirror = readMirrorPref()
                 it.rotation = quantizedRotation(readRotatePref())
                 it.start()
@@ -723,7 +922,10 @@ class StreamingService : LifecycleService() {
             h264SurfaceProvider = Preview.SurfaceProvider { request ->
                 val surface = pipe.inputSurface
                 if (surface != null && surface.isValid) {
-                    Log.i(TAG, "Providing CameraX H.264 surface via GL pipe (mirror=${pipe.mirror})")
+                    // Render at the resolution CameraX negotiated rather than the pipe's
+                    // placeholder buffer size, so the selected resolution is what gets captured.
+                    pipe.setCameraBufferSize(request.resolution.width, request.resolution.height)
+                    Log.i(TAG, "Providing CameraX H.264 surface via GL pipe (${request.resolution}, mirror=${pipe.mirror})")
                     enc.hasSurfaceBeenProvided = true
                     request.provideSurface(surface, ContextCompat.getMainExecutor(this)) { result ->
                         Log.i(TAG, "CameraX H.264 surface released by CameraX (result code: ${result.resultCode})")
@@ -748,6 +950,8 @@ class StreamingService : LifecycleService() {
             }
         ) { img ->
             try {
+                // Motion detection reads the luma plane without disturbing the encoders' buffers.
+                motionMonitor?.processFrame(img)
                 cameraXGlPipe?.let { pipe ->
                     pipe.frameWidth = img.width; pipe.frameHeight = img.height
                 }
@@ -782,10 +986,66 @@ class StreamingService : LifecycleService() {
         if (closeDuration > 1000) {
             Log.w(TAG, "Camera close took ${closeDuration}ms — HAL is slow to release resources")
         }
+        stopSubStream()   // detach it from the GL pipe while the pipe is still running
         cameraXGlPipe?.stop(); cameraXGlPipe = null
         glPipe?.stop(); glPipe = null
         encoders.forEach { it.stop() }
+        motionMonitor?.reset()
         captureRunning = false
+    }
+
+    // ---------------- RTSP sub stream ----------------
+
+    /**
+     * Runs the RTSP sub stream's own small encoder while a /live/sub viewer is connected and the
+     * H.264 picture goes through a GL pipe, which then draws every frame into it too. Without a
+     * pipe (byte-buffer capture: front camera, LIMITED devices) the sub stream carries the main
+     * encoder's frames instead.
+     */
+    private fun updateSubStream() {
+        val rtsp = rtspServer ?: return
+        val h264 = h264StreamingEncoder ?: return
+        val pipe = cameraXGlPipe ?: glPipe
+        if (pipe == null || !rtsp.hasSubVideoClients()) {
+            stopSubStream()
+            return
+        }
+        if (subEncoder != null) return
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val shortSide = prefs.getString(RtspServer.PREF_SUB_SIZE, null)?.toIntOrNull() ?: RtspServer.DEFAULT_SUB_SIZE
+        val fps = (prefs.getString(RtspServer.PREF_SUB_FPS, null)?.toIntOrNull() ?: RtspServer.DEFAULT_SUB_FPS).coerceIn(1, 60)
+        val kbps = prefs.getString(RtspServer.PREF_SUB_BITRATE, null)?.toIntOrNull() ?: RtspServer.DEFAULT_SUB_BITRATE_KBPS
+        val bitrate = H264HardwareEncoder.clampBitrate(kbps * 1000L)
+        val (w, h) = CameraGlPipe.scaledFrame(pipe.width, pipe.height, shortSide)
+        val enc = try {
+            H264HardwareEncoder(w, h, fps, bitrate, true, RtspServer.SUB_KEYFRAME_INTERVAL_SEC) { d, k, pts ->
+                rtsp.onVideoFrame(d, k, pts, RtspStream.SUB)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "RTSP sub stream encoder ${w}x$h failed, sub stream carries the main stream: ${e.message}")
+            return
+        }
+        subEncoder = enc
+        // Switch the sub stream's source: viewers wait for the new encoder's first keyframe.
+        h264.subStreamEncoded = true
+        rtsp.resyncVideo(RtspStream.SUB)
+        if (!pipe.setSecondaryOutput(enc.inputSurface, w, h, fps)) {
+            Log.w(TAG, "RTSP sub stream could not be attached to the GL pipe, sub stream carries the main stream")
+            stopSubStream()
+            return
+        }
+        enc.requestKeyFrame()
+        Log.i(TAG, "RTSP sub stream ${w}x$h @${fps}fps ${bitrate / 1000}kbps")
+    }
+
+    private fun stopSubStream() {
+        val enc = subEncoder ?: return
+        subEncoder = null
+        h264StreamingEncoder?.subStreamEncoded = false
+        rtspServer?.resyncVideo(RtspStream.SUB)
+        h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
+        (cameraXGlPipe ?: glPipe)?.setSecondaryOutput(null)
+        enc.stop()
     }
 
     private fun readMirrorPref(): Boolean {
@@ -826,7 +1086,7 @@ class StreamingService : LifecycleService() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
         val fpsCoerced = fps.coerceIn(1, 60)
-        val enc = H264HardwareEncoder(sz.width, sz.height, fpsCoerced, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k -> h264StreamingEncoder?.broadcastH264(d, k) }
+        val enc = H264HardwareEncoder(sz.width, sz.height, fpsCoerced, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k, pts -> h264StreamingEncoder?.broadcastH264(d, k, pts) }
         h264StreamingEncoder?.setEncoder(enc)
         streamingServerHelper?.resetH264Wait()
         return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also {
@@ -1307,6 +1567,14 @@ class StreamingService : LifecycleService() {
                 val q = quantizedRotation(norm)
                 glPipe?.rotation = q
                 cameraXGlPipe?.rotation = q
+                // The CameraX surface encoder's frame follows the picture's shape, so a quarter
+                // turn needs a new encoder (the byte-buffer encoder resizes itself per frame).
+                // Not while recording: restarting the camera would end the recording.
+                val current = h264StreamingEncoder?.h264HardwareEncoder
+                if (cameraXGlPipe != null && current != null && localRecorder?.isRecording != true) {
+                    val target = surfaceEncoderSize(desiredSize())
+                    if (target.width != current.width || target.height != current.height) debouncedStartCamera()
+                }
             }
             "scale" -> {
                 // Persist scale per-camera (string like "1.0")
@@ -1335,6 +1603,29 @@ class StreamingService : LifecycleService() {
                     if (value != "camera1") prefs.edit().putBoolean("camera2_unusable", false).apply()
                     debouncedStartCamera()
                 }
+            }
+            MotionMonitor.PREF_ENABLED -> {
+                val enabled = when (value.lowercase()) {
+                    "true", "on", "1" -> true
+                    "false", "off", "0" -> false
+                    else -> return
+                }
+                prefs.edit().putBoolean(MotionMonitor.PREF_ENABLED, enabled).apply()
+                motionMonitor?.onSettingsChanged()
+                launchMain {
+                    if (enabled) {
+                        if (captureRunning) debouncedStartCamera() else startCameraIfNeeded()
+                    } else if (localRecorder?.isRecording != true &&
+                        !encoders.any { it.hasClients() } && currentSurfaceProvider == null) {
+                        // Motion was the only frame consumer: release the camera again.
+                        stopCamera()
+                        bridgeTorchAcrossIdle()
+                    }
+                }
+            }
+            MotionMonitor.PREF_SENSITIVITY -> {
+                val sensitivity = value.toIntOrNull()?.coerceIn(1, 10) ?: return
+                prefs.edit().putString(MotionMonitor.PREF_SENSITIVITY, sensitivity.toString()).apply()
             }
         }
 

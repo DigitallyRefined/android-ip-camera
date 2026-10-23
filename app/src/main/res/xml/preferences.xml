@@ -37,6 +37,56 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="RTSP / ONVIF">
+        <CheckBoxPreference
+            android:key="rtsp_enabled"
+            android:title="Enable RTSP"
+            android:defaultValue="false" />
+        <EditTextPreference
+            android:key="rtsp_port"
+            android:title="RTSP Port"
+            android:summary="Port for the RTSP server (default: 8554)"
+            android:defaultValue="8554"
+            android:inputType="number"
+            android:singleLine="true" />
+        <CheckBoxPreference
+            android:key="rtsp_audio"
+            android:title="Include Audio"
+            android:summary="Add the microphone to the RTSP stream as an AAC audio track (requires the microphone permission)"
+            android:defaultValue="true" />
+        <ListPreference
+            android:key="rtsp_sub_size"
+            android:title="Sub Stream Resolution"
+            android:defaultValue="360"
+            android:entries="@array/rtsp_sub_size_entries"
+            android:entryValues="@array/rtsp_sub_size_values" />
+        <ListPreference
+            android:key="rtsp_sub_fps"
+            android:title="Sub Stream Frame Rate"
+            android:defaultValue="15"
+            android:entries="@array/rtsp_sub_fps_entries"
+            android:entryValues="@array/rtsp_sub_fps_values" />
+        <ListPreference
+            android:key="rtsp_sub_bitrate"
+            android:title="Sub Stream Bitrate"
+            android:defaultValue="500"
+            android:entries="@array/rtsp_sub_bitrate_entries"
+            android:entryValues="@array/rtsp_sub_bitrate_values" />
+        <EditTextPreference
+            android:key="onvif_name"
+            android:title="ONVIF Camera Name"
+            android:summary="Name shown to ONVIF clients (default: device model)"
+            android:defaultValue=""
+            android:singleLine="true" />
+        <EditTextPreference
+            android:key="onvif_port"
+            android:title="ONVIF Port"
+            android:summary="Port for the ONVIF service (default: 8000)"
+            android:defaultValue="8000"
+            android:inputType="number"
+            android:singleLine="true" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Recording">
         <Preference
             android:key="recording_storage_uri"
@@ -51,10 +101,15 @@
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Certificate Settings">
+        <CheckBoxPreference
+            android:key="tls_enabled"
+            android:title="Enable TLS/HTTPS"
+            android:summary="Use the same certificate for the web server, RTSPS, and ONVIF endpoints"
+            android:defaultValue="true" />
         <ListPreference
             android:key="tls_version"
             android:title="TLS Version"
-            android:summary="Automatically use the newest platform TLS, force TLS 1.2, or disable HTTPS"
+            android:summary="Automatically use the newest platform TLS or force TLS 1.2"
             android:defaultValue="1.3"
             android:entries="@array/tls_version_entries"
             android:entryValues="@array/tls_version_values" />

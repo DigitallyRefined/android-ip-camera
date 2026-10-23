@@ -28,6 +28,7 @@ import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
+import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -205,10 +206,20 @@ class MainActivity : AppCompatActivity() {
         val ipAddressText = findViewById<TextView>(R.id.ipAddressText)
         val ipAddress = getLocalIpAddress()
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val tlsVersion = prefs.getString("tls_version", "1.3") ?: "1.3"
-        val protocol = if (tlsVersion == "disabled") "http" else "https"
+        val tlsEnabled = prefs.getBoolean("tls_enabled", true)
+        val protocol = if (tlsEnabled) "https" else "http"
+        val rtspProtocol = if (tlsEnabled) "rtsps" else "rtsp"
         val port = prefs.getString("server_port", "4444")?.toIntOrNull() ?: 4444
-        ipAddressText.text = "$protocol://$ipAddress:$port"
+        val rtspPort = prefs.getString(RtspServer.PREF_PORT, null)?.toIntOrNull() ?: RtspServer.DEFAULT_PORT
+        val rtspEnabled = prefs.getBoolean(RtspServer.PREF_ENABLED, false)
+        val onvifPort = prefs.getString("onvif_port", null)?.toIntOrNull() ?: 8000
+        val rtspUrls = if (rtspEnabled) {
+            "\n$rtspProtocol://$ipAddress:$rtspPort${RtspServer.PATH} (& ${RtspServer.SUB_PATH})" +
+                "\nONVIF $protocol://$ipAddress:$onvifPort"
+        } else {
+            ""
+        }
+        ipAddressText.text = "$protocol://$ipAddress:$port$rtspUrls"
     }
 
     private fun checkNotificationChannelEnabled() {
