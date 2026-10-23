@@ -32,7 +32,6 @@ import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.io.PrintWriter
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -222,7 +221,10 @@ class StreamingServerHelper(
      * from the shared [TlsServerConfig] so the web, RTSP and ONVIF endpoints use one certificate.
      */
     private fun bindServerSocket(port: Int, tls: TlsServerConfig?): ServerSocket {
-        val bindAddress = InetAddress.getByName("0.0.0.0")
+        val bindAddress = ListenInterface.resolve(context)
+        if (!ListenInterface.isAssigned(bindAddress)) {
+            throw IOException(ListenInterface.unavailableMessage(ListenInterface.value(context)))
+        }
         var lastError: IOException? = null
         for (attempt in 0..SOCKET_BIND_MAX_RETRIES) {
             try {

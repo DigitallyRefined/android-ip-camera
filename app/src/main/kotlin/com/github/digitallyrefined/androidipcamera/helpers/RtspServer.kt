@@ -7,6 +7,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
@@ -76,6 +77,8 @@ internal class RtspServer(
         fun log(message: String)
         /** Second clock camera timestamps may be on (elapsedRealtimeNanos on Android). */
         fun bootClockNanos(): Long? = null
+        /** Address to bind the RTSP/RTP sockets to; null listens on all interfaces. */
+        fun bindAddress(): InetAddress? = null
     }
 
     companion object {
@@ -183,7 +186,9 @@ internal class RtspServer(
 
     /** Drops every client, e.g. when streaming is switched off through /control/stop. */
     fun disconnectAll() {
-        connections.toList().forEach { it.close() }
+        // CopyOnWriteArrayList's iterator is a snapshot, so this stays safe while connections
+        // remove themselves from the list from their own threads.
+        connections.forEach { it.close() }
     }
 
     /** True while an RTSP client (of either stream) needs the camera and H.264 encoder running. */
@@ -283,13 +288,20 @@ internal class RtspServer(
             synchronized(lock) { if (gen == generation) running = false }
             return null
         }
+        val bindAddress = host.bindAddress() ?: InetAddress.getByName("0.0.0.0")
+        if (!bindAddress.isAnyLocalAddress &&
+            runCatching { NetworkInterface.getByInetAddress(bindAddress) }.getOrNull() == null) {
+            host.log("RTSP server could not listen on ${bindAddress.hostAddress}: the address is not assigned to this device")
+            synchronized(lock) { if (gen == generation) running = false }
+            return null
+        }
         for (attempt in 0..BIND_MAX_RETRIES) {
             var socket: ServerSocket? = null
             try {
-                socket = tlsConfig?.createServerSocket(port)
+                socket = tlsConfig?.createServerSocket(port, address = bindAddress)
                     ?: ServerSocket().apply {
                         reuseAddress = true
-                        bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), port), 50)
+                        bind(InetSocketAddress(bindAddress, port), 50)
                     }
                 if (tlsConfig != null) host.log("RTSP server using TLS ${tlsConfig.protocol}")
                 return socket
@@ -800,15 +812,20 @@ internal class RtspServer(
 
         /** RTP and RTCP sockets on consecutive ports, RTP even (RFC 3550 §11). */
         private fun bindUdpPair(): Pair<DatagramSocket, DatagramSocket>? {
+            val bindAddress = host.bindAddress()
             repeat(20) {
-                val rtpSocket = try { DatagramSocket(0) } catch (_: SocketException) { return null }
+                val rtpSocket = try {
+                    if (bindAddress != null) DatagramSocket(0, bindAddress) else DatagramSocket(0)
+                } catch (_: SocketException) { return null }
                 val port = rtpSocket.localPort
                 if (port % 2 != 0 || port >= 65535) {
                     rtpSocket.close()
                     return@repeat
                 }
                 try {
-                    return rtpSocket to DatagramSocket(port + 1)
+                    val rtcpSocket = if (bindAddress != null) DatagramSocket(port + 1, bindAddress)
+                        else DatagramSocket(port + 1)
+                    return rtpSocket to rtcpSocket
                 } catch (_: SocketException) {
                     rtpSocket.close()
                 }

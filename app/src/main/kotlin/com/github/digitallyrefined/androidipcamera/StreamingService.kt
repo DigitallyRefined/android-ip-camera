@@ -305,6 +305,9 @@ class StreamingService : LifecycleService() {
     }
 
     fun getLocalIpAddress(): String {
+        // A server limited to one interface should advertise that address, not whichever IPv4
+        // address happens to be enumerated first.
+        ListenInterface.specificIpv4(this)?.let { return it }
         try {
             NetworkInterface.getNetworkInterfaces().toList().forEach { ni ->
                 ni.inetAddresses.toList().forEach { a ->
@@ -450,7 +453,8 @@ class StreamingService : LifecycleService() {
             snapshot = { snapshot(camId()) },
             onLog = { Log.i(TAG, "ONVIF: $it"); onLog?.invoke("ONVIF: $it") },
             // Same certificate as the web server; null when TLS is disabled.
-            tls = { TlsHelper.serverConfig(this) }
+            tls = { TlsHelper.serverConfig(this) },
+            bindAddress = ListenInterface.resolve(this)
         )
         try {
             multicastLock = (applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager)

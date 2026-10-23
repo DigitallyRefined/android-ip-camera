@@ -2,9 +2,12 @@ package com.github.digitallyrefined.androidipcamera.helpers
 
 import org.w3c.dom.Element
 import java.io.BufferedInputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -51,7 +54,9 @@ class OnvifServer(
     private val discoveryPort: Int = 3702,
     private val enableDiscovery: Boolean = true,
     /** TLS material shared with the web/RTSP endpoints; null keeps plain HTTP. */
-    private val tls: () -> TlsServerConfig? = { null }
+    private val tls: () -> TlsServerConfig? = { null },
+    /** Address to bind to; null listens on all interfaces. */
+    private val bindAddress: InetAddress? = null
 ) {
     companion object {
         private const val REALM = "AndroidIPCamera"
@@ -110,10 +115,15 @@ class OnvifServer(
         // Resolve the shared certificate before binding: a TLS failure must not silently fall
         // back to plaintext. The caller reports the exception.
         val tlsConfig = tls()
-        val ss = tlsConfig?.createServerSocket(port)
+        val address = bindAddress ?: InetAddress.getByName("0.0.0.0")
+        if (!address.isAnyLocalAddress &&
+            runCatching { NetworkInterface.getByInetAddress(address) }.getOrNull() == null) {
+            throw IOException("Listen address ${address.hostAddress} is not assigned to this device")
+        }
+        val ss = tlsConfig?.createServerSocket(port, address = address)
             ?: ServerSocket().apply {
                 reuseAddress = true
-                bind(InetSocketAddress(port), 50)
+                bind(InetSocketAddress(address, port), 50)
             }
         secure = tlsConfig != null
         serverSocket = ss

@@ -16,6 +16,7 @@ import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
+import com.github.digitallyrefined.androidipcamera.helpers.ListenInterface
 import com.github.digitallyrefined.androidipcamera.helpers.RecordingsHelper
 import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
@@ -183,6 +184,26 @@ class SettingsActivity : AppCompatActivity() {
                         return@setOnPreferenceChangeListener false
                     }
                     summary = "Port $port"
+                    restartStreamingServer()
+                    true
+                }
+            }
+
+            // Interface shared by the web, RTSP and ONVIF servers. The list is rebuilt from the
+            // interfaces present when settings are opened, so it never offers a stale address.
+            findPreference<androidx.preference.ListPreference>(ListenInterface.PREF)?.apply {
+                val options = ListenInterface.options()
+                entries = options.map { it.first }.toTypedArray()
+                entryValues = options.map { it.second }.toTypedArray()
+                // Migrates IP addresses saved by older versions to the matching interface name.
+                value = ListenInterface.value(requireContext())
+                summaryProvider = Preference.SummaryProvider<androidx.preference.ListPreference> {
+                    it.entry ?: "All interfaces"
+                }
+                setOnPreferenceChangeListener { _, newValue ->
+                    if (newValue.toString() !in entryValues) {
+                        return@setOnPreferenceChangeListener false
+                    }
                     restartStreamingServer()
                     true
                 }
