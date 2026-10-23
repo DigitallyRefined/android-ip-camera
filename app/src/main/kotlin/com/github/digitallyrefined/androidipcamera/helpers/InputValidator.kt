@@ -2,6 +2,7 @@ package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
 import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import java.io.File
 import java.security.KeyStore
 import javax.net.ssl.KeyManagerFactory
@@ -25,25 +26,37 @@ object InputValidator {
     }
 
     // Certificate path validation - STRENGTHENED for security
-    fun isValidCertificatePath(path: String): Boolean {
+    fun isValidCertificatePath(context: Context, path: String): Boolean {
         return try {
             val uri = Uri.parse(path)
-            val file = File(uri.path ?: "")
 
-            // Basic path validation
-            if (uri.scheme != "content" && uri.scheme != "file") return false
-            if (file.extension.lowercase() !in listOf("p12", "pfx")) return false
-            if (!file.exists()) return false
+            when (uri.scheme) {
+                "content" -> {
+                    val document = DocumentFile.fromSingleUri(context, uri) ?: return false
+                    val name = document.name ?: uri.lastPathSegment ?: ""
+                    val extension = name.substringAfterLast('.', "").lowercase()
+                    if (extension !in listOf("p12", "pfx")) return false
+                    val size = document.length()
+                    if (size > 10 * 1024 * 1024) return false // Max 10MB for certificate
+                    true
+                }
+                "file" -> {
+                    val file = File(uri.path ?: "")
+                    if (file.extension.lowercase() !in listOf("p12", "pfx")) return false
+                    if (!file.exists()) return false
 
-            // SECURITY: Additional validation to prevent path traversal
-            val normalizedPath = file.canonicalPath
-            val parentPath = file.parentFile?.canonicalPath
+                    // SECURITY: Additional validation to prevent path traversal
+                    val normalizedPath = file.canonicalPath
+                    val parentPath = file.parentFile?.canonicalPath
 
-            // Ensure the file is not outside allowed directories and has reasonable size
-            if (normalizedPath.contains("..") || parentPath?.contains("..") == true) return false
-            if (file.length() > 10 * 1024 * 1024) return false // Max 10MB for certificate
+                    // Ensure the file is not outside allowed directories and has reasonable size
+                    if (normalizedPath.contains("..") || parentPath?.contains("..") == true) return false
+                    if (file.length() > 10 * 1024 * 1024) return false // Max 10MB for certificate
 
-            true
+                    true
+                }
+                else -> false
+            }
         } catch (e: Exception) {
             false
         }
@@ -60,23 +73,21 @@ object InputValidator {
             val privateFile = File(context.filesDir, "cert_validation_temp.p12")
             if (privateFile.exists()) privateFile.delete()
 
-            context.contentResolver.openInputStream(certificateUri)?.use { input ->
-                privateFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            } ?: return false
-
-            // Try to load the certificate
-            privateFile.inputStream().use { inputStream ->
-                val keyStore = KeyStore.getInstance("PKCS12")
-                keyStore.load(inputStream, password?.toCharArray())
-                val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-                keyManagerFactory.init(keyStore, password?.toCharArray())
+            try {
+                context.contentResolver.openInputStream(certificateUri)?.use { input ->
+                    privateFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                } ?: return false
+            } catch (e: Exception) {
+                return false
             }
+
+            val valid = validateCertificateFile(privateFile, password)
 
             // Cleanup
             privateFile.delete()
-            true
+            valid
         } catch (e: Exception) {
             // Cleanup on failure
             try {
@@ -84,6 +95,21 @@ object InputValidator {
             } catch (cleanupException: Exception) {
                 // Ignore cleanup errors
             }
+            false
+        }
+    }
+
+    // Validate a PKCS12 file that is already accessible to the app
+    fun validateCertificateFile(file: File, password: String?): Boolean {
+        return try {
+            file.inputStream().use { inputStream ->
+                val keyStore = KeyStore.getInstance("PKCS12")
+                keyStore.load(inputStream, password?.toCharArray())
+                val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+                keyManagerFactory.init(keyStore, password?.toCharArray())
+            }
+            true
+        } catch (e: Exception) {
             false
         }
     }
@@ -105,14 +131,7 @@ object InputValidator {
                 }
             }
 
-            // Try to load the certificate
-            certFile.inputStream().use { inputStream ->
-                val keyStore = KeyStore.getInstance("PKCS12")
-                keyStore.load(inputStream, password?.toCharArray())
-                val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-                keyManagerFactory.init(keyStore, password?.toCharArray())
-            }
-            true
+            validateCertificateFile(certFile, password)
         } catch (e: Exception) {
             false
         }

@@ -21,6 +21,7 @@ import com.github.digitallyrefined.androidipcamera.helpers.RecordingsHelper
 import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 import com.github.digitallyrefined.androidipcamera.helpers.TlsHelper
+import java.io.File
 
 class SettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,9 +46,11 @@ class SettingsActivity : AppCompatActivity() {
             // Set up certificate selection preference
             findPreference<Preference>("certificate_path")?.apply {
                 setOnPreferenceClickListener {
-                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                        type = "*/*"
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/x-pkcs12", "application/pkcs12", "*/*"))
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                     }
                     startActivityForResult(
                         Intent.createChooser(intent, "Select TLS Certificate"),
@@ -415,9 +418,14 @@ class SettingsActivity : AppCompatActivity() {
                     }
 
                     val isValid = if (certificatePath != null) {
-                        // Test custom certificate
-                        val certUri = android.net.Uri.parse(certificatePath)
-                        InputValidator.validateCertificateUsability(requireContext(), certUri, certPassword)
+                        // Test the private copy that the servers actually load.
+                        val privateFile = File(requireContext().filesDir, "certificate.p12")
+                        if (privateFile.exists()) {
+                            InputValidator.validateCertificateFile(privateFile, certPassword)
+                        } else {
+                            val certUri = android.net.Uri.parse(certificatePath)
+                            InputValidator.validateCertificateUsability(requireContext(), certUri, certPassword)
+                        }
                     } else {
                         // Test built-in certificate
                         InputValidator.validateBuiltInCertificate(requireContext(), certPassword)
@@ -445,7 +453,7 @@ class SettingsActivity : AppCompatActivity() {
                     val certificatePath = uri.toString()
 
                     // Enhanced certificate validation
-                    if (!InputValidator.isValidCertificatePath(certificatePath)) {
+                    if (!InputValidator.isValidCertificatePath(requireContext(), certificatePath)) {
                         Toast.makeText(requireContext(),
                             "Invalid certificate file, must be a valid .p12 or .pfx file under 10MB",
                             Toast.LENGTH_LONG).show()
@@ -457,11 +465,33 @@ class SettingsActivity : AppCompatActivity() {
                     val certPassword = secureStorage.getSecureString(SecureStorage.KEY_CERT_PASSWORD, "")
                     val certificateUri = Uri.parse(certificatePath)
 
-                    if (!InputValidator.validateCertificateUsability(requireContext(), certificateUri, certPassword)) {
-                        Toast.makeText(requireContext(),
-                            "Certificate cannot be loaded, check password and file integrity",
-                            Toast.LENGTH_LONG).show()
+                    // Keep a private copy so the certificate does not depend on URI permissions
+                    // that may be lost when the app restarts.
+                    val privateFile = File(requireContext().filesDir, "certificate.p12")
+                    try {
+                        requireContext().contentResolver.openInputStream(certificateUri)?.use { input ->
+                            privateFile.outputStream().use { output -> input.copyTo(output) }
+                        } ?: throw IllegalStateException("Unable to open the selected file")
+                    } catch (e: Exception) {
+                        Toast.makeText(
+                            requireContext(),
+                            "Could not store the certificate: ${e.message}",
+                            Toast.LENGTH_LONG
+                        ).show()
                         return@let
+                    }
+
+                    // Ask for persistable access when the provider supports it. The private copy
+                    // above is what the servers actually use, so failure here is not fatal.
+                    if (uri.scheme == "content") {
+                        try {
+                            requireContext().contentResolver.takePersistableUriPermission(
+                                uri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        } catch (_: Exception) {
+                            // Provider does not offer persistable grants; the private copy covers it.
+                        }
                     }
 
                     // Store the certificate path
@@ -472,9 +502,29 @@ class SettingsActivity : AppCompatActivity() {
                     // Update the preference summary
                     findPreference<Preference>("certificate_path")?.summary = certificatePath
 
-                    Toast.makeText(requireContext(),
-                        "Certificate configured, restart the app for changes to take effect",
-                        Toast.LENGTH_SHORT).show()
+                    // A certificate generated on first launch has a random password that the user
+                    // never sees. If the stored password does not unlock the new file, clear it so
+                    // the user is prompted to enter the password for this certificate. Selection
+                    // must not fail just because the password has not been set yet.
+                    val unlocked = !certPassword.isNullOrEmpty() &&
+                        InputValidator.validateCertificateFile(privateFile, certPassword)
+                    if (!unlocked && !certPassword.isNullOrEmpty()) {
+                        secureStorage.removeSecureString(SecureStorage.KEY_CERT_PASSWORD)
+                    }
+
+                    if (unlocked) {
+                        Toast.makeText(
+                            requireContext(),
+                            "Certificate configured, restart the app for changes to take effect",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            requireContext(),
+                            "Certificate selected. Set its password in Certificate Password, then use Test Certificate Setup.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                 }
             }
 
