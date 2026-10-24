@@ -91,13 +91,25 @@ object TlsHelper {
         val certificatePassword = rawPassword?.takeIf { it.isNotEmpty() }?.toCharArray()
 
         val certFile = if (certificatePath != null) {
-            // Custom certificate - copy from the URI to a private file.
-            val uri = certificatePath.toUri()
+            // The settings screen keeps a private copy of the selected certificate, which is what
+            // the servers load. Only fall back to the source URI for installs configured before
+            // that copy existed (or if the private copy was cleared).
             val privateFile = File(context.filesDir, "certificate.p12")
-            if (privateFile.exists()) privateFile.delete()
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                privateFile.outputStream().use { output -> input.copyTo(output) }
-            } ?: throw IOException("Failed to open certificate file")
+            if (!privateFile.exists()) {
+                val uri = certificatePath.toUri()
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        privateFile.outputStream().use { output -> input.copyTo(output) }
+                    } ?: throw IOException("Failed to open certificate file")
+                } catch (e: SecurityException) {
+                    throw IOException(
+                        "Permission denied opening certificate file. Re-select the certificate in Settings using the file picker.",
+                        e
+                    )
+                } catch (e: Exception) {
+                    throw IOException("Failed to open certificate file: ${e.message}", e)
+                }
+            }
             privateFile
         } else {
             val personalCertFile = File(context.filesDir, BUILT_IN_CERTIFICATE)
