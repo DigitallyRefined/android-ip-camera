@@ -1,0 +1,11 @@
+## What's Changed
+* Add RTSP and ONVIF support with motion detection by @aguilaair, @SirLouen & @DigitallyRefined in #115
+* Add Listen Interface option by @DigitallyRefined in #116
+* Fix import certificate by @DigitallyRefined in #117
+* Bump dependencies by @dependabot[bot] in #107 #110 #111 #112 #118
+
+## New Contributors
+* @aguilaair made their first contribution in #115
+* @SirLouen made their first contribution in #115
+
+...
