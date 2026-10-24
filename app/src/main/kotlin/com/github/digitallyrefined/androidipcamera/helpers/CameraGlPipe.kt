@@ -42,6 +42,19 @@ class CameraGlPipe(
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
     private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var eglConfig: EGLConfig? = null
+
+    /** Optional second encoder the same frames are drawn into (the RTSP sub stream). */
+    private class SecondaryOutput(val surface: Surface, val width: Int, val height: Int, fps: Int) {
+        val limiter = FrameRateLimiter(fps)
+        var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    }
+    private class SecondaryRequest(val output: SecondaryOutput?) {
+        val done = CountDownLatch(1)
+        @Volatile var attached = false
+    }
+    private var secondary: SecondaryOutput? = null
+    private val secondaryRequest = java.util.concurrent.atomic.AtomicReference<SecondaryRequest?>()
     private var texId = 0
     private var program = 0
     private var aPos = 0; private var aTex = 0; private var uST = 0; private var uMirror = 0
@@ -82,14 +95,25 @@ class CameraGlPipe(
             inputSurface = Surface(surfaceTexture)
             ready.countDown()
             while (running) {
+                applySecondaryRequest()
                 if (frameAvailable.compareAndSet(true, false)) {
                     surfaceTexture.updateTexImage()
                     val timestamp = surfaceTexture.timestamp.takeIf { it > 0L } ?: System.nanoTime()
-                    if (frameRateLimiter.shouldEmit(timestamp)) {
-                        surfaceTexture.getTransformMatrix(stMatrix)
-                        drawFrame()
+                    val sec = secondary
+                    val mainDue = frameRateLimiter.shouldEmit(timestamp)
+                    val secondaryDue = sec != null && sec.limiter.shouldEmit(timestamp)
+                    if (mainDue || secondaryDue) surfaceTexture.getTransformMatrix(stMatrix)
+                    if (mainDue) {
+                        drawFrame(width, height)
                         EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, timestamp)
                         EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+                    }
+                    if (sec != null && secondaryDue) {
+                        EGL14.eglMakeCurrent(eglDisplay, sec.eglSurface, sec.eglSurface, eglContext)
+                        drawFrame(sec.width, sec.height)
+                        EGLExt.eglPresentationTimeANDROID(eglDisplay, sec.eglSurface, timestamp)
+                        EGL14.eglSwapBuffers(eglDisplay, sec.eglSurface)
+                        EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
                     }
                 } else {
                     Thread.sleep(2)
@@ -99,13 +123,59 @@ class CameraGlPipe(
             Log.e(TAG, "GL loop: " + e.message)
             if (ready.count > 0) ready.countDown()
         } finally {
+            releaseSecondary()
+            secondaryRequest.getAndSet(null)?.done?.countDown()
             releaseEgl()
         }
     }
 
-    private fun drawFrame() {
+    /**
+     * Starts (or with null, stops) drawing every frame into a second encoder [surface] of
+     * [w]×[h] at up to [fps]. Blocks until the GL thread has switched, so after a stop the caller
+     * may release the surface. Returns whether a [surface] is now being drawn into; no-op (false)
+     * once the pipe has stopped.
+     */
+    fun setSecondaryOutput(surface: Surface?, w: Int = 0, h: Int = 0, fps: Int = 0): Boolean {
+        if (!running) return false
+        val request = SecondaryRequest(surface?.let { SecondaryOutput(it, w, h, fps) })
+        secondaryRequest.getAndSet(request)?.done?.countDown()
+        if (!request.done.await(1, java.util.concurrent.TimeUnit.SECONDS)) {
+            Log.w(TAG, "GL thread did not apply the secondary output change in time")
+        }
+        return request.attached
+    }
+
+    private fun applySecondaryRequest() {
+        val request = secondaryRequest.getAndSet(null) ?: return
+        try {
+            releaseSecondary()
+            val output = request.output ?: return
+            output.eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, output.surface,
+                intArrayOf(EGL14.EGL_NONE), 0)
+            if (output.eglSurface == EGL14.EGL_NO_SURFACE) {
+                Log.e(TAG, "Could not create the secondary EGL surface")
+            } else {
+                secondary = output
+                request.attached = true
+            }
+        } finally {
+            request.done.countDown()
+        }
+    }
+
+    private fun releaseSecondary() {
+        val sec = secondary ?: return
+        secondary = null
+        if (sec.eglSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+            EGL14.eglDestroySurface(eglDisplay, sec.eglSurface)
+        }
+    }
+
+    private fun drawFrame(outW: Int, outH: Int) {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         GLES20.glUseProgram(program)
+        GLES20.glViewport(0, 0, outW, outH)
 
         val rot = ((rotation % 360) + 360) % 360
         // Use externally-provided frame dimensions (from CameraX Preview use case) to
@@ -123,15 +193,15 @@ class CameraGlPipe(
             if (rot == 90 || rot == 270) {
                 val t = fw; fw = fh; fh = t
             }
-            val outAspect = width.toFloat() / height.toFloat()
+            val outAspect = outW.toFloat() / outH.toFloat()
             val frameAspect = fw.toFloat() / fh.toFloat()
-            var vpW = width; var vpH = height; var vpX = 0; var vpY = 0
+            var vpW = outW; var vpH = outH; var vpX = 0; var vpY = 0
             if (outAspect > frameAspect) {
-                vpW = (height * frameAspect).toInt()
-                vpX = (width - vpW) / 2
+                vpW = (outH * frameAspect).toInt()
+                vpX = (outW - vpW) / 2
             } else {
-                vpH = (width / frameAspect).toInt()
-                vpY = (height - vpH) / 2
+                vpH = (outW / frameAspect).toInt()
+                vpY = (outH - vpH) / 2
             }
             if (vpW < 1) vpW = 1; if (vpH < 1) vpH = 1
             GLES20.glViewport(vpX, vpY, vpW, vpH)
@@ -191,6 +261,7 @@ class CameraGlPipe(
             EGLExt.EGL_RECORDABLE_ANDROID, 1, EGL14.EGL_NONE
         )
         EGL14.eglChooseConfig(eglDisplay, attrib, 0, cfg, 0, 1, num, 0)
+        eglConfig = cfg[0]
         eglContext = EGL14.eglCreateContext(eglDisplay, cfg[0], EGL14.EGL_NO_CONTEXT,
             intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0)
         eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, cfg[0], encoderSurface,
@@ -249,17 +320,56 @@ class CameraGlPipe(
         frameRateLimiter.reset()
     }
 
+    /**
+     * Sizes the camera's buffers to the resolution CameraX negotiated for this surface, so the
+     * camera renders at the selected stream size rather than the placeholder from
+     * [standardBufferSize]. Call before handing [inputSurface] to CameraX.
+     */
+    fun setCameraBufferSize(w: Int, h: Int) {
+        surfaceTexture.setDefaultBufferSize(w, h)
+        frameWidth = w
+        frameHeight = h
+    }
+
     /** Returns a standard camera-compatible buffer size matching the output aspect ratio. */
     private fun standardBufferSize(): Pair<Int, Int> {
-        val aspect = width.toFloat() / height.toFloat()
+        // Camera buffers are landscape even when the encoded frame is portrait.
+        val long = maxOf(width, height)
+        val aspect = long.toFloat() / minOf(width, height).toFloat()
         return if (aspect >= 1.5f) { // 16:9-ish
             // 1280x720 is widely supported by modern cameras; if the requested size is smaller
             // than that, use 640x360 (same 16:9 ratio, less likely to be rejected by the HAL).
-            if (width >= 1280) 1280 to 720 else 640 to 360
+            if (long >= 1280) 1280 to 720 else 640 to 360
         } else { // 4:3-ish
-            if (width >= 640) 640 to 480 else 320 to 240
+            if (long >= 640) 640 to 480 else 320 to 240
         }
     }
 
-    companion object { private const val TAG = "CameraGlPipe" }
+    companion object {
+        private const val TAG = "CameraGlPipe"
+
+        /**
+         * Shape of the picture this pipe draws for a camera output of [cameraWidth]×[cameraHeight].
+         * SurfaceTexture frames arrive turned by the sensor orientation (portrait on most phones)
+         * and [rotation] turns them further, so an odd number of quarter turns swaps the sides.
+         * Sizing the encoder to this keeps a portrait picture from being pillarboxed into a
+         * landscape frame.
+         */
+        fun frameSize(cameraWidth: Int, cameraHeight: Int, sensorOrientation: Int, rotation: Int): Pair<Int, Int> {
+            val quarterTurns = (((sensorOrientation + rotation) % 360 + 360) % 360 + 45) / 90
+            return if (quarterTurns % 2 == 1) cameraHeight to cameraWidth else cameraWidth to cameraHeight
+        }
+
+        /**
+         * A [width]×[height] frame scaled down so its short side is [shortSide], keeping the
+         * shape and even dimensions (encoders need them). Never scales up.
+         */
+        fun scaledFrame(width: Int, height: Int, shortSide: Int): Pair<Int, Int> {
+            val short = minOf(width, height)
+            if (shortSide >= short || shortSide <= 0) return width to height
+            val scale = shortSide.toDouble() / short
+            fun even(v: Double) = (Math.round(v / 2) * 2).toInt().coerceAtLeast(2)
+            return even(width * scale) to even(height * scale)
+        }
+    }
 }

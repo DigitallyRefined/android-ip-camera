@@ -18,7 +18,8 @@ import androidx.camera.core.ImageProxy
  *    real 30fps, supports 1080p). Used for H.264-only viewers.
  *  - byte-buffer mode: fed YUV from CameraX ImageAnalysis frames via [feed] (CPU-bound; the color
  *    layout, NV12 or I420, is chosen from the codec's caps for cross-device compatibility).
- * Emits Annex-B NAL units via [onNal] (bytes, isKeyframe); SPS/PPS prepended to keyframes.
+ * Emits Annex-B NAL units via [onNal] (bytes, isKeyframe, presentationTimeUs); SPS/PPS prepended
+ * to keyframes.
  */
 class H264HardwareEncoder(
     val width: Int,
@@ -26,7 +27,9 @@ class H264HardwareEncoder(
     frameRate: Int,
     bitRate: Int,
     val useSurface: Boolean,
-    private val onNal: (ByteArray, Boolean) -> Unit
+    /** Seconds between keyframes. Longer saves bandwidth; new viewers wait up to this long. */
+    keyFrameIntervalSec: Int = 1,
+    private val onNal: (ByteArray, Boolean, Long) -> Unit
 ) {
     private val codec: MediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val codecLock = Any()
@@ -60,12 +63,19 @@ class H264HardwareEncoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, keyFrameIntervalSec)
             try { setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) } catch (_: Exception) {}
         }
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        if (useSurface) inputSurface = codec.createInputSurface()
-        codec.start()
+        try {
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            if (useSurface) inputSurface = codec.createInputSurface()
+            codec.start()
+        } catch (e: Exception) {
+            // e.g. a size this encoder does not support: free the codec so the caller can retry.
+            try { inputSurface?.release() } catch (_: Exception) {}
+            try { codec.release() } catch (_: Exception) {}
+            throw e
+        }
         thread = Thread { drainLoop() }.apply { isDaemon = true; start() }
         Log.i(TAG, "H264HardwareEncoder started ${width}x$height @${frameRate}fps ${bitRate / 1000}kbps surface=$useSurface")
     }
@@ -585,7 +595,7 @@ class H264HardwareEncoder(
                     // Never retain a MediaCodec output buffer while network work is scheduled.
                     prepared?.let {
                         onRecordFrame?.invoke(it.bytes, it.isKeyframe, partialPtsUs)
-                        onNal(it.bytes, it.isKeyframe)
+                        onNal(it.bytes, it.isKeyframe, partialPtsUs)
                     }
                 }
             }
@@ -693,9 +703,12 @@ class H264HardwareEncoder(
          * Target ~0.2 bits/pixel/frame at 30fps (w*h*6) — enough to avoid visible H.264 macroblocking
          * (the old w*h*3 ≈ 0.1 bpp looked "compressed" at 1440x1080). Clamped to the device's range.
          */
-        fun bitrateFor(w: Int, h: Int): Int {
+        fun bitrateFor(w: Int, h: Int): Int = clampBitrate(w.toLong() * h * 6)
+
+        /** [bitsPerSecond] within the device encoder's supported range. */
+        fun clampBitrate(bitsPerSecond: Long): Int {
             val c = caps()
-            return (w.toLong() * h * 6).coerceIn(c.minBitrate.toLong(), c.maxBitrate.toLong()).toInt()
+            return bitsPerSecond.coerceIn(c.minBitrate.toLong(), c.maxBitrate.toLong()).toInt()
         }
     }
 }

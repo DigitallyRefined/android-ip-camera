@@ -16,6 +16,15 @@
       overflow: hidden;
     }
 
+    a {
+      color: #459eff;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
     .header {
       padding: 10px 20px;
       background: #1e1e1e;
@@ -231,7 +240,8 @@
       font-weight: bold;
     }
 
-    .notice {
+    .notice,
+    .version {
       color: #555;
       font-size: 11px;
       text-align: center;
@@ -368,6 +378,21 @@
             <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
           </div>
 
+          <div id="motionSettings" style="display:none;">
+            <p class="group-title">Motion Detection</p>
+
+            <label>
+              <input type="checkbox" id="motionCheckbox" onchange="sendControl('motion_detection_enabled', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">Enable Motion Detection</span>
+            </label>
+            <div class="hint" style="margin:-2px 0 12px; font-size:12px; color:#ccc">
+              Keeps the camera running and reports motion to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (Home Assistant, UniFi Protect).
+            </div>
+
+            <label for="motionSensitivity">Sensitivity <span class='val-badge' id='motionSensitivityVal'>5</span></label>
+            <input id="motionSensitivity" type='range' min='1' max='10' step='1' value='5' data-control='motion_sensitivity' data-badge='motionSensitivityVal' style='margin-bottom: 0'>
+          </div>
+
           <p class="group-title">Snapshot</p>
 
           <label for="snapshotRes">Snapshot Resolution</label>
@@ -387,6 +412,7 @@
         </div>
 
         <p class="notice">Some changes will momentarily restart the camera.</p>
+        <p class="version"><a href="https://github.com/DigitallyRefined/android-ip-camera" target="_blank">Android IP Camera <span id="appVersion"></span></a></p>
       </div>
     </div>
   </div>
@@ -560,6 +586,8 @@
       if (!param) return null;
       if (param === 'focus' || param === 'focus_distance') return 'focusDistance';
       if (param === 'snapshot_res') return 'snapshotRes';
+      // Motion detection is a global (camera-independent) setting, not a lens setting.
+      if (param === 'motion_detection_enabled' || param === 'motion_sensitivity') return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -1407,6 +1435,20 @@
       if (fps && settings.fps) {
         fps.value = settings.fps;
       }
+      // Motion detection is only meaningful with ONVIF (event reporting), so keep its
+      // controls hidden unless the server reports ONVIF as enabled.
+      if (settings.onvifEnabled !== undefined) {
+        const onvif = settings.onvifEnabled;
+        const enabled = onvif === true || onvif === 1 || onvif === 'true' || onvif === 'on' || onvif === '1';
+        const motionSettings = getElById('motionSettings');
+        if (motionSettings) motionSettings.style.display = enabled ? '' : 'none';
+      }
+      const motionEl = getElById('motionCheckbox');
+      if (motionEl && settings.motionDetectionEnabled !== undefined) {
+        const v = settings.motionDetectionEnabled;
+        // Accept both JSON booleans and string forms ("true"/"false"/"on"/"off"/"1"/"0").
+        motionEl.checked = v === true || v === 1 || v === 'true' || v === 'on' || v === '1';
+      }
       const audioGain = getElById('audioGain');
       const audioGainVal = getElById('audioGainVal');
       if (audioGain && settings.audioGain) {
@@ -1510,6 +1552,7 @@
             } catch (_) { }
           }
           updateStatusOverlay(data);
+          getElById('appVersion').innerText = `v${data.appVersion}`;
         })
         .catch(err => {
           console.error('Failed to fetch device info:', err);

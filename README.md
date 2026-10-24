@@ -14,7 +14,7 @@ An Android H.264 / MJPEG IP Camera app
 <img src="https://user-images.githubusercontent.com/69304392/148696068-0cfea65d-b18f-4685-82b5-329a330b1c0d.png"
 alt="Get it on GitHub" align="center" height="70" /></a>
 
-<a href="https://github.com/ImranR98/Obtainium" target="_blank">
+<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.github.digitallyrefined.androidipcamera%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FDigitallyRefined%2Fandroid-ip-camera%22%2C%22author%22%3A%22DigitallyRefined%22%2C%22name%22%3A%22Android%20IP%20Camera%22%7D" target="_blank">
 <img src="https://raw.githubusercontent.com/ImranR98/Obtainium/refs/heads/main/assets/graphics/badge_obtainium.png"
 alt="Get it on Obtainium" align="center" height="70" /></a>
 
@@ -27,11 +27,13 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 
 * 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a camera for [Frigate](https://github.com/blakeblackshear/frigate) or a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/video/mjpeg`)
 * 📴 Option to turn the display off while streaming
+* 📡 Optional RTSP stream (H.264 video + AAC audio) for mpv, Frigate/go2rtc, NVRs and other RTSP clients (using `rtsps://[ip_address]:8554/live`, plus a lighter sub stream at `/live/sub`)
+* 🛰️ Optional ONVIF camera mode with WS-Discovery, snapshots and motion events for UniFi Protect, Home Assistant and other NVRs
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
 * 🛂 Username and password protection
-* 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS
+* 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS/RTSPS
 * 🥾 Optional start on boot
 
 ## ⚠️ Warning
@@ -53,6 +55,8 @@ The app runs as a foreground service with a persistent notification, so it won't
 * Enable **Start on Boot** in the app settings for unattended setups.
 
 ## 🎥 Frigate config
+
+### Using the HTTPS streams
 
 Use the example config below to add your phone's camera to [Frigate](https://github.com/blakeblackshear/frigate) & update the URLs. The `android-cam` composite stream additionally wires up **two-way talk / push-to-talk** from the Frigate live view (it needs a `GO2RTC_ALLOW_ARBITRARY_EXEC=true` environment variable set).
 
@@ -96,6 +100,35 @@ cameras:
 **Note:** if your username or password contains special characters, you'll need to URL encode them via:  
 `python3 -c 'import urllib.parse; print(urllib.parse.quote(input(), safe=""))'`
 
+### Using the RTSP stream
+
+With the RTSP server enabled in the app settings, use the following config in Frigate:
+
+```yaml
+go2rtc:
+  streams:
+    android-cam:
+      - "rtsps://[username]:[password]@[ip_address]:8554/live"
+    android-cam-sub:
+      - "rtsps://[username]:[password]@[ip_address]:8554/live/sub"
+
+cameras:
+  android-cam:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/android-cam
+          input_args: preset-rtsp-restream
+          roles:
+            - record
+            - audio
+        # Detect on the lighter sub stream (or drop this input and add `detect` above)
+        - path: rtsp://127.0.0.1:8554/android-cam-sub
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+```
+
 ## Server URL Paths & Remote Control API
 
 When the streaming server is running (default port `4444`, via `https://` or `http://` depending on TLS configuration), you can access the following endpoints:
@@ -110,16 +143,15 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Format:** `multipart/x-mixed-replace; boundary=frame`
 * **Raw H.264 Video Stream (`/video/h264`)**
   * **Usage:** Play in media players that support raw Annex-B H.264 stream demuxing.
-    * **VLC:** Run `vlc https://[ip_address]:[port]/video/h264` (may require ignoring TLS validation if self-signed).
-    * **MPV:** Run `mpv https://[ip_address]:[port]/video/h264 --demuxer-lavf-format=h264`
+    * **mpv:** Run `mpv "https://[ip_address]:[port]/video/h264"`
 * **Live Audio Stream (`/audio`)**
   * **Usage:** Listen to the live microphone audio.
   * **Format:** `audio/wav` chunked transfer-encoding (WAV container, 16-bit PCM mono, 44.1kHz).
-    * **VLC/MPV:** Run `vlc https://[ip_address]:[port]/audio` or `mpv https://[ip_address]:[port]/audio`.
+    * **mpv:** Run `mpv "https://[ip_address]:[port]/audio"`
 * **Raw Audio Stream (`/audio/raw`)**
   * **Usage:** Listen to the raw (unprocessed) microphone source, bypassing any system audio processing (e.g. noise suppression, echo cancellation, AGC). On Android 7.0+ (API 24+) this uses the `UNPROCESSED` audio source; on older devices it falls back to the standard microphone.
   * **Format:** `audio/wav` chunked transfer-encoding (WAV container, 16-bit PCM mono, 44.1kHz).
-    * **VLC/MPV:** Run `vlc https://[ip_address]:[port]/audio/raw` or `mpv https://[ip_address]:[port]/audio/raw`.
+    * **mpv:** Run `mpv "https://[ip_address]:[port]/audio/raw"`
 * **Two-Way Audio Upload (`/audio/upload`, POST)**
   * **Usage:** Send raw audio to the phone, whose speaker plays it live. Used by the built-in web control panel's push-to-talk button and by go2rtc/Frigate two-way talk (see the Frigate config above).
   * **Body:** Raw 16-bit PCM mono 44.1kHz. Accepts `Content-Length`, `chunked` transfer-encoding and `Expect: 100-continue`.
@@ -167,11 +199,58 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Re-enable streaming of the media routes after it has been disabled (e.g. by a home-automation system).
   * **Format:** `application/json` — `{"streaming":true}`
 * **Disable Streaming (`/control/stop`)**
-  * **Usage:** Stop serving the media routes (`/video/*`, `/audio*`) without closing the listening port, and disconnect any viewers that are currently connected. The `/control/*` endpoints remain reachable so streaming can be turned back on remotely. When disabled, media routes return `503 Service Unavailable` with a hint to POST `/control/start`.
+  * **Usage:** Stop serving the media routes (`/video/*`, `/audio*`, and the RTSP stream when enabled) without closing the listening port, and disconnect any viewers that are currently connected. The `/control/*` endpoints remain reachable so streaming can be turned back on remotely. When disabled, media routes return `503 Service Unavailable` with a hint to POST `/control/start`.
   * **Format:** `application/json` — `{"streaming":false}`
 * **Streaming Status (`/control/status`)**
   * **Usage:** Query whether streaming is currently enabled.
   * **Format:** `application/json` — `{"streaming":<bool>}`
+
+### 📡 RTSP stream
+
+The app can also serve the camera over RTSP, the protocol most NVRs, home automation systems and video players expect from an IP camera. It is off by default: enable it in **Settings > RTSP / ONVIF > Enable RTSP**. The same switch also enables ONVIF. The address is then shown on the main screen:
+
+```
+rtsps://[username]:[password]@[ip_address]:8554/live
+```
+
+> **Note:** VLC does not reliably handle self-signed TLS certificates for RTSPS streams. Use **mpv** or **ffplay** to play, or use a trusted certificate. Disabling TLS may work with VLC, at the risk of sending your username/password in plaintext.
+
+* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, rotation and mirror follow the web controls). Each client starts at a keyframe.
+* **Sub stream:** `rtsps://[username]:[password]@[ip_address]:8554/live/sub` is a smaller version of the same picture for slow links such as 4G, and can be watched alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default) under **Settings > RTSP / ONVIF**; changes apply the next time a viewer connects. The phone encodes it in addition to the main stream only while someone watches it. Where the picture does not go through the GPU path (front camera, devices whose camera is not FULL level), the sub stream carries the main stream instead.
+* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
+* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
+* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front).
+* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming and ONVIF ports).
+* The camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
+
+When **TLS** is enabled, RTSP is served over TLS (`rtsps://`) using the same certificate as the web server and ONVIF, so the control connection and credentials are encrypted. With TLS disabled it is plain `rtsp://`, so only use it on a trusted network (or through a VPN) in that case.
+
+Examples:
+
+* **mpv:** `mpv "rtsps://[username]:[password]@[ip_address]:8554/live"`
+* **ffplay:** `ffplay -rtsp_transport tcp "rtsps://[username]:[password]@[ip_address]:8554/live"`
+
+### 🛰️ ONVIF camera
+
+ONVIF lets NVRs and home automation systems discover and control the camera as a standard IP camera. It is enabled together with RTSP by **Settings > RTSP / ONVIF > Enable RTSP** .
+
+* **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled
+* **Snapshot:** `https://[ip_address]:8000/onvif/snapshot.jpg` (or `http://` without TLS)
+* **RTSP:** `rtsps://[username]:[password]@[ip_address]:8554/live`, or `rtsps://` on the same port when TLS is enabled
+* **Motion events:** turn on **Motion Detection** in the web interface. The app compares luma frames in the background and publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`). The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
+* While motion detection is on, the camera runs continuously so it can see motion with no viewer connected. With it off, ONVIF and RTSP are still available on demand: the camera opens when a client connects and is released when the last one leaves.
+
+ONVIF and RTSP use the username and password from the Authentication settings. ONVIF discovery uses UDP multicast, so the phone and the client must be on the same network (or reachable through a VPN that forwards multicast).
+
+#### UniFi Protect
+
+1. If the phone is on the same network as the console, it shows up under third-party cameras. Otherwise, use **UniFi Devices > ? > Try advanced adoption** and enter `[ip_address]:8000` with the app's username and password.
+2. In the camera's Protect settings, turn **off audio recording** if audio is disabled in the app.
+3. Protect needs a motion zone for third-party cameras before it creates motion events. If none exists, add a full-frame one through the Protect API (the settings UI doesn't offer zones for third-party cameras).
+
+#### Home Assistant
+
+Add the phone with the **ONVIF** integration (host `https://[phone-ip]`, port `8000`), or adopt it in UniFi Protect and use the Protect integration. Both expose the camera and a motion binary sensor.
 
 ### 🎛️ Remote Control Commands
 
@@ -195,7 +274,9 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
 
 ## 🔐 HTTPS/TLS certificates
 
-To protect the stream and the password from being sent in plain-text over HTTP, a certificate can be used to start the stream over HTTPS.
+To protect the stream and the password from being sent in plain-text, a certificate can be used to start the web stream over HTTPS.
+
+When TLS is enabled, the **same certificate** is also used by the RTSP (`rtsps://`) and ONVIF (`https://`) endpoints. If the certificate cannot be loaded, those servers refuse to start rather than falling back to plaintext.
 
 The app will automatically generate a self-signed certificate on first launch, but if you have your own domain you can use [Let's Encrypt](https://letsencrypt.org) to generate a trusted certificate and skip the self-signed security warning message, by changing the TLS certificate in the settings.
 

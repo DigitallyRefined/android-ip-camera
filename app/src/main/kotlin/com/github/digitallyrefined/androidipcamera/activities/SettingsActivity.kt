@@ -17,7 +17,9 @@ import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
 import com.github.digitallyrefined.androidipcamera.helpers.RecordingsHelper
+import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
+import com.github.digitallyrefined.androidipcamera.helpers.TlsHelper
 
 class SettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,6 +34,8 @@ class SettingsActivity : AppCompatActivity() {
         companion object {
             private const val PICK_CERTIFICATE_FILE = 1
             private const val PICK_RECORDING_FOLDER = 2
+            private const val PREF_ONVIF_NAME = "onvif_name"
+            private const val PREF_ONVIF_PORT = "onvif_port"
         }
 
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
@@ -78,24 +82,24 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
-            // Configure TLS version preference to hide/show certificate options
-            findPreference<androidx.preference.ListPreference>("tls_version")?.apply {
-                // Initialize visibility based on current value
-                val tlsEnabled = value != "disabled"
-                findPreference<Preference>("certificate_path")?.isVisible = tlsEnabled
-                findPreference<EditTextPreference>("certificate_password")?.isVisible = tlsEnabled
-                findPreference<Preference>("test_certificate")?.isVisible = tlsEnabled
-
-                setOnPreferenceChangeListener { _, newValue ->
-                    val tlsEnabled = newValue != "disabled"
-                    // Show/hide certificate preferences
-                    findPreference<Preference>("certificate_path")?.isVisible = tlsEnabled
-                    findPreference<EditTextPreference>("certificate_password")?.isVisible = tlsEnabled
-                    findPreference<Preference>("test_certificate")?.isVisible = tlsEnabled
-                    // Restart server when TLS version changes
-                    restartStreamingServer()
-                    true
-                }
+            // Configure TLS checkbox and version to hide/show certificate options
+            val tlsCheckbox = findPreference<androidx.preference.CheckBoxPreference>("tls_enabled")
+            fun updateTlsVisibility(enabled: Boolean) {
+                findPreference<androidx.preference.ListPreference>("tls_version")?.isVisible = enabled
+                findPreference<Preference>("certificate_path")?.isVisible = enabled
+                findPreference<EditTextPreference>("certificate_password")?.isVisible = enabled
+                findPreference<Preference>("test_certificate")?.isVisible = enabled
+            }
+            updateTlsVisibility(tlsCheckbox?.isChecked ?: true)
+            tlsCheckbox?.setOnPreferenceChangeListener { _, newValue ->
+                val enabled = newValue as Boolean
+                updateTlsVisibility(enabled)
+                restartStreamingServer()
+                true
+            }
+            findPreference<androidx.preference.ListPreference>("tls_version")?.setOnPreferenceChangeListener { _, _ ->
+                restartStreamingServer()
+                true
             }
 
             // Configure username (optional - defaults available)
@@ -168,6 +172,119 @@ class SettingsActivity : AppCompatActivity() {
                             "Port must be between 1 and 65535",
                             Toast.LENGTH_LONG
                         ).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (isRtspEnabled() && port == configuredRtspPort()) {
+                        Toast.makeText(requireContext(), "Port is already used by the RTSP server", Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (isRtspEnabled() && port == configuredOnvifPort()) {
+                        Toast.makeText(requireContext(), "Port is already used by the ONVIF server", Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    summary = "Port $port"
+                    restartStreamingServer()
+                    true
+                }
+            }
+
+            // Sub stream (/live/sub): applied the next time a viewer connects to it
+            findPreference<androidx.preference.ListPreference>(RtspServer.PREF_SUB_SIZE)?.summaryProvider =
+                Preference.SummaryProvider<androidx.preference.ListPreference> {
+                    "${it.entry}. Smaller stream at ${if (TlsHelper.isEnabled(requireContext())) "rtsps" else "rtsp"}://[ip_address]:[port]${RtspServer.SUB_PATH} for slow connections such as 4G"
+                }
+            findPreference<androidx.preference.ListPreference>(RtspServer.PREF_SUB_FPS)?.summaryProvider =
+                androidx.preference.ListPreference.SimpleSummaryProvider.getInstance()
+            findPreference<androidx.preference.ListPreference>(RtspServer.PREF_SUB_BITRATE)?.summaryProvider =
+                Preference.SummaryProvider<androidx.preference.ListPreference> {
+                    "${it.entry} video. Keep it to about half the viewer's connection speed so dips don't stall it"
+                }
+
+            // Optional RTSP/ONVIF server: shares the camera, encoder and credentials with the HTTP
+            // server. ONVIF is part of this switch.
+            findPreference<androidx.preference.CheckBoxPreference>(RtspServer.PREF_ENABLED)?.apply {
+                setRtspOptionsVisible(isChecked)
+                setOnvifOptionsVisible(isChecked)
+                summaryProvider = Preference.SummaryProvider<androidx.preference.CheckBoxPreference> {
+                    "Serve the camera at ${if (TlsHelper.isEnabled(requireContext())) "rtsps" else "rtsp"}://[ip_address]:[port]/live (H.264 video, AAC audio) and enable ONVIF discovery/control for VLC, Frigate, NVRs and Home Assistant, using the same username and password"
+                }
+
+                setOnPreferenceChangeListener { _, newValue ->
+                    val enabled = newValue as Boolean
+                    if (enabled && configuredRtspPort() == configuredHttpPort()) {
+                        Toast.makeText(requireContext(),
+                            "RTSP port must differ from the streaming port",
+                            Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (enabled && configuredRtspPort() == configuredOnvifPort()) {
+                        Toast.makeText(requireContext(),
+                            "RTSP port must differ from the ONVIF port",
+                            Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (enabled && configuredOnvifPort() == configuredHttpPort()) {
+                        Toast.makeText(requireContext(),
+                            "ONVIF port must differ from the streaming port",
+                            Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    setRtspOptionsVisible(enabled)
+                    setOnvifOptionsVisible(enabled)
+                    restartStreamingServer()
+                    true
+                }
+            }
+
+            findPreference<EditTextPreference>(RtspServer.PREF_PORT)?.apply {
+                setOnBindEditTextListener { editText ->
+                    editText.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                }
+
+                setOnPreferenceChangeListener { _, newValue ->
+                    val port = newValue.toString().toIntOrNull()
+                    if (port == null || port !in 1..65535) {
+                        Toast.makeText(requireContext(), "Port must be between 1 and 65535", Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (port == configuredHttpPort()) {
+                        Toast.makeText(requireContext(), "RTSP port must differ from the streaming port", Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (isRtspEnabled() && port == configuredOnvifPort()) {
+                        Toast.makeText(requireContext(), "RTSP port must differ from the ONVIF port", Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    summary = "Port $port"
+                    restartStreamingServer()
+                    true
+                }
+            }
+
+            // ONVIF follows the RTSP switch: it advertises the RTSP stream and motion events.
+            findPreference<EditTextPreference>(PREF_ONVIF_NAME)?.apply {
+                setOnPreferenceChangeListener { _, _ ->
+                    restartStreamingServer()
+                    true
+                }
+            }
+
+            findPreference<EditTextPreference>(PREF_ONVIF_PORT)?.apply {
+                setOnBindEditTextListener { editText ->
+                    editText.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                }
+                setOnPreferenceChangeListener { _, newValue ->
+                    val port = newValue.toString().toIntOrNull()
+                    if (port == null || port !in 1..65535) {
+                        Toast.makeText(requireContext(), "Port must be between 1 and 65535", Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (port == configuredHttpPort()) {
+                        Toast.makeText(requireContext(), "ONVIF port must differ from the streaming port", Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (port == configuredRtspPort()) {
+                        Toast.makeText(requireContext(), "ONVIF port must differ from the RTSP port", Toast.LENGTH_LONG).show()
                         return@setOnPreferenceChangeListener false
                     }
                     summary = "Port $port"
@@ -370,6 +487,30 @@ class SettingsActivity : AppCompatActivity() {
             val name = DocumentFile.fromTreeUri(requireContext(), uri)?.name
             return "Custom folder: ${name ?: uri}"
         }
+
+        private fun setRtspOptionsVisible(visible: Boolean) {
+            listOf(RtspServer.PREF_PORT, RtspServer.PREF_AUDIO, RtspServer.PREF_SUB_SIZE, RtspServer.PREF_SUB_FPS,
+                RtspServer.PREF_SUB_BITRATE)
+                .forEach { findPreference<Preference>(it)?.isVisible = visible }
+        }
+
+        private fun setOnvifOptionsVisible(visible: Boolean) {
+            listOf(PREF_ONVIF_NAME, PREF_ONVIF_PORT)
+                .forEach { findPreference<Preference>(it)?.isVisible = visible }
+        }
+
+        private fun configuredHttpPort(): Int =
+            preferenceManager.sharedPreferences?.getString("server_port", null)?.toIntOrNull() ?: 4444
+
+        private fun configuredRtspPort(): Int =
+            preferenceManager.sharedPreferences?.getString(RtspServer.PREF_PORT, null)?.toIntOrNull()
+                ?: RtspServer.DEFAULT_PORT
+
+        private fun configuredOnvifPort(): Int =
+            preferenceManager.sharedPreferences?.getString(PREF_ONVIF_PORT, null)?.toIntOrNull() ?: 8000
+
+        private fun isRtspEnabled(): Boolean =
+            preferenceManager.sharedPreferences?.getBoolean(RtspServer.PREF_ENABLED, false) == true
 
         private fun restartStreamingServer() {
             val intent = Intent(requireContext(), StreamingService::class.java).apply {
