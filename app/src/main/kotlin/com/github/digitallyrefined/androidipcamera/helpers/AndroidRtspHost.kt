@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.preference.PreferenceManager
+import java.net.InetAddress
 
 /** Connects [RtspServer] to the app: settings, stored credentials, microphone and camera lifecycle. */
 internal class AndroidRtspHost(
@@ -50,6 +51,8 @@ internal class AndroidRtspHost(
     override fun log(message: String) = onLog(message)
 
     override fun bootClockNanos(): Long = SystemClock.elapsedRealtimeNanos()
+
+    override fun bindAddress(): InetAddress = ListenInterface.resolve(context)
 
     private fun hasMicrophonePermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED

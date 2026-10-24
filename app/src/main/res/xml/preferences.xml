@@ -35,6 +35,11 @@
             android:defaultValue="4444"
             android:inputType="number"
             android:singleLine="true" />
+        <ListPreference
+            android:key="listen_interface"
+            android:title="Listen Interface"
+            android:summary="Interface all servers listen on (default: all interfaces)"
+            android:defaultValue="0.0.0.0" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="RTSP / ONVIF">

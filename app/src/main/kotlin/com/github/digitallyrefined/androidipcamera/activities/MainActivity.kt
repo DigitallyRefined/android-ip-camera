@@ -28,6 +28,7 @@ import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
+import com.github.digitallyrefined.androidipcamera.helpers.ListenInterface
 import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -300,6 +301,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getLocalIpAddress(): String {
+        ListenInterface.specificIpv4(this)?.let { return it }
         try {
             NetworkInterface.getNetworkInterfaces().toList().forEach { networkInterface ->
                 networkInterface.inetAddresses.toList().forEach { address ->
