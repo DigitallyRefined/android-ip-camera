@@ -1,0 +1,5 @@
+## What's Changed
+* Fix manual rotate by removing auto-rotate by @DigitallyRefined in #123
+* Bump dependencies by @dependabot[bot] in #119 #124
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.15.0...v0.16.0
