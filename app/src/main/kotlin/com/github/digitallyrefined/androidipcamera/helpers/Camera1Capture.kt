@@ -20,7 +20,6 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
     var chosenH = targetH; private set
     override val width get() = chosenW
     override val height get() = chosenH
-    val previewRotation: Int get() = jpegRotation(cameraId)
 
     private var previewBuffers: Array<ByteArray>? = null
     private var onPreviewFrame: ((ByteArray) -> Unit)? = null
@@ -56,7 +55,8 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         if (p.supportedWhiteBalance?.contains(Camera.Parameters.WHITE_BALANCE_AUTO) == true)
             p.whiteBalance = Camera.Parameters.WHITE_BALANCE_AUTO
         p.supportedPictureSizes?.maxByOrNull { it.width * it.height }?.let { p.setPictureSize(it.width, it.height) }
-        p.setRotation(jpegRotation(cameraId))
+        // Rotation is manual-only: never bake the sensor orientation into stills.
+        p.setRotation(0)
         try { p.set("jpeg-quality", "95") } catch (_: Exception) {}
         camera.parameters = p
         camera.setPreviewTexture(st)
@@ -213,9 +213,5 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         }
 
         private const val OPEN_SETTLE_MS = 400L
-
-        private fun jpegRotation(id: Int): Int {
-            val info = Camera.CameraInfo(); Camera.getCameraInfo(id, info); return info.orientation
-        }
     }
 }

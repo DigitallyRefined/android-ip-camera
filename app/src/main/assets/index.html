@@ -897,7 +897,7 @@
       // Persisted preference (may throw in some environments)
       streamMode = localStorage.getItem('streamMode') || streamMode;
     } catch (_) { }
-    // The rotate= control (plus the sensor auto-rotation) is baked into the H.264 stream server-side
+    // The rotate= control is the only rotation source and is baked into the H.264 stream server-side
     // aligned to the nearest 90°. `rotate` tracks the raw slider value; the player applies the small
     // residual (rotate − nearest90) on top of the baked stream so the preview matches the slider,
     // while the raw H.264/MJPEG streams remain rotating in the server's 90° steps for other clients.

@@ -69,8 +69,9 @@ class MjpegStreamingEncoder(
             if (currentTime - lastFrameTime < delay) return
             lastFrameTime = currentTime
 
-            val autoRotation = image.imageInfo.rotationDegrees
             val camId = prefs.getString("camera_id", null)
+            // Rotation is controlled only by the per-camera rotate= setting; the camera's
+            // sensor orientation is intentionally ignored.
             val rotation = if (camId != null) {
                 val phys = camId.substringAfter(':', camId)
                 when {
@@ -79,7 +80,7 @@ class MjpegStreamingEncoder(
                     else -> 0
                 }
             } else 0
-            val totalRotation = (autoRotation + rotation) % 360
+            val totalRotation = ((rotation % 360) + 360) % 360
             val scaleFactor = if (camId != null) {
                 val phys = camId.substringAfter(':', camId)
                 prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
@@ -114,7 +115,7 @@ class MjpegStreamingEncoder(
     }
 
     /** Camera1 preview callback path (NV21 bytes, no ImageProxy). */
-    fun processNv21Frame(nv21: ByteArray, width: Int, height: Int, rotationDegrees: Int) {
+    fun processNv21Frame(nv21: ByteArray, width: Int, height: Int) {
         if (!hasClients()) return
         try {
             val prefs = PreferenceManager.getDefaultSharedPreferences(context)
@@ -134,7 +135,7 @@ class MjpegStreamingEncoder(
                     else -> 0
                 }
             } else 0
-            val totalRotation = (rotationDegrees + rotation) % 360
+            val totalRotation = ((rotation % 360) + 360) % 360
             val scaleFactor = if (camId != null) {
                 val phys = camId.substringAfter(':', camId)
                 prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f

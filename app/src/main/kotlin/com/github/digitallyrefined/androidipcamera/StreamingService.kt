@@ -11,7 +11,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.hardware.Camera
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
@@ -34,6 +36,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -681,20 +684,9 @@ class StreamingService : LifecycleService() {
         id?.let { cm.getCameraCharacteristics(it).get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) }
     } catch (_: Exception) { null }
 
-    /** SENSOR_ORIENTATION of the selected camera, or null if it cannot be read. */
-    private fun sensorOrientation(): Int? = try {
-        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val id = selectedCameraId
-            ?.let { parseCameraToken(it).logicalId }
-            ?.takeIf { it in cm.cameraIdList }
-            ?: firstCameraIdForFacing(frontFacing)
-        id?.let { cm.getCameraCharacteristics(it).get(CameraCharacteristics.SENSOR_ORIENTATION) }
-    } catch (_: Exception) { null }
-
-    /** Encoder frame for the CameraX surface path: [want] turned to the picture's orientation. */
+    /** Encoder frame for a surface path: [want] turned only by the manual rotate= control. */
     private fun surfaceEncoderSize(want: Size): Size {
-        val sensor = sensorOrientation() ?: return want
-        val (w, h) = CameraGlPipe.frameSize(want.width, want.height, sensor, quantizedRotation(readRotatePref()))
+        val (w, h) = CameraGlPipe.frameSize(want.width, want.height, quantizedRotation(readRotatePref()))
         return Size(w, h)
     }
 
@@ -875,7 +867,7 @@ class StreamingService : LifecycleService() {
         val motion = motionMonitor?.takeIf { it.enabled }
         if (mjpeg != null || motion != null) {
             cap.setPreviewFrameCallback { nv21 ->
-                mjpeg?.processNv21Frame(nv21, cap.chosenW, cap.chosenH, cap.previewRotation)
+                mjpeg?.processNv21Frame(nv21, cap.chosenW, cap.chosenH)
                 motion?.processNv21Frame(nv21, cap.chosenW, cap.chosenH)
             }
         }
@@ -901,42 +893,48 @@ class StreamingService : LifecycleService() {
             ) { d, k, pts -> h264.broadcastH264(d, k, pts) }
 
             // Encode in the picture's shape (portrait when the camera image is upright portrait).
-            // Some older encoders reject portrait sizes; they keep the landscape frame instead.
+            // If the encoder rejects the portrait size, fall back to the byte-buffer YUV path,
+            // which rotates in software — never to a landscape surface frame, which would make a
+            // 90°/270° stream look horizontal.
             val frame = surfaceEncoderSize(want)
             val enc = try {
                 newEncoder(frame)
             } catch (e: Exception) {
                 if (frame == want) throw e
-                Log.w(TAG, "H.264 encoder rejected ${frame.width}x${frame.height}, using ${want.width}x${want.height}: ${e.message}")
-                newEncoder(want)
+                Log.w(TAG, "H.264 encoder rejected ${frame.width}x${frame.height}; falling back to software-rotated YUV: ${e.message}")
+                null
             }
 
-            h264.setEncoder(enc)
-            streamingServerHelper?.resetH264Wait()
+            if (enc != null) {
+                h264.setEncoder(enc)
+                streamingServerHelper?.resetH264Wait()
 
-            // Route CameraX frames through a GL pipe so mirror can be applied
-            // without restarting the camera (the pipe reads mirror on each frame).
-            val pipe = CameraGlPipe(enc.inputSurface!!, enc.width, enc.height, fpsCoerced, standardBuffer = true).also {
-                it.mirror = readMirrorPref()
-                it.rotation = quantizedRotation(readRotatePref())
-                it.start()
-                cameraXGlPipe = it
-            }
-
-            h264SurfaceProvider = Preview.SurfaceProvider { request ->
-                val surface = pipe.inputSurface
-                if (surface != null && surface.isValid) {
-                    // Render at the resolution CameraX negotiated rather than the pipe's
-                    // placeholder buffer size, so the selected resolution is what gets captured.
-                    pipe.setCameraBufferSize(request.resolution.width, request.resolution.height)
-                    Log.i(TAG, "Providing CameraX H.264 surface via GL pipe (${request.resolution}, mirror=${pipe.mirror})")
-                    enc.hasSurfaceBeenProvided = true
-                    request.provideSurface(surface, ContextCompat.getMainExecutor(this)) { result ->
-                        Log.i(TAG, "CameraX H.264 surface released by CameraX (result code: ${result.resultCode})")
-                    }
-                } else {
-                    request.willNotProvideSurface()
+                // Route CameraX frames through a GL pipe so mirror can be applied
+                // without restarting the camera (the pipe reads mirror on each frame).
+                val pipe = CameraGlPipe(enc.inputSurface!!, enc.width, enc.height, fpsCoerced, standardBuffer = true).also {
+                    it.mirror = readMirrorPref()
+                    it.rotation = quantizedRotation(readRotatePref())
+                    it.start()
+                    cameraXGlPipe = it
                 }
+
+                h264SurfaceProvider = Preview.SurfaceProvider { request ->
+                    val surface = pipe.inputSurface
+                    if (surface != null && surface.isValid) {
+                        // Render at the resolution CameraX negotiated rather than the pipe's
+                        // placeholder buffer size, so the selected resolution is what gets captured.
+                        pipe.setCameraBufferSize(request.resolution.width, request.resolution.height)
+                        Log.i(TAG, "Providing CameraX H.264 surface via GL pipe (${request.resolution}, mirror=${pipe.mirror})")
+                        enc.hasSurfaceBeenProvided = true
+                        request.provideSurface(surface, ContextCompat.getMainExecutor(this)) { result ->
+                            Log.i(TAG, "CameraX H.264 surface released by CameraX (result code: ${result.resultCode})")
+                        }
+                    } else {
+                        request.willNotProvideSurface()
+                    }
+                }
+            } else {
+                h264.setEncoder(null)
             }
         } else if (h264 != null) {
             // Fall back to YUV mode immediately (previous method)
@@ -1085,18 +1083,22 @@ class StreamingService : LifecycleService() {
         return ((norm + 45) / 90 * 90) % 360
     }
 
-    /** Surface-mode encoder + GL pipe, used by Camera1 H.264. */
-    private fun newPipe(sz: Size): CameraGlPipe {
+    /** Surface-mode encoder + GL pipe, used by Camera1 H.264. [cameraSize] is the size Camera1
+     *  produces; the encoder is sized to the picture's shape after the manual rotate= control. */
+    private fun newPipe(cameraSize: Size): CameraGlPipe {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
         val fpsCoerced = fps.coerceIn(1, 60)
-        val enc = H264HardwareEncoder(sz.width, sz.height, fpsCoerced, H264HardwareEncoder.bitrateFor(sz.width, sz.height), true) { d, k, pts -> h264StreamingEncoder?.broadcastH264(d, k, pts) }
+        val frame = surfaceEncoderSize(cameraSize)
+        val enc = H264HardwareEncoder(frame.width, frame.height, fpsCoerced, H264HardwareEncoder.bitrateFor(frame.width, frame.height), true) { d, k, pts -> h264StreamingEncoder?.broadcastH264(d, k, pts) }
         h264StreamingEncoder?.setEncoder(enc)
         streamingServerHelper?.resetH264Wait()
-        return CameraGlPipe(enc.inputSurface!!, sz.width, sz.height, fpsCoerced).also {
+        return CameraGlPipe(enc.inputSurface!!, frame.width, frame.height, fpsCoerced).also {
             it.mirror = readMirrorPref()
             it.rotation = quantizedRotation(readRotatePref())
             it.start()
+            // Camera1 renders at [cameraSize]; the pipe turns that frame into [frame].
+            it.setCameraBufferSize(cameraSize.width, cameraSize.height)
             glPipe = it
         }
     }
@@ -1403,7 +1405,7 @@ class StreamingService : LifecycleService() {
             launchMain { target.captureStill { out[0] = it; latch.countDown() } }
             val remaining = (deadlineMs - System.currentTimeMillis()).coerceAtLeast(100L)
             try { latch.await(remaining, TimeUnit.MILLISECONDS) } catch (_: Exception) {}
-            result = out[0]
+            result = out[0]?.let { rotateSnapshot(it, readRotatePref()) }
             if (result != null) break
             try { Thread.sleep(150) } catch (_: Exception) {}
         }
@@ -1416,6 +1418,37 @@ class StreamingService : LifecycleService() {
             }
         }
         return result
+    }
+
+    /**
+     * Turn a still's pixels by the manual rotate= setting. EXIF is not touched, so the image
+     * carries no orientation tag telling a viewer to rotate it on top of the manual angle.
+     */
+    private fun rotateSnapshot(jpeg: ByteArray, degrees: Int): ByteArray {
+        val angle = ((degrees % 360) + 360) % 360
+        if (angle == 0) return jpeg
+        return try {
+            val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
+            try {
+                val matrix = Matrix().apply { postRotate(angle.toFloat()) }
+                val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+                try {
+                    if (rotated === bmp) return jpeg
+                    val out = ByteArrayOutputStream(jpeg.size)
+                    try {
+                        rotated.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                        out.toByteArray()
+                    } finally { out.close() }
+                } finally { if (rotated !== bmp) rotated.recycle() }
+            } finally { bmp.recycle() }
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "snapshot rotate OOM")
+            try { System.gc() } catch (_: Exception) {}
+            jpeg
+        } catch (e: Exception) {
+            Log.e(TAG, "snapshot rotate: ${e.message}")
+            jpeg
+        }
     }
 
     /** Restart the camera on the new facing and wait until the backend is bound + 3A converges. */
@@ -1571,12 +1604,20 @@ class StreamingService : LifecycleService() {
                 val q = quantizedRotation(norm)
                 glPipe?.rotation = q
                 cameraXGlPipe?.rotation = q
-                // The CameraX surface encoder's frame follows the picture's shape, so a quarter
-                // turn needs a new encoder (the byte-buffer encoder resizes itself per frame).
-                // Not while recording: restarting the camera would end the recording.
+                // The surface encoder's frame follows the picture's shape, so a quarter turn needs
+                // a new encoder (the byte-buffer encoder resizes itself per frame). Applies to both
+                // the CameraX and Camera1 GL pipes. Not while recording: restarting the camera
+                // would end the recording.
                 val current = h264StreamingEncoder?.h264HardwareEncoder
-                if (cameraXGlPipe != null && current != null && localRecorder?.isRecording != true) {
-                    val target = surfaceEncoderSize(desiredSize())
+                val camera1Pipe = glPipe
+                val pipe = cameraXGlPipe ?: camera1Pipe
+                if (pipe != null && current != null && localRecorder?.isRecording != true) {
+                    val cameraSize = if (camera1Pipe != null && camera1Pipe.frameWidth > 0 && camera1Pipe.frameHeight > 0) {
+                        Size(camera1Pipe.frameWidth, camera1Pipe.frameHeight)
+                    } else {
+                        desiredSize()
+                    }
+                    val target = surfaceEncoderSize(cameraSize)
                     if (target.width != current.width || target.height != current.height) debouncedStartCamera()
                 }
             }

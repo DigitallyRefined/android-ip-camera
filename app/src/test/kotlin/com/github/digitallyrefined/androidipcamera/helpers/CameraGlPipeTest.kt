@@ -5,17 +5,23 @@ import org.junit.Test
 
 class CameraGlPipeTest {
     @Test
-    fun `portrait picture from a 90 degree sensor gets a portrait frame`() {
-        assertEquals(1080 to 1920, CameraGlPipe.frameSize(1920, 1080, sensorOrientation = 90, rotation = 0))
-        assertEquals(1080 to 1920, CameraGlPipe.frameSize(1920, 1080, sensorOrientation = 270, rotation = 0))
-        assertEquals(1080 to 1920, CameraGlPipe.frameSize(1920, 1080, sensorOrientation = 90, rotation = 180))
+    fun `no manual rotation keeps the camera shape`() {
+        assertEquals(1920 to 1080, CameraGlPipe.frameSize(1920, 1080, rotation = 0))
+        assertEquals(1920 to 1080, CameraGlPipe.frameSize(1920, 1080, rotation = 180))
+        assertEquals(1920 to 1080, CameraGlPipe.frameSize(1920, 1080, rotation = 360))
+        assertEquals(1280 to 720, CameraGlPipe.frameSize(1280, 720, rotation = 0))
+        assertEquals(800 to 600, CameraGlPipe.frameSize(800, 600, rotation = 360))
     }
 
     @Test
-    fun `a quarter turn of the rotate control brings the frame back to landscape`() {
-        assertEquals(1920 to 1080, CameraGlPipe.frameSize(1920, 1080, sensorOrientation = 90, rotation = 90))
-        assertEquals(1920 to 1080, CameraGlPipe.frameSize(1920, 1080, sensorOrientation = 90, rotation = 270))
-        assertEquals(1920 to 1080, CameraGlPipe.frameSize(1920, 1080, sensorOrientation = 90, rotation = -90))
+    fun `a quarter turn of the rotate control swaps the frame shape`() {
+        assertEquals(1080 to 1920, CameraGlPipe.frameSize(1920, 1080, rotation = 90))
+        assertEquals(1080 to 1920, CameraGlPipe.frameSize(1920, 1080, rotation = 270))
+        assertEquals(1080 to 1920, CameraGlPipe.frameSize(1920, 1080, rotation = -90))
+        // Regression: at 90° the Camera1 surface encoder must be portrait, not the landscape
+        // camera buffer (otherwise the stream looks horizontal).
+        assertEquals(600 to 800, CameraGlPipe.frameSize(800, 600, rotation = 90))
+        assertEquals(800 to 600, CameraGlPipe.frameSize(800, 600, rotation = 180))
     }
 
     @Test
@@ -27,11 +33,5 @@ class CameraGlPipeTest {
         assertEquals(480 to 360, CameraGlPipe.scaledFrame(800, 600, 360))
         assertEquals(1280 to 720, CameraGlPipe.scaledFrame(1280, 720, 720)) // never scaled up
         assertEquals(800 to 600, CameraGlPipe.scaledFrame(800, 600, 720))
-    }
-
-    @Test
-    fun `sensors already upright keep the camera shape`() {
-        assertEquals(1280 to 720, CameraGlPipe.frameSize(1280, 720, sensorOrientation = 0, rotation = 0))
-        assertEquals(800 to 600, CameraGlPipe.frameSize(800, 600, sensorOrientation = 180, rotation = 360))
     }
 }
