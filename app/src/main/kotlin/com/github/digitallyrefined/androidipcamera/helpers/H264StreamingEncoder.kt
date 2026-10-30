@@ -59,11 +59,10 @@ class H264StreamingEncoder(
             var encMutable = enc
             val prefs = PreferenceManager.getDefaultSharedPreferences(context)
             val camId = prefs.getString("camera_id", null)
-            // Apply the same effective rotation the MJPEG/preview/snapshot pipeline bakes in
-            // (sensor auto-rotation + the per-camera rotate= control) so /video/h264 matches them.
-            val autoRotation = image.imageInfo.rotationDegrees
+            // Rotation is controlled only by the per-camera rotate= setting. The camera's
+            // sensor orientation is intentionally ignored so the stream never auto-rotates.
             val userRotation = readRotatePref(prefs, camId)
-            val totalRotation = ((autoRotation + userRotation) % 360 + 360) % 360
+            val totalRotation = ((userRotation % 360) + 360) % 360
             // H.264 YUV rotation is done on 90° boundaries (the rotate control is arbitrary, but
             // arbitrary-angle rotation would require a full software resample per frame).
             val rotation = ((totalRotation + 45) / 90 * 90) % 360

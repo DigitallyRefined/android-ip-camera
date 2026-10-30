@@ -59,9 +59,8 @@ class CameraGlPipe(
     private var program = 0
     private var aPos = 0; private var aTex = 0; private var uST = 0; private var uMirror = 0
     @Volatile var mirror = false
-    /** Extra clockwise rotation (degrees) applied on top of the camera's own transform. The sensor
-     *  rotation is already baked in by the SurfaceTexture transform, so this is the per-camera
-     *  rotate= control (quantised to 90° steps). Mirrors what the MJPEG encoder bakes in. */
+    /** Clockwise rotation (degrees) applied to the camera frame. This is the only rotation source:
+     *  the surface transform's sensor orientation is deliberately ignored (quantised to 90° steps). */
     @Volatile var rotation: Int = 0
     @Volatile var frameWidth: Int = 0
     @Volatile var frameHeight: Int = 0
@@ -86,6 +85,10 @@ class CameraGlPipe(
             initEgl()
             texId = createOesTexture()
             program = buildProgram()
+            // SurfaceTexture's transform contains the camera's sensor orientation. Ignore it and
+            // keep only the standard GL vertical flip, so the picture is never auto-rotated by the
+            // sensor — only [rotation] turns it.
+            System.arraycopy(GL_FLIP_ONLY, 0, stMatrix, 0, GL_FLIP_ONLY.size)
             // When standardBuffer is set (CameraX path) use a camera-compatible size so the
             // camera's output aspect ratio matches the pipe surface (avoids stretching when
             // CameraX picks a resolution that doesn't match the desired output size).
@@ -102,7 +105,6 @@ class CameraGlPipe(
                     val sec = secondary
                     val mainDue = frameRateLimiter.shouldEmit(timestamp)
                     val secondaryDue = sec != null && sec.limiter.shouldEmit(timestamp)
-                    if (mainDue || secondaryDue) surfaceTexture.getTransformMatrix(stMatrix)
                     if (mainDue) {
                         drawFrame(width, height)
                         EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, timestamp)
@@ -182,12 +184,6 @@ class CameraGlPipe(
         // letterbox when the camera output aspect ratio differs from the pipe surface.
         var fw = frameWidth; var fh = frameHeight
         if (fw > 0 && fh > 0) {
-            // The stMatrix may rotate the camera frame (e.g. 90° when the device is held in
-            // portrait). When it does, the effective display dimensions are swapped, so we
-            // must swap the frame width/height to compute the correct viewport adjustment.
-            if (Math.abs(stMatrix[0]) < 0.5f && Math.abs(stMatrix[4]) > 0.5f) {
-                val t = fw; fw = fh; fh = t
-            }
             // The quad is rotated [rot]° below, so the drawn content dimensions are swapped
             // for right-angle rotations — letterbox against the rotated shape.
             if (rot == 90 || rot == 270) {
@@ -348,15 +344,23 @@ class CameraGlPipe(
     companion object {
         private const val TAG = "CameraGlPipe"
 
+        /** Standard GL vertical flip; SurfaceTexture always applies this regardless of camera. */
+        private val GL_FLIP_ONLY = floatArrayOf(
+            1f, 0f, 0f, 0f,
+            0f, -1f, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            0f, 1f, 0f, 1f
+        )
+
         /**
          * Shape of the picture this pipe draws for a camera output of [cameraWidth]×[cameraHeight].
-         * SurfaceTexture frames arrive turned by the sensor orientation (portrait on most phones)
-         * and [rotation] turns them further, so an odd number of quarter turns swaps the sides.
-         * Sizing the encoder to this keeps a portrait picture from being pillarboxed into a
+         * Only the manual [rotation] turns the frame, so an odd number of quarter turns swaps the
+         * sides. Sizing the encoder to this keeps a portrait picture from being pillarboxed into a
          * landscape frame.
          */
-        fun frameSize(cameraWidth: Int, cameraHeight: Int, sensorOrientation: Int, rotation: Int): Pair<Int, Int> {
-            val quarterTurns = (((sensorOrientation + rotation) % 360 + 360) % 360 + 45) / 90
+        fun frameSize(cameraWidth: Int, cameraHeight: Int, rotation: Int): Pair<Int, Int> {
+            val norm = ((rotation % 360) + 360) % 360
+            val quarterTurns = (norm + 45) / 90
             return if (quarterTurns % 2 == 1) cameraHeight to cameraWidth else cameraWidth to cameraHeight
         }
 

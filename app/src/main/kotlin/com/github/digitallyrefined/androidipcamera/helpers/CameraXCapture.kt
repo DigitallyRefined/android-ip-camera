@@ -1,9 +1,6 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
@@ -13,6 +10,7 @@ import android.os.Looper
 import android.util.Log
 import android.util.Range
 import android.util.Size
+import android.view.Surface
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
@@ -33,7 +31,6 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
-import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -111,7 +108,6 @@ class CameraXCapture(
     @Volatile private var latestNv21: ByteArray? = null
     @Volatile private var latestNv21W = 0
     @Volatile private var latestNv21H = 0
-    @Volatile private var latestNv21Rotation = 0
     @Volatile private var latestNv21AtMs = 0L
 
     private val logicalCameraId: String? = cameraId?.substringBefore(':')
@@ -133,8 +129,13 @@ class CameraXCapture(
                     .setResolutionStrategy(ResolutionStrategy(desired, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
                     .setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
                     .build()
+                // Pin every use case to a fixed rotation. Stream rotation comes only from the
+                // per-camera rotate= control: the encoders ignore imageInfo.rotationDegrees and the
+                // GL pipe ignores the surface's sensor transform, so this value must never follow
+                // the display rotation.
                 val aBuilder = ImageAnalysis.Builder()
                     .setResolutionSelector(sel)
+                    .setTargetRotation(Surface.ROTATION_0)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 val analysisInterop = Camera2Interop.Extender(aBuilder)
@@ -162,7 +163,6 @@ class CameraXCapture(
                             }
                             latestNv21 = nv21
                             latestNv21W = crop.width(); latestNv21H = crop.height()
-                            latestNv21Rotation = img.imageInfo.rotationDegrees
                             latestNv21AtMs = System.currentTimeMillis()
                         } catch (e: Exception) { Log.e(TAG, "frame cache: ${e.message}") }
                         onFrame(img)
@@ -173,15 +173,18 @@ class CameraXCapture(
                 // HAL to reconfigure the session for a full-sensor still surface.
                 val imageCaptureBuilder = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .setTargetRotation(Surface.ROTATION_0)
                 physicalCameraId?.let { Camera2Interop.Extender(imageCaptureBuilder).setPhysicalCameraId(it) }
                 imageCapture = imageCaptureBuilder.build()
                 previewSurfaceProvider?.let { pv ->
                     val previewBuilder = Preview.Builder().setResolutionSelector(sel)
+                        .setTargetRotation(Surface.ROTATION_0)
                     physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
                     previewUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
                 encoderSurfaceProvider?.let { pv ->
                     val previewBuilder = Preview.Builder().setResolutionSelector(sel)
+                        .setTargetRotation(Surface.ROTATION_0)
                     physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
                     encoderUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
@@ -351,7 +354,7 @@ class CameraXCapture(
     /** JPEG encoded from the latest analysis frame (if still fresh), or null. Guarantees a snapshot
      *  whenever the camera is producing frames. */
     private fun frameFallbackJpeg(): ByteArray? {
-        val nv: ByteArray; val w: Int; val h: Int; val rot: Int
+        val nv: ByteArray; val w: Int; val h: Int
         synchronized(nv21Lock) {
             val cached = latestNv21 ?: run { Log.w(TAG, "fallback: no cached frame"); return null }
             val age = System.currentTimeMillis() - latestNv21AtMs
@@ -360,14 +363,12 @@ class CameraXCapture(
                 return null
             }
             nv = cached.copyOf()   // copy under the lock so the analyzer can't overwrite mid-encode
-            w = latestNv21W; h = latestNv21H; rot = latestNv21Rotation
+            w = latestNv21W; h = latestNv21H
         }
         if (w == 0 || h == 0) return null
         return try {
             val quality = DeviceMemoryHelper.mjpegJpegQuality(ctx)
-            var jpeg = convertNV21toJPEG(nv, w, h, quality)
-            if (rot != 0) jpeg = rotateJpeg(jpeg, rot, quality)
-            jpeg
+            convertNV21toJPEG(nv, w, h, quality)
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "frame fallback OOM")
             try { System.gc() } catch (_: Exception) {}
@@ -376,22 +377,6 @@ class CameraXCapture(
             Log.e(TAG, "frame fallback: ${e.message}")
             null
         }
-    }
-
-    private fun rotateJpeg(jpeg: ByteArray, degrees: Int, quality: Int): ByteArray {
-        val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
-        try {
-            val m = Matrix().apply { postRotate(degrees.toFloat()) }
-            val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-            try {
-                if (rotated == bmp) return jpeg
-                val out = ByteArrayOutputStream()
-                try {
-                    rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
-                    return out.toByteArray()
-                } finally { out.close() }
-            } finally { if (rotated != bmp) rotated.recycle() }
-        } finally { bmp.recycle() }
     }
 
     override fun getTorch(): Boolean = torchEnabled
