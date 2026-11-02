@@ -314,6 +314,11 @@
           </div>
 
           <div id="audioControls">
+            <label>
+              <input type="checkbox" id="keepAudioCheckbox" style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">Keep audio playing in background</span>
+            </label>
+
             <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.5s</span></label>
             <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
 
@@ -424,6 +429,7 @@
     const audioEl = getElById('audioEl');
     const muteBtn = getElById('muteBtn');
     const audioControls = getElById('audioControls');
+    const keepAudioCheckbox = getElById('keepAudioCheckbox');
     const streamContainer = getElById('streamContainer');
     const avDelay = getElById('avDelay');
     const avDelayVal = getElById('avDelayVal');
@@ -1132,14 +1138,15 @@
       } catch (_) { }
     }
 
+    let audioElWasPlaying = false;
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
-        // Stop audio and image streams when backgrounded
-        if (!audioEl.muted) {
+        // Stop the image stream when backgrounded
+        // only stop the audio stream when checked
+        if(!keepAudioCheckbox.checked) {
+          audioElWasPlaying = audioEl.src !== '';
           audioEl.muted = true;
           audioEl.pause();
-        }
-        if (audioEl.src) {
           audioEl.removeAttribute('src');
           audioEl.load();
         }
@@ -1148,6 +1155,13 @@
       } else {
         // Restart the currently selected stream on foreground
         if (streamMode === 'h264') startH264Stream(); else startMjpegStream();
+
+        if (!keepAudioCheckbox.checked && audioElWasPlaying) {
+          audioEl.src = '/audio';
+          audioEl.load();
+          audioEl.muted = false;
+          audioEl.play().catch(() => { });
+        }
       }
     });
 
