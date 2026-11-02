@@ -1134,15 +1134,7 @@
 
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
-        // Stop audio and image streams when backgrounded
-        if (!audioEl.muted) {
-          audioEl.muted = true;
-          audioEl.pause();
-        }
-        if (audioEl.src) {
-          audioEl.removeAttribute('src');
-          audioEl.load();
-        }
+        // Only stop video stream when backgrounded, keep audio playing if it was started
         stopMjpegStream();
         stopH264Stream();
       } else {
