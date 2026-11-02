@@ -1,0 +1,7 @@
+## What's Changed
+* Allow audio playback while tab is backgrounded by @mncc8337 in #126
+
+## New Contributors
+* @mncc8337 made their first contribution in #126
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.16.0...v0.16.1
