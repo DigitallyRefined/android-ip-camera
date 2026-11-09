@@ -853,7 +853,7 @@ class StreamingService : LifecycleService() {
             else -> if (isLegacy()) "camera1" else "camerax"
         }
 
-    /** Desired stream size from the resolution pref; "auto" → 1080p target (the device gives its best ≤ that). */
+    /** Desired stream size from the resolution pref; "auto" → preset target, otherwise the picked WxH. */
     private fun desiredSize(): Size {
         val caps = H264HardwareEncoder.caps()
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -866,12 +866,22 @@ class StreamingService : LifecycleService() {
                 "low" -> Size(800, 600)
                 else -> Size(800, 600)
             }
-            return Size(minOf(target.width, caps.maxW), minOf(target.height, caps.maxH))
+            return fitToEncoderCaps(target.width, target.height, caps.maxW, caps.maxH)
         }
         val m = Regex("(\\d+)x(\\d+)").find(streamRes)
         val w = m?.groupValues?.get(1)?.toIntOrNull() ?: 1920
         val h = m?.groupValues?.get(2)?.toIntOrNull() ?: 1080
-        return Size(minOf(w, caps.maxW), minOf(h, caps.maxH))
+        // Keep the selected aspect ratio when the encoder cannot take the full size; capping
+        // width and height independently would turn e.g. 1080x1920 into a square frame.
+        return fitToEncoderCaps(w, h, caps.maxW, caps.maxH)
+    }
+
+    /** Scale [w]×[h] down to fit the encoder caps without changing its aspect ratio. */
+    private fun fitToEncoderCaps(w: Int, h: Int, maxW: Int, maxH: Int): Size {
+        if (w <= maxW && h <= maxH) return Size(w, h)
+        val scale = minOf(maxW.toDouble() / w, maxH.toDouble() / h)
+        fun even(v: Double) = ((v.toInt().coerceAtLeast(2)) / 2) * 2
+        return Size(even(w * scale), even(h * scale))
     }
 
     private suspend fun startCameraIfNeeded() { if (!captureRunning) startCamera() }
@@ -1733,12 +1743,55 @@ class StreamingService : LifecycleService() {
                 }
             }
             "resolution" -> {
-                if (value in listOf("low", "medium", "high")) {
-                    prefs.edit().putString("camera_resolution", value).apply()
-                    debouncedStartCamera()
-                } else if (value == "auto" || value == "max" || Regex("\\d+x\\d+").matches(value)) {
-                    prefs.edit().putString("stream_res", if (value == "max") "auto" else value).apply()
-                    debouncedStartCamera()
+                when {
+                    value in listOf("low", "medium", "high") -> {
+                        // A preset only takes effect when no explicit size is selected, so clear
+                        // any saved WxH; otherwise desiredSize() would keep using the old size.
+                        prefs.edit()
+                            .putString("camera_resolution", value)
+                            .putString("stream_res", "auto")
+                            .apply()
+                        debouncedStartCamera()
+                    }
+                    value == "auto" || value == "max" -> {
+                        prefs.edit().putString("stream_res", "auto").apply()
+                        debouncedStartCamera()
+                    }
+                    else -> {
+                        val m = Regex("^(\\d+)x(\\d+)$").find(value) ?: return
+                        val w = m.groupValues[1].toIntOrNull()
+                        val h = m.groupValues[2].toIntOrNull()
+                        if (w == null || h == null || w <= 0 || h <= 0) return
+                        // Store the normalised size the stream will actually use, so /info.json
+                        // reports exactly what the user selected.
+                        prefs.edit().putString("stream_res", "${w}x${h}").apply()
+                        debouncedStartCamera()
+                    }
+                }
+            }
+            // RTSP sub stream and audio settings. The RTSP server reads them when a viewer
+            // connects, so a change applies to the next connection (as the old Settings screen did).
+            "rtsp_audio" -> {
+                if (value.equals("true", true) || value.equals("false", true)) {
+                    prefs.edit().putBoolean(RtspServer.PREF_AUDIO, value.toBoolean()).apply()
+                }
+            }
+            "rtsp_sub_size" -> {
+                val n = value.toIntOrNull()
+                if (n != null && n in listOf(240, 360, 480, 720)) {
+                    prefs.edit().putString(RtspServer.PREF_SUB_SIZE, n.toString()).apply()
+                }
+            }
+            "rtsp_sub_fps" -> {
+                val n = value.toIntOrNull()
+                if (n != null && n in listOf(10, 15, 20, 30)) {
+                    prefs.edit().putString(RtspServer.PREF_SUB_FPS, n.toString()).apply()
+                }
+            }
+            "rtsp_sub_bitrate" -> {
+                val n = value.toIntOrNull()
+                if (n != null && n in listOf(300, 500, 800, 1200, 2000)) {
+                    prefs.edit().putString(RtspServer.PREF_SUB_BITRATE, n.toString()).apply()
                 }
             }
             "rotate" -> {

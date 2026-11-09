@@ -245,6 +245,24 @@
       margin-bottom: 15px;
     }
 
+    details.setting-group summary {
+      cursor: pointer;
+      font-size: 12px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: bold;
+      user-select: none;
+    }
+
+    details.setting-group[open] summary {
+      margin-bottom: 14px;
+    }
+
+    details.setting-group summary::marker {
+      color: #007AFF;
+    }
+
     h3 {
       margin-top: 0;
       font-size: 14px;
@@ -498,6 +516,48 @@
             </div>
           </div>
 
+          <details id="substreamSection" class="setting-group" style="display:none">
+            <summary>Substream</summary>
+
+            <label style="margin:14px 0 6px;">
+              <input type="checkbox" id="rtspAudioCheckbox"
+                onchange="sendControl('rtsp_audio', this.checked ? 'true' : 'false')"
+                style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">Include Audio</span>
+            </label>
+            <div class="hint" style="margin:0 0 14px; font-size:12px; color:#ccc">
+              Add the microphone to the RTSP stream as an AAC audio track (requires the microphone permission).
+            </div>
+
+            <label for="rtspSubSize">Substream Resolution</label>
+            <select id="rtspSubSize" data-control="rtsp_sub_size" style="margin-bottom:14px">
+              <option value="240">240p</option>
+              <option value="360">360p</option>
+              <option value="480">480p</option>
+              <option value="720">720p</option>
+            </select>
+
+            <label for="rtspSubFps">Substream Frame Rate</label>
+            <select id="rtspSubFps" data-control="rtsp_sub_fps" style="margin-bottom:14px">
+              <option value="10">10 fps</option>
+              <option value="15">15 fps</option>
+              <option value="20">20 fps</option>
+              <option value="30">30 fps</option>
+            </select>
+
+            <label for="rtspSubBitrate">Substream Bitrate</label>
+            <select id="rtspSubBitrate" data-control="rtsp_sub_bitrate">
+              <option value="300">300 kbps</option>
+              <option value="500">500 kbps</option>
+              <option value="800">800 kbps</option>
+              <option value="1200">1200 kbps</option>
+              <option value="2000">2000 kbps</option>
+            </select>
+            <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
+              Smaller stream for slow links such as 4G. Keep the bitrate to about half the viewer's connection speed so dips don't stall it. Changes apply the next time an RTSP viewer connects.
+            </div>
+          </details>
+
           <p class="notice">Some changes will momentarily restart the camera.</p>
           <p class="version"><a href="https://github.com/DigitallyRefined/android-ip-camera" target="_blank">Android IP Camera <span id="appVersion"></span></a></p>
         </div>
@@ -697,9 +757,9 @@
       if (!param) return null;
       if (param === 'focus' || param === 'focus_distance') return 'focusDistance';
       if (param === 'snapshot_res') return 'snapshotRes';
-      // Motion detection is a global (camera-independent) setting, not a lens setting.
+      // Motion detection and RTSP/substream settings are global, not lens settings.
       if (param === 'motion_detection_enabled' || param === 'motion_sensitivity' ||
-        param === 'motion_record_stop_delay') return null;
+        param === 'motion_record_stop_delay' || param.startsWith('rtsp_')) return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -1370,11 +1430,23 @@
       const available = Array.from(select.options).some(o => o.value === desiredResolution);
       if (available) {
         select.value = desiredResolution;
-      } else if (desiredResolution !== 'auto') {
-        // Chosen size isn't supported by this camera: reconcile to Auto so the
-        // dropdown, desiredResolution and the server pref stay in sync.
-        setResolution('auto');
-        select.value = 'auto';
+      } else if (desiredResolution && desiredResolution !== 'auto') {
+        // The camera's reported size list can shrink while it is busy (Camera1 preview sizes
+        // are only enumerable when idle). Keep the user's saved choice as an option instead
+        // of falling back to Auto — otherwise this periodic refresh rewrites the server
+        // preference to "auto". If the camera truly lacks the size, the server negotiates
+        // the closest supported one.
+        const m = /^(\d+)x(\d+)$/.exec(desiredResolution);
+        if (m) {
+          const opt = document.createElement('option');
+          opt.value = desiredResolution;
+          opt.textContent = resolutionLabel(parseInt(m[1], 10), parseInt(m[2], 10));
+          select.appendChild(opt);
+          select.value = desiredResolution;
+        } else {
+          setResolution('auto');
+          select.value = 'auto';
+        }
       } else {
         select.value = 'auto';
       }
@@ -1479,8 +1551,24 @@
       }
     });
 
+    // RTSP/substream settings: the section only exists when the RTSP server is enabled, and the
+    // values come from /info.json (they are no longer in the Android settings screen).
+    function applySubstreamSettings(settings) {
+      if (!settings) return;
+      const isOn = (v) => v === true || v === 1 || v === 'true' || v === 'on' || v === '1';
+      const section = getElById('substreamSection');
+      if (section && settings.rtspEnabled !== undefined) {
+        section.style.display = isOn(settings.rtspEnabled) ? '' : 'none';
+      }
+      const audio = getElById('rtspAudioCheckbox');
+      if (audio && settings.rtspAudio !== undefined) {
+        audio.checked = isOn(settings.rtspAudio);
+      }
+    }
+
     function applyStreamSettings(settings) {
       if (!settings) return;
+      applySubstreamSettings(settings);
       if (settings.cameraId) {
         currentCamera = settings.cameraId;
         updateCameraSelectValue();
@@ -1628,6 +1716,8 @@
         .then(res => res.json())
         .then(data => {
           cameraList = Array.isArray(data.cameras) ? data.cameras : [];
+          // Visibility of the Substream section follows the RTSP setting even on periodic polls.
+          applySubstreamSettings(data.settings);
           if (applySettings) applyStreamSettings(data.settings);
           renderCameraControls();
           // If server provided per-camera lens settings for the selected camera,
