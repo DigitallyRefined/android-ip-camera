@@ -1,18 +1,29 @@
 import { lookup, resolve4 } from "node:dns/promises";
 import { isIP } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  BufferSource,
+  EncodedPacketSink,
+  Input,
+  MP4,
+  type EncodedPacket,
+  type InputVideoTrack,
+} from "mediabunny";
 import {
   H264Packetizer,
   MediaStreamTrack,
   RTCPeerConnection,
   useH264,
 } from "werift";
+import { parseAvcDecoderConfigurationRecord } from "werift/nonstandard";
 import type { MediaViewer } from "./relay";
 import type { DeviceConnection } from "./relay";
 
 /**
  * The relay is only a packetizer: H.264 access units arrive from the camera
  * over the outbound WebSocket and are wrapped in RTP for each browser viewer.
- * No media is buffered or written to disk.
+ * Recorded MP4s are demuxed in memory and packetized the same way. No media is
+ * written to disk.
  */
 
 interface IceServerConfig {
@@ -250,6 +261,16 @@ export interface WebRtcAnswer {
   sdp: string;
 }
 
+/** The file was readable but cannot be sent as-is over WebRTC. */
+export class UnsupportedRecordingError extends Error {}
+
+export interface WebRtcRecordingAnswer extends WebRtcAnswer {
+  /** Total recording duration in seconds. */
+  duration: number;
+  /** Presentation time, in seconds, of the first packet sent. */
+  startTime: number;
+}
+
 export class WebRtcBridge {
   private readonly connection: RTCPeerConnection;
   private readonly device: DeviceConnection;
@@ -359,6 +380,275 @@ export class WebRtcBridge {
       // Track already ended.
     }
     void this.connection.close().catch(() => {});
+  }
+}
+
+/**
+ * Plays an MP4 recording from the camera over WebRTC. The relay downloads the
+ * file through the existing camera HTTP proxy, demuxes its H.264 track in
+ * memory, and paces the packets to the viewer in real time. No transcoding is
+ * involved, so the recording must already be H.264 (which the app writes).
+ */
+export class WebRtcRecordingBridge {
+  private readonly connection: RTCPeerConnection;
+  private readonly track: MediaStreamTrack;
+  private readonly input: Input;
+  private readonly abort = new AbortController();
+  private startPlayback?: () => void;
+  private started = false;
+  private closed = false;
+
+  private constructor(
+    connection: RTCPeerConnection,
+    track: MediaStreamTrack,
+    input: Input,
+  ) {
+    this.connection = connection;
+    this.track = track;
+    this.input = input;
+
+    connection.onconnectionstatechange = () => {
+      const state = connection.connectionState;
+      if (state === "connected") {
+        // Wait for ICE/DTLS before sending RTP. Unlike a live stream, a
+        // recording has only one initial keyframe, so packets sent before the
+        // viewer is connected would leave it with a permanently black frame.
+        this.startPlayback?.();
+        return;
+      }
+      if (
+        state === "failed" ||
+        state === "closed" ||
+        state === "disconnected"
+      ) {
+        this.close();
+      }
+    };
+  }
+
+  static async answer(
+    offer: { type: string; sdp: string },
+    data: Buffer,
+    requestedStartTime = 0,
+  ): Promise<WebRtcRecordingAnswer> {
+    if (
+      offer.type !== "offer" ||
+      typeof offer.sdp !== "string" ||
+      offer.sdp.length === 0
+    ) {
+      throw new Error("Expected a WebRTC offer");
+    }
+
+    const input = new Input({
+      source: new BufferSource(data),
+      formats: [MP4],
+    });
+    let bridge: WebRtcRecordingBridge | undefined;
+    try {
+      if (!(await input.canRead())) {
+        throw new UnsupportedRecordingError(
+          "The recording is not a readable MP4 file",
+        );
+      }
+      const videoTrack = await input.getPrimaryVideoTrack();
+      if (!videoTrack) {
+        throw new UnsupportedRecordingError(
+          "The recording does not contain a video track",
+        );
+      }
+      const codec = await videoTrack.getCodec();
+      if (codec !== "avc") {
+        throw new UnsupportedRecordingError(
+          `Unsupported recording codec "${codec ?? "unknown"}". Only H.264 MP4 recordings can be streamed.`,
+        );
+      }
+
+      let duration = await input.getDurationFromMetadata([videoTrack]);
+      if (duration == null || !Number.isFinite(duration) || duration <= 0) {
+        duration = await input.computeDuration([videoTrack]);
+      }
+      if (!Number.isFinite(duration) || duration < 0) duration = 0;
+
+      const requested = Number.isFinite(requestedStartTime)
+        ? Math.max(0, requestedStartTime)
+        : 0;
+      const seekTarget =
+        duration > 0
+          ? Math.min(requested, Math.max(0, duration - 0.25))
+          : requested;
+      const sink = new EncodedPacketSink(videoTrack);
+      const startPacket =
+        (seekTarget > 0
+          ? await sink.getKeyPacket(seekTarget, { verifyKeyPackets: true })
+          : null) ?? (await sink.getFirstKeyPacket({ verifyKeyPackets: true }));
+      if (!startPacket) {
+        throw new UnsupportedRecordingError(
+          "The recording does not contain a video keyframe",
+        );
+      }
+      const startTimestamp = startPacket.timestamp;
+
+      const decoderConfig = await videoTrack.getDecoderConfig();
+      const description =
+        decoderConfig && "description" in decoderConfig
+          ? (decoderConfig.description ?? null)
+          : null;
+      const avcConfig = description
+        ? parseAvcDecoderConfigurationRecord(description)
+        : undefined;
+      // Keep the default profile-level-id. The browser advertises a fixed set
+      // of H.264 profiles in its offer, and the recording's real profile may
+      // not be in it; the in-band SPS/PPS still configure the decoder.
+      const videoCodec = useH264();
+
+      const connection = new RTCPeerConnection({
+        iceServers: bridgeConfig.iceServers,
+        icePortRange: bridgeConfig.icePortRange,
+        iceTransportPolicy: bridgeConfig.iceTransportPolicy,
+        codecs: { video: [videoCodec], audio: [] },
+        headerExtensions: { video: [], audio: [] },
+      });
+      const track = new MediaStreamTrack({
+        kind: "video",
+        codec: videoCodec,
+      });
+      connection.addTransceiver(track, { direction: "sendonly" });
+
+      const packetizer = new H264Packetizer({
+        payloadType: videoCodec.payloadType ?? 96,
+        ssrc: Math.floor(Math.random() * 0xffffffff) >>> 0,
+        maxPayloadSize: 1200,
+        naluLengthSize: avcConfig?.naluLengthSize,
+        parameterSets: avcConfig?.parameterSets,
+        // An avcC description means the samples are length-prefixed (AVCC).
+        inputFormat: avcConfig ? "length-prefixed" : "auto",
+      });
+
+      bridge = new WebRtcRecordingBridge(connection, track, input);
+      await connection.setRemoteDescription({
+        type: "offer",
+        sdp: offer.sdp,
+      });
+      const answer = await connection.createAnswer();
+      await connection.setLocalDescription(answer);
+      const local = connection.localDescription;
+      if (!local?.sdp) throw new Error("WebRTC answer did not contain an SDP");
+      const advertised = await advertisedAddress;
+      const sdp = advertised
+        ? rewriteAdvertisedAddress(local.sdp, advertised)
+        : local.sdp;
+
+      bridge.schedulePlayback(
+        videoTrack,
+        packetizer,
+        startPacket,
+        startTimestamp,
+      );
+      return { type: "answer", sdp, duration, startTime: startTimestamp };
+    } catch (error) {
+      if (bridge) bridge.close();
+      else input.dispose();
+      throw error;
+    }
+  }
+
+  /**
+   * Delay the first RTP packet until the peer is connected. The browser only
+   * starts ICE after it receives the SDP answer, so starting earlier would
+   * drop the recording's opening keyframe.
+   */
+  private schedulePlayback(
+    videoTrack: InputVideoTrack,
+    packetizer: H264Packetizer,
+    startPacket: EncodedPacket,
+    startTimestamp: number,
+  ): void {
+    this.startPlayback = () => {
+      if (this.closed || this.started) return;
+      this.started = true;
+      this.play(videoTrack, packetizer, startPacket, startTimestamp);
+    };
+    if (this.connection.connectionState === "connected") {
+      this.startPlayback();
+    }
+  }
+
+  private play(
+    videoTrack: InputVideoTrack,
+    packetizer: H264Packetizer,
+    startPacket: EncodedPacket,
+    startTimestamp: number,
+  ): void {
+    void this.runPlayback(
+      videoTrack,
+      packetizer,
+      startPacket,
+      startTimestamp,
+    ).catch((error) => {
+      if (!this.closed) {
+        console.error("Recording playback failed", error);
+      }
+      this.close();
+    });
+  }
+
+  private async runPlayback(
+    videoTrack: InputVideoTrack,
+    packetizer: H264Packetizer,
+    startPacket: EncodedPacket,
+    startTimestamp: number,
+  ): Promise<void> {
+    const sink = new EncodedPacketSink(videoTrack);
+    const startedAt = performance.now();
+    for await (const packet of sink.packets(startPacket, undefined, {
+      verifyKeyPackets: true,
+    })) {
+      if (this.closed) return;
+      const dueAtMs = (packet.timestamp - startTimestamp) * 1000;
+      const remainingMs = dueAtMs - (performance.now() - startedAt);
+      if (remainingMs > 0) {
+        await delay(remainingMs, undefined, { signal: this.abort.signal });
+      }
+      if (this.closed) return;
+
+      const rtpTimestamp =
+        Math.floor((packet.timestamp - startTimestamp) * 90_000) >>> 0;
+      const data = Buffer.from(
+        packet.data.buffer,
+        packet.data.byteOffset,
+        packet.data.byteLength,
+      );
+      for (const rtpPacket of packetizer.packetize(data, rtpTimestamp, {
+        isKeyframe: packet.type === "key",
+      })) {
+        this.track.writeRtp(rtpPacket);
+      }
+    }
+
+    if (this.closed) return;
+    // Give the browser a moment to render the final frames, then end the peer.
+    await delay(1_000, undefined, { signal: this.abort.signal }).catch(
+      () => {},
+    );
+    this.close();
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.startPlayback = undefined;
+    this.abort.abort();
+    try {
+      this.track.stop();
+    } catch {
+      // Track already ended.
+    }
+    void this.connection.close().catch(() => {});
+    try {
+      this.input.dispose();
+    } catch {
+      // Input already disposed.
+    }
   }
 }
 

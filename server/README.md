@@ -39,34 +39,54 @@ view. Both sides must be reset before pairing the phone again.
 
 ## Endpoints
 
-| Endpoint                           | Purpose                                              |
-| ---------------------------------- | ---------------------------------------------------- |
-| `GET /api/status`                  | Associated devices, online state, WebRTC ICE summary |
-| `POST /api/pairing`                | Create a one-time pairing code and intent link       |
-| `POST /api/associate`              | Exchange a code for a device ID + bearer token       |
-| `PATCH /api/devices/:id`           | Rename a device                                      |
-| `DELETE /api/devices/:id`          | Forget a device                                      |
-| `GET /r/:deviceId/*`               | In-memory HTTP proxy to the camera                   |
-| `POST /api/webrtc/:deviceId/offer` | WebRTC SDP offer/answer for live H.264               |
-| `WS /ws/device`                    | Camera's authenticated outbound connection           |
+| Endpoint                                     | Purpose                                              |
+| -------------------------------------------- | ---------------------------------------------------- |
+| `GET /api/status`                            | Associated devices, online state, WebRTC ICE summary |
+| `POST /api/pairing`                          | Create a one-time pairing code and intent link       |
+| `POST /api/associate`                        | Exchange a code for a device ID + bearer token       |
+| `PATCH /api/devices/:id`                     | Rename a device                                      |
+| `DELETE /api/devices/:id`                    | Forget a device                                      |
+| `GET /r/:deviceId/*`                         | In-memory HTTP proxy to the camera                   |
+| `POST /api/webrtc/:deviceId/offer`           | WebRTC SDP offer/answer for live H.264               |
+| `POST /api/webrtc/:deviceId/recording/offer` | Fetch and stream an H.264 MP4 recording over WebRTC  |
+| `WS /ws/device`                              | Camera's authenticated outbound connection           |
 
 The browser never receives the camera's Basic-auth credentials. The app injects
 them when it replays a relayed request against `127.0.0.1:<streaming port>`.
 
+The dashboard's **Recordings** browser lists the camera's `/files.json`
+recording folders. Select an MP4 to fetch it through the relay and play it over
+WebRTC. Recording playback currently supports video-only H.264 MP4 files (the
+format written by the app); it does not transcode. The relay buffers a recording
+in memory before playback and rejects files larger than
+`WEBRTC_RECORDING_MAX_BYTES` (512 MiB by default). The camera must stay online
+until the file has been fetched; playback then continues from the relay's
+in-memory copy.
+
+The player's scrub bar seeks by renegotiating WebRTC from the nearest H.264
+keyframe instead of downloading a byte range. The offer body is
+`{ type, sdp, path, startTime? }`, where `startTime` is in seconds; the answer
+includes the recording `duration` and the actual keyframe `startTime`. Downloaded
+recordings are kept in an LRU cache (`WEBRTC_RECORDING_CACHE_BYTES`, defaulting
+to `WEBRTC_RECORDING_MAX_BYTES`) so repeated seeks do not refetch the file from
+the camera. Deleting a recording through the relay also drops its cached copy.
+
 ## Configuration
 
-| Variable                 | Default                      | Meaning                                         |
-| ------------------------ | ---------------------------- | ----------------------------------------------- |
-| `PORT`                   | `3000`                       | HTTP listen port                                |
-| `DB_PATH`                | `./data/relay.sqlite`        | SQLite file for devices + pairing codes         |
-| `PUBLIC_URL`             | request origin               | Public origin used in pairing links             |
-| `WEBRTC_STUN_URLS`       | Google STUN                  | Comma-separated STUN/TURN URLs                  |
-| `WEBRTC_TURN_URL`        | unset                        | Extra TURN URL used by the relay and viewers    |
-| `WEBRTC_TURN_USERNAME`   | unset                        | TURN username                                   |
-| `WEBRTC_TURN_CREDENTIAL` | unset                        | TURN password                                   |
-| `WEBRTC_UDP_PORT_RANGE`  | ephemeral                    | Fixed UDP range, for example `40000-40100`      |
-| `WEBRTC_ADVERTISE_HOST`  | private `PUBLIC_URL` address | Host/IP viewers use for WebRTC candidates       |
-| `WEBRTC_FORCE_TURN`      | `false`                      | Force `iceTransportPolicy: relay` on both sides |
+| Variable                       | Default                      | Meaning                                              |
+| ------------------------------ | ---------------------------- | ---------------------------------------------------- |
+| `PORT`                         | `3000`                       | HTTP listen port                                     |
+| `DB_PATH`                      | `./data/relay.sqlite`        | SQLite file for devices + pairing codes              |
+| `PUBLIC_URL`                   | request origin               | Public origin used in pairing links                  |
+| `WEBRTC_STUN_URLS`             | Google STUN                  | Comma-separated STUN/TURN URLs                       |
+| `WEBRTC_TURN_URL`              | unset                        | Extra TURN URL used by the relay and viewers         |
+| `WEBRTC_TURN_USERNAME`         | unset                        | TURN username                                        |
+| `WEBRTC_TURN_CREDENTIAL`       | unset                        | TURN password                                        |
+| `WEBRTC_UDP_PORT_RANGE`        | ephemeral                    | Fixed UDP range, for example `40000-40100`           |
+| `WEBRTC_ADVERTISE_HOST`        | private `PUBLIC_URL` address | Host/IP viewers use for WebRTC candidates            |
+| `WEBRTC_FORCE_TURN`            | `false`                      | Force `iceTransportPolicy: relay` on both sides      |
+| `WEBRTC_RECORDING_MAX_BYTES`   | `536870912` (512 MiB)        | Maximum MP4 size buffered for one recording playback |
+| `WEBRTC_RECORDING_CACHE_BYTES` | same as max bytes            | LRU memory budget for downloaded recordings          |
 
 Copy `.env.example` to `.env` and adjust the public URL and, if needed, TURN
 credentials. `PUBLIC_URL` matters when the server sits behind a reverse proxy,
@@ -166,6 +186,13 @@ docker run --rm -e HOME=/tmp -v "$PWD/server:/app" -w /app oven/bun:1.4.4-alpine
 - Device tokens are random 256-bit values; only their SHA-256 hashes are stored.
 - Pairing codes expire after 10 minutes and are single-use.
 - The relay does not persist request bodies, snapshots, audio, or video.
+- Recording playback buffers one MP4 in relay memory, capped by
+  `WEBRTC_RECORDING_MAX_BYTES`; concurrent recordings can each use up to that
+  limit. Playback data is discarded when the WebRTC session ends.
+- Recently played recordings remain in an LRU cache bounded by
+  `WEBRTC_RECORDING_CACHE_BYTES`. A recording that is still being played stays
+  alive even if a newer one evicts it from the cache, so peak memory can exceed
+  the cache limit while sessions are active.
 - `/r/:deviceId/*` is only reachable while that camera's WebSocket is online.
 - Pairing codes themselves are the authorization to add a camera. A camera can
   always remove its own record with its device token, which is what the app's

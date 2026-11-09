@@ -10,13 +10,222 @@ import {
   renameDevice,
 } from "./db";
 import { forwardHeaders, getDeviceConnection, onlineDeviceIds } from "./relay";
+import type { DeviceConnection } from "./relay";
+import { cameraProxyPath } from "./proxyPath";
+import { RecordingCache } from "./recordingCache";
 import {
   authFailure,
   json,
   parseBasicCredentials,
   publicBaseUrl,
 } from "./utils";
-import { WebRtcBridge, webrtcConfigSummary } from "./webrtc";
+import {
+  UnsupportedRecordingError,
+  WebRtcBridge,
+  WebRtcRecordingBridge,
+  webrtcConfigSummary,
+} from "./webrtc";
+
+const DEFAULT_RECORDING_MAX_BYTES = 512 * 1024 * 1024;
+
+function recordingMaxBytes(): number {
+  const raw = process.env.WEBRTC_RECORDING_MAX_BYTES?.trim();
+  if (!raw) return DEFAULT_RECORDING_MAX_BYTES;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    console.warn(`Ignoring invalid WEBRTC_RECORDING_MAX_BYTES=${raw}`);
+    return DEFAULT_RECORDING_MAX_BYTES;
+  }
+  return value;
+}
+
+const RECORDING_MAX_BYTES = recordingMaxBytes();
+
+function recordingCacheBytes(): number {
+  const raw = process.env.WEBRTC_RECORDING_CACHE_BYTES?.trim();
+  if (!raw) return RECORDING_MAX_BYTES;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    console.warn(`Ignoring invalid WEBRTC_RECORDING_CACHE_BYTES=${raw}`);
+    return RECORDING_MAX_BYTES;
+  }
+  return value;
+}
+
+const recordingCache = new RecordingCache(recordingCacheBytes());
+const pendingRecordings = new Map<string, Promise<Buffer>>();
+
+class RecordingTooLargeError extends Error {}
+
+class CameraRecordingError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+function recordingCacheKey(deviceId: string, path: string): string {
+  return `${deviceId}\n${path}`;
+}
+
+function invalidateCachedRecording(deviceId: string, path: string): void {
+  recordingCache.invalidate(recordingCacheKey(deviceId, path));
+  recordingCache.invalidatePrefix(`${recordingCacheKey(deviceId, path)}/`);
+}
+
+/** A proxied DELETE can remove a file or a folder, so invalidate both. */
+function invalidateDeletedRecordingPath(
+  deviceId: string,
+  requestPath: string,
+): void {
+  const pathname = requestPath.split("?")[0] ?? "";
+  if (!pathname.startsWith("/files/")) return;
+  let decoded: string;
+  try {
+    decoded = pathname
+      .slice("/files/".length)
+      .split("/")
+      .map(decodeURIComponent)
+      .join("/");
+  } catch {
+    return;
+  }
+  if (!decoded) return;
+  invalidateCachedRecording(deviceId, decoded);
+}
+
+/**
+ * Recording paths are relative to the camera's recordings root. Reject
+ * anything that could escape it or reach a non-recording file.
+ */
+function normalizeRecordingPath(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined;
+  if (raw.startsWith("/") || raw.includes("\\")) return undefined;
+  for (const character of raw) {
+    const code = character.charCodeAt(0);
+    if (code < 32 || code === 127) return undefined;
+  }
+  const segments = raw.split("/");
+  if (
+    segments.some(
+      (segment) => segment.length === 0 || segment === "." || segment === "..",
+    )
+  ) {
+    return undefined;
+  }
+  if (!/\.mp4$/i.test(raw)) return undefined;
+  return segments.join("/");
+}
+
+/** Percent-encode each segment but keep the separators the camera expects. */
+function encodeRecordingPath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+function basicAuthHeader(username: string, password: string): string {
+  return `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`;
+}
+
+async function readRecordingBody(
+  response: Response,
+  maxBytes: number,
+): Promise<Buffer> {
+  const declared = Number(response.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new RecordingTooLargeError(
+      `The recording is larger than the ${maxBytes}-byte relay limit`,
+    );
+  }
+  if (!response.body) {
+    throw new Error("The camera returned an empty response");
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new RecordingTooLargeError(
+          `The recording is larger than the ${maxBytes}-byte relay limit`,
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
+
+async function fetchRecording(
+  device: DeviceConnection,
+  credentials: { username: string; password: string },
+  recordingPath: string,
+): Promise<Buffer> {
+  const headers: Record<string, string> = {};
+  if (credentials.username || credentials.password) {
+    headers.authorization = basicAuthHeader(
+      credentials.username,
+      credentials.password,
+    );
+  }
+
+  const response = await device.proxyRequest(
+    "GET",
+    `/files/${encodeRecordingPath(recordingPath)}`,
+    headers,
+  );
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    if (response.status === 404) {
+      throw new CameraRecordingError("Recording not found", 404);
+    }
+    throw new CameraRecordingError(
+      `The camera returned ${response.status} ${response.statusText}`,
+      502,
+    );
+  }
+
+  return readRecordingBody(response, RECORDING_MAX_BYTES);
+}
+
+/**
+ * Return a downloaded recording, sharing an in-flight fetch for the same file
+ * so a scrub that arrives while the first request is still downloading does
+ * not open a second camera request.
+ */
+async function loadRecording(
+  device: DeviceConnection,
+  credentials: { username: string; password: string },
+  recordingPath: string,
+): Promise<Buffer> {
+  const key = recordingCacheKey(device.deviceId, recordingPath);
+  const cached = recordingCache.get(key);
+  if (cached) return cached;
+
+  let pending = pendingRecordings.get(key);
+  if (!pending) {
+    pending = fetchRecording(device, credentials, recordingPath)
+      .then((data) => {
+        recordingCache.set(key, data);
+        return data;
+      })
+      .finally(() => {
+        pendingRecordings.delete(key);
+      });
+    pendingRecordings.set(key, pending);
+  }
+  return pending;
+}
 
 export async function handleStatus(): Promise<Response> {
   const devices = await listDevices();
@@ -158,9 +367,7 @@ export async function handleProxy(
   }
 
   const url = new URL(request.url);
-  const params = request.params as Record<string, string>;
-  const suffix = params["*"] ?? "";
-  const path = `/${suffix}${url.search}`;
+  const path = cameraProxyPath(url, deviceId);
   const method = request.method.toUpperCase();
   const body =
     method === "GET" || method === "HEAD"
@@ -177,6 +384,9 @@ export async function handleProxy(
     // Keep browser caching out of the live-camera path.
     if (!response.headers.has("Cache-Control")) {
       response.headers.set("Cache-Control", "no-store");
+    }
+    if (method === "DELETE" && response.ok) {
+      invalidateDeletedRecordingPath(deviceId, path);
     }
     return response;
   } catch (error) {
@@ -230,6 +440,81 @@ export async function handleWebRtcOffer(
     return json(answer);
   } catch (error) {
     console.error("WebRTC negotiation failed", error);
+    return json(
+      {
+        error:
+          error instanceof Error ? error.message : "WebRTC negotiation failed",
+      },
+      502,
+    );
+  }
+}
+
+export async function handleWebRtcRecordingOffer(
+  request: BunRequest<"/api/webrtc/:deviceId/recording/offer">,
+): Promise<Response> {
+  if (request.method !== "POST")
+    return json({ error: "Method not allowed" }, 405);
+  const device = getDeviceConnection(request.params.deviceId);
+  if (!device) return json({ error: "Camera is offline" }, 503);
+
+  let body: {
+    type?: unknown;
+    sdp?: unknown;
+    path?: unknown;
+    startTime?: unknown;
+  };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Expected a JSON body" }, 400);
+  }
+  if (
+    body.type !== "offer" ||
+    typeof body.sdp !== "string" ||
+    body.sdp.length === 0
+  ) {
+    return json({ error: "Expected a WebRTC offer" }, 400);
+  }
+
+  const recordingPath = normalizeRecordingPath(body.path);
+  if (!recordingPath) {
+    return json(
+      { error: "Expected a recording path relative to the recordings folder" },
+      400,
+    );
+  }
+
+  const credentials = parseBasicCredentials(request);
+  try {
+    const auth = await device.checkAuth(
+      credentials.username,
+      credentials.password,
+    );
+    if (!auth.ok) return authFailure(auth);
+
+    const startTime =
+      typeof body.startTime === "number" && Number.isFinite(body.startTime)
+        ? Math.max(0, body.startTime)
+        : 0;
+    const data = await loadRecording(device, credentials, recordingPath);
+    const answer = await WebRtcRecordingBridge.answer(
+      { type: "offer", sdp: body.sdp },
+      data,
+      startTime,
+    );
+    return json(answer);
+  } catch (error) {
+    if (error instanceof CameraRecordingError) {
+      return json({ error: error.message }, error.status);
+    }
+    if (error instanceof RecordingTooLargeError) {
+      return json({ error: error.message }, 413);
+    }
+    if (error instanceof UnsupportedRecordingError) {
+      return json({ error: error.message }, 415);
+    }
+    console.error("WebRTC recording negotiation failed", error);
     return json(
       {
         error:

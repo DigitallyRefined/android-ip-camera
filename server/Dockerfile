@@ -16,7 +16,7 @@ COPY . .
 ENV NODE_ENV=production
 RUN bunx @tailwindcss/cli --minify -i ./src/frontend/index.css -o ./src/frontend/index-out.css
 RUN mv ./src/frontend/index-out.css ./src/frontend/index.css
-RUN bun build src/index.ts --minify --target=bun --outdir=dist
+RUN bun build src/index.ts --minify --target=bun --outdir=dist --asset-naming='[dir]/[name].[ext]'
 
 EXPOSE 3000
 

@@ -5,7 +5,7 @@ import {
 } from "../../shared/deviceName";
 import { requestJson } from "../api";
 import type { Device, RelayStatus } from "../types";
-import { LiveView } from "./LiveView";
+import { CameraView } from "./CameraView";
 
 export function Dashboard({
   status,
@@ -100,34 +100,15 @@ export function Dashboard({
       )}
 
       {status.devices.map((device) => (
-        <section key={device.id} className="space-y-3">
-          <LiveView
-            device={device}
-            iceServers={status.webrtc.iceServers}
-            iceTransportPolicy={status.webrtc.iceTransportPolicy}
-            advertiseHost={status.webrtc.advertiseHost}
-          />
-          <div className="flex flex-wrap items-center justify-end gap-4">
-            <button
-              type="button"
-              onClick={() => void renameDevice(device)}
-              disabled={renaming === device.id || removing === device.id}
-              className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
-            >
-              {renaming === device.id ? "Renaming…" : "Rename camera"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void removeDevice(device)}
-              disabled={removing === device.id || renaming === device.id}
-              className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-destructive hover:underline disabled:opacity-50"
-            >
-              {removing === device.id
-                ? "Removing…"
-                : "Remove this camera from the relay"}
-            </button>
-          </div>
-        </section>
+        <CameraView
+          key={device.id}
+          device={device}
+          webrtc={status.webrtc}
+          renaming={renaming === device.id}
+          removing={removing === device.id}
+          onRename={() => void renameDevice(device)}
+          onRemove={() => void removeDevice(device)}
+        />
       ))}
     </main>
   );

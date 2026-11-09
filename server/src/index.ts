@@ -9,6 +9,7 @@ import {
   handleStatus,
   handleWebRtcAuth,
   handleWebRtcOffer,
+  handleWebRtcRecordingOffer,
 } from "./backend/routes";
 import { json } from "./backend/utils";
 import {
@@ -37,6 +38,10 @@ const server = serve({
       handleWebRtcOffer(request as BunRequest<"/api/webrtc/:deviceId/offer">),
     "/api/webrtc/:deviceId/auth": (request) =>
       handleWebRtcAuth(request as BunRequest<"/api/webrtc/:deviceId/auth">),
+    "/api/webrtc/:deviceId/recording/offer": (request) =>
+      handleWebRtcRecordingOffer(
+        request as BunRequest<"/api/webrtc/:deviceId/recording/offer">,
+      ),
     "/ws/device": (request, server) => handleDeviceSocket(request, server),
     "/r/:deviceId/*": (request) =>
       handleProxy(request as BunRequest<"/r/:deviceId/*">),
