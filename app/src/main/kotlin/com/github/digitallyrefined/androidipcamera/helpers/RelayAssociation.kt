@@ -45,6 +45,15 @@ object RelayAssociation {
         return PairingIntent(normalizeServer(server), code)
     }
 
+    /**
+     * Parse a pairing link shared as plain text (ACTION_SEND). Some QR scanners
+     * only offer "share text" instead of opening custom-scheme links.
+     */
+    fun parseSharedText(text: String?): PairingIntent? {
+        if (text.isNullOrBlank()) return null
+        return parseIntent(Uri.parse(text.trim()))
+    }
+
     fun normalizeServer(raw: String): String {
         var value = raw.trim().trimEnd('/')
         if (!value.startsWith("http://", ignoreCase = true) &&

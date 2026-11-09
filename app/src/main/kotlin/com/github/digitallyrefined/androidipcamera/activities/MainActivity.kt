@@ -289,10 +289,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun captureAssociationIntent(intent: Intent?) {
-        val pairing = RelayAssociation.parseIntent(intent?.data) ?: return
-        // Consume the deep link so a configuration change does not replay the
-        // one-time pairing code.
-        intent?.data = null
+        if (intent == null) return
+        // Some QR scanners (e.g. LineageOS) cannot open custom-scheme links and
+        // only offer to share the scanned text, so accept the link via
+        // ACTION_SEND as well as the normal VIEW deep link.
+        val sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+        val pairing = RelayAssociation.parseIntent(intent.data)
+            ?: RelayAssociation.parseSharedText(sharedText)
+            ?: return
+        // Consume the deep link/shared text so a configuration change does not
+        // replay the one-time pairing code.
+        intent.data = null
+        intent.removeExtra(Intent.EXTRA_TEXT)
+        intent.clipData = null
         pendingAssociation = pairing
         Log.i(TAG, "Association intent for ${pairing.serverUrl}")
         processPendingAssociation()

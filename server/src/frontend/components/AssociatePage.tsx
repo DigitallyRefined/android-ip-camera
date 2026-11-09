@@ -122,7 +122,7 @@ export function AssociatePage({
           <li>
             <span className="hidden sm:inline">
               Open your <strong>default</strong> camera app or QR scanner app
-              and tap the QR code to associate this device.
+              and tap or share the QR code to the app to associate this device.
             </span>
             <span className="sm:hidden">
               Tap the link above on this device to associate it.

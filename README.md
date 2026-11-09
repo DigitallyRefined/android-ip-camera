@@ -3,7 +3,7 @@
 [![downloads](https://img.shields.io/github/downloads/DigitallyRefined/android-ip-camera/total.svg)](https://github.com/DigitallyRefined/android-ip-camera/releases)
 [![downloads](https://img.shields.io/github/downloads/DigitallyRefined/android-ip-camera/latest/total.svg)](https://github.com/DigitallyRefined/android-ip-camera/releases)
 
-An Android H.264 / MJPEG IP Camera app
+Turn your Android device into a remote security IP camera
 
 ![Desktop Browser](screenshot.webp)
 
@@ -31,10 +31,23 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🛰️ Optional ONVIF camera mode with WS-Discovery, snapshots and motion events for UniFi Protect, Home Assistant and other NVRs
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
+* ☁️ Optionally connect your device to a hosted or [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/server) cloud relay server for remote access for when your not on your home/work network
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
 * 🛂 Username and password protection
 * 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS/RTSPS
 * 🥾 Optional start on boot
+
+## 🔓 Why open source
+
+Other similar IP camera apps exist, but most are closed source. You cannot verify that they keep video on the device, that they never send recordings to someone else, or that security issues get fixed. With this app you can.
+
+This app is open source so you do not have to take its privacy claims on trust. The code that controls the camera, encodes video and handles logins is in this repository. You can read it, build it and compare it with the APK you install.
+
+By default, video stays on your local network. The phone serves the stream and the recordings directly to the clients you point at it. Nothing leaves your network unless you explicitly pair the camera with a relay server for remote access. Recordings are written to the phone, not uploaded anywhere.
+
+Logins and streams are protected by username and password authentication across the web, RTSP and ONVIF endpoints. When TLS is enabled, the same certificate encrypts all three. You can check how credentials and certificates are handled in the source instead of trusting a privacy policy.
+
+The F-Droid release is built from this same source, and the [reproducible build workflow](https://github.com/DigitallyRefined/android-ip-camera/actions/workflows/reproducible-build.yml) checks a clean rebuild against it.
 
 ## ⚠️ Warning
 

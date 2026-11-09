@@ -45,6 +45,13 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="androidipcamera" android:host="associate" />
             </intent-filter>
+            <!-- Some QR scanners (e.g. LineageOS) can only share the scanned text
+                 instead of opening the androidipcamera:// link directly. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
         <activity
             android:name=".activities.SettingsActivity"
