@@ -79,12 +79,15 @@ class LocalRecorder(
             released = false
             firstPtsUs = Long.MIN_VALUE
             lastPtsUs = -1L
-            val filename = generateFilename()
+            val now = Date()
+            val folder = generateFolder(now)
+            val filename = generateFilename(now)
 
             try {
-                val customFolder = RecordingsHelper.customRoot(context)
-                if (customFolder != null) {
+                if (RecordingsHelper.customRoot(context) != null) {
                     // User-chosen folder (SAF tree, possibly on an SD card)
+                    val customFolder = RecordingsHelper.ensureCustomDirectory(context, folder)
+                        ?: throw IllegalStateException("Failed to create recording folder in custom storage")
                     val document = customFolder.createFile("video/mp4", filename)
                         ?: throw IllegalStateException("Failed to create file in custom folder")
                     val uri = document.uri
@@ -98,7 +101,7 @@ class LocalRecorder(
                     val values = ContentValues().apply {
                         put(MediaStore.Video.Media.DISPLAY_NAME, filename)
                         put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                        put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/$SUBDIR")
+                        put(MediaStore.Video.Media.RELATIVE_PATH, "${RecordingsHelper.DEFAULT_RELATIVE_PATH}/$folder")
                         put(MediaStore.Video.Media.IS_PENDING, 1)
                     }
                     val uri = context.contentResolver.insert(
@@ -113,8 +116,11 @@ class LocalRecorder(
                     // API 24-28: Legacy file I/O
                     @Suppress("DEPRECATION")
                     val dir = File(
-                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
-                        SUBDIR
+                        File(
+                            Environment.getExternalStoragePublicDirectory(RecordingsHelper.DEFAULT_PUBLIC_DIR),
+                            SUBDIR
+                        ),
+                        folder
                     )
                     dir.mkdirs()
                     val file = File(dir, filename)
@@ -380,8 +386,11 @@ class LocalRecorder(
         outputFile = null
     }
 
-    private fun generateFilename(): String {
-        val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
-        return "ipcam_${sdf.format(Date())}.mp4"
-    }
+    /** Manual recordings are grouped by year, month and day: YYYY/MM/DD. */
+    private fun generateFolder(date: Date): String =
+        SimpleDateFormat("yyyy/MM/dd", Locale.US).format(date)
+
+    /** File name inside the folder: YYYY-MM-DD-HHMMSS.mp4. */
+    private fun generateFilename(date: Date): String =
+        SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(date) + ".mp4"
 }

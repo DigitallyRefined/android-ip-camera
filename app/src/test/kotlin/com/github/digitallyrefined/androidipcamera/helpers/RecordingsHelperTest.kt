@@ -1,6 +1,8 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -28,5 +30,24 @@ class RecordingsHelperTest {
         assertFalse(RecordingsHelper.isValidFileName("   "))
         assertFalse(RecordingsHelper.isValidFileName("bad\u0000name.mp4"))
         assertFalse(RecordingsHelper.isValidFileName("bad\r\nInjected-Header: 1"))
+    }
+
+    @Test
+    fun `normalizes nested recording paths`() {
+        assertEquals("", RecordingsHelper.normalizeRelativePath(null))
+        assertEquals("", RecordingsHelper.normalizeRelativePath(""))
+        assertEquals("2026", RecordingsHelper.normalizeRelativePath("2026"))
+        assertEquals("2026/11/09", RecordingsHelper.normalizeRelativePath("2026/11/09"))
+        assertEquals("2026/11/09", RecordingsHelper.normalizeRelativePath("2026/11/09/"))
+        assertEquals("2026/11/09/clip.mp4", RecordingsHelper.normalizeRelativePath("2026/11/09/clip.mp4"))
+    }
+
+    @Test
+    fun `rejects unsafe relative paths`() {
+        assertNull(RecordingsHelper.normalizeRelativePath("/2026/11/09"))
+        assertNull(RecordingsHelper.normalizeRelativePath("../secret.mp4"))
+        assertNull(RecordingsHelper.normalizeRelativePath("2026/../../secret.mp4"))
+        assertNull(RecordingsHelper.normalizeRelativePath("2026\\11\\09\\clip.mp4"))
+        assertNull(RecordingsHelper.normalizeRelativePath("2026/11/09/bad\u0000name.mp4"))
     }
 }

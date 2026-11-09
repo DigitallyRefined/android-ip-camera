@@ -165,7 +165,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, Wi-Fi signal strength and individual camera len settings.
   * **Format:** `application/json`
 * **Start Recording (`/record/start`, POST)**
-  * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running.
+  * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Files are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS.mp4` inside the recordings folder.
   * **Responses:**
     * `201 Created`: Recording started; returns the recording status JSON.
     * `409 Conflict`: `{"error":"already_recording", ...}` — a recording is already in progress.
@@ -181,20 +181,20 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query whether a local MP4 recording is currently active.
   * **Format:** `application/json` — `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>}` (or `{"recording":false}` when idle).
 * **Recordings Index (`/files`)**
-  * **Usage:** Open `https://[ip_address]:[port]/files` in a web browser for a folder index of the recordings stored on the device (`Movies/AndroidIPCamera`). Lists files only — no subfolder browsing.
-  * **Format:** `text/html` — static page shell that loads the file list from `/files.json`, renders each file as a link to its download URL plus a Delete button (with a browser confirmation prompt) that issues a `DELETE /files/<filename>` request.
+  * **Usage:** Open `https://[ip_address]:[port]/files` in a web browser for a folder browser of the recordings stored on the device (`Movies/AndroidIPCamera`). Folders can be opened from the list or via the breadcrumb.
+  * **Format:** `text/html` — static page shell that loads the current folder listing from `/files.json?dir=<relative path>`, renders folders as navigation links, and renders every entry with a Delete button (with a browser confirmation prompt) that issues a `DELETE /files/<relative path>` request. Deleting a folder removes the folder and all of its contents.
 * **Recordings List JSON (`/files.json`)**
-  * **Usage:** Query the recordings folder listing programmatically or feed custom front-ends.
-  * **Format:** `application/json` — `{"folder":<string>, "files":[{"name":<string>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
-* **Download Recording (`/files/<filename>`, GET)**
-  * **Usage:** Download a recorded MP4 from the device. Browsers save the file instead of playing it (`Content-Disposition: attachment`).
-  * **Responses:** `200 OK` with the file bytes, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid file names.
-* **Delete Recording (`/files/<filename>`, DELETE)**
-  * **Usage:** Permanently delete a recorded MP4 from the device.
+  * **Usage:** Query a recordings folder listing programmatically or feed custom front-ends. Use `?dir=2026/11/09` to list a subfolder; omit `dir` for the recordings root.
+  * **Format:** `application/json` — `{"folder":<string>, "path":<string>, "entries":[{"name":<string>, "isDirectory":<bool>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
+* **Download Recording (`/files/<relative path>`, GET)**
+  * **Usage:** Download a recorded MP4 from the device. Browsers save the file instead of playing it (`Content-Disposition: attachment`). Path segments include recording folders, e.g. `/files/2026/11/09/2026-11-09-093000.mp4`.
+  * **Responses:** `200 OK` with the file bytes, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid paths.
+* **Delete Recording (`/files/<relative path>`, DELETE)**
+  * **Usage:** Permanently delete a recorded MP4, or delete a folder and everything below it. The recordings root itself cannot be deleted.
   * **Responses:**
-    * `200 OK`: `{"deleted":true}` — file deleted.
-    * `404 Not Found`: `{"error":"not_found"}` — no such file in the recordings folder.
-    * `500 Internal Server Error`: `{"error":"delete_failed"}` — the file exists but could not be deleted.
+    * `200 OK`: `{"deleted":true}` — file or folder deleted.
+    * `404 Not Found`: `{"error":"not_found"}` — no such file or folder in the recordings folder.
+    * `500 Internal Server Error`: `{"error":"delete_failed"}` — the entry exists but could not be deleted.
 * **Enable Streaming (`/control/start`)**
   * **Usage:** Re-enable streaming of the media routes after it has been disabled (e.g. by a home-automation system).
   * **Format:** `application/json` — `{"streaming":true}`

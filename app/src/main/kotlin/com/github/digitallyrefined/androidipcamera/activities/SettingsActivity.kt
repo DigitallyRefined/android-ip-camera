@@ -429,7 +429,7 @@ class SettingsActivity : AppCompatActivity() {
                         .apply()
                     findPreference<Preference>("recording_storage_uri")?.summary = recordingStorageSummary()
                     Toast.makeText(requireContext(),
-                        "Recordings will be saved to Movies/AndroidIPCamera",
+                        "Recordings will be saved to ${RecordingsHelper.DEFAULT_RELATIVE_PATH}",
                         Toast.LENGTH_SHORT).show()
                     true
                 }

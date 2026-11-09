@@ -166,6 +166,17 @@
       display: block;
     }
 
+    .recordings-frame {
+      display: block;
+      width: 100%;
+      /* Fill the remaining viewport below the panel header; never shrink below 300px. */
+      height: calc(100vh - 670px);
+      min-height: 300px;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #121212;
+    }
+
     .spinner {
       width: 28px;
       height: 28px;
@@ -389,6 +400,14 @@
             <div style="display:flex; gap:8px; margin-bottom:8px;">
               <button id="recordToggleBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
               <button id="snapBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="takeSnapshot()">📸 Take Snapshot</button>
+            </div>
+
+            <div id="recordingsSection">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
+                <span class="group-title" style="margin:0;">Recordings</span>
+                <button class="btn" style="padding:4px 10px; font-size:12px;" onclick="refreshRecordings()">↻ Refresh</button>
+              </div>
+              <iframe id="recordingsFrame" class="recordings-frame" title="Recordings" src="/files"></iframe>
             </div>
           </div>
         </div>
@@ -1673,6 +1692,25 @@
         .catch(() => {});
     }
 
+    function refreshRecordings() {
+      const frame = getElById('recordingsFrame');
+      if (!frame) return;
+      // Keep the folder being browsed, and cache-bust so new recordings show immediately.
+      let dir = '';
+      try {
+        dir = new URL(frame.contentWindow.location.href).searchParams.get('dir') || '';
+      } catch (_) { }
+      frame.src = '/files?dir=' + encodeURIComponent(dir) + '&ts=' + Date.now();
+    }
+
+    function showRecordings() {
+      const section = getElById('recordingsSection');
+      if (!section) return;
+      section.style.display = '';
+      refreshRecordings();
+      try { section.scrollIntoView({ block: 'nearest' }); } catch (_) { }
+    }
+
     function toggleRecording() {
       const wasRecording = isRecording;
       const url = wasRecording ? '/record/stop' : '/record/start';
@@ -1682,8 +1720,8 @@
           if (data.error) {
             alert('Recording Message: ' + (data.message || data.error));
           } else if (wasRecording) {
-            // Recording stopped: show the recordings list
-            window.open('/files', 'recordings');
+            // Recording stopped: show the recordings list inline under Capture.
+            showRecordings();
           }
           checkRecordingStatus();
         })
