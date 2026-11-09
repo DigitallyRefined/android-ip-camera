@@ -96,6 +96,10 @@ class StreamingService : LifecycleService() {
      *  session-bound torch, a setTorchMode torch survives process death. */
     @Volatile private var deviceTorchOn = false
     @Volatile private var localRecorder: LocalRecorder? = null
+    /** Serializes manual and motion-triggered recording start/stop transitions. */
+    private val recordingLock = Any()
+    /** Pending auto-stop for a motion-triggered recording (cancelled when motion resumes). */
+    @Volatile private var motionStopJob: kotlinx.coroutines.Job? = null
     /** Smaller encoder feeding the RTSP sub stream (/live/sub) while it has viewers. */
     @Volatile private var subEncoder: H264HardwareEncoder? = null
 
@@ -475,6 +479,7 @@ class StreamingService : LifecycleService() {
             motionMonitor = MotionMonitor(this) { active ->
                 Log.i(TAG, "Motion ${if (active) "started" else "ended"}")
                 onvifServer?.setMotion(active)
+                handleMotionRecording(active)
             }
             rtspServer = RtspServer(
                 AndroidRtspHost(
@@ -1800,6 +1805,15 @@ class StreamingService : LifecycleService() {
                 }
                 prefs.edit().putBoolean(MotionMonitor.PREF_ENABLED, enabled).apply()
                 motionMonitor?.onSettingsChanged()
+                if (!enabled) {
+                    // Turning Record on Motion off also ends any motion clip immediately.
+                    motionStopJob?.cancel()
+                    motionStopJob = null
+                    val recorder = localRecorder
+                    if (recorder?.isRecording == true && recorder.trigger == LocalRecorder.Trigger.MOTION) {
+                        lifecycleScope.launch(Dispatchers.IO) { stopRecording() }
+                    }
+                }
                 launchMain {
                     if (enabled) {
                         if (captureRunning) debouncedStartCamera() else startCameraIfNeeded()
@@ -1815,6 +1829,10 @@ class StreamingService : LifecycleService() {
                 val sensitivity = value.toIntOrNull()?.coerceIn(1, 10) ?: return
                 prefs.edit().putString(MotionMonitor.PREF_SENSITIVITY, sensitivity.toString()).apply()
             }
+            MotionMonitor.PREF_STOP_DELAY -> {
+                val delay = value.toIntOrNull()?.coerceIn(0, MotionMonitor.MAX_STOP_DELAY) ?: return
+                prefs.edit().putString(MotionMonitor.PREF_STOP_DELAY, delay.toString()).apply()
+            }
         }
 
         // Delegate to encoders for codec-specific controls
@@ -1828,86 +1846,139 @@ class StreamingService : LifecycleService() {
 
     // ---------------- local recording ----------------
 
-    fun startRecording(): RecordingResponse {
-        if (localRecorder?.isRecording == true) return Triple(false, "409 Conflict",
-            """{"error":"already_recording","message":"Recording is already in progress","uri":"${localRecorder?.recordingLocation() ?: ""}"}"""
-        )
+    fun startRecording(trigger: LocalRecorder.Trigger = LocalRecorder.Trigger.MANUAL): RecordingResponse {
+        synchronized(recordingLock) {
+            if (localRecorder?.isRecording == true) return Triple(false, "409 Conflict",
+                """{"error":"already_recording","message":"Recording is already in progress","uri":"${localRecorder?.recordingLocation() ?: ""}"}"""
+            )
 
-        // Make the camera deliver frames and initialize the H.264 encoder even with no viewers
-        // connected; cleared once localRecorder takes over (or the start fails).
-        recordingNeeded = true
+            // Make the camera deliver frames and initialize the H.264 encoder even with no viewers
+            // connected; cleared once localRecorder takes over (or the start fails).
+            recordingNeeded = true
 
-        // Ensure camera and H.264 encoder are started on demand
-        if (!captureRunning || !hasActiveClients()) {
-            val latch = CountDownLatch(1)
-            launchMain {
-                startCamera(force = true)
-                latch.countDown()
+            // Ensure camera and H.264 encoder are started on demand. Motion detection counts as an
+            // active client, so checking hasActiveClients() alone would skip the restart needed to
+            // create the H.264 encoder for a motion-triggered recording.
+            var enc = h264StreamingEncoder?.h264HardwareEncoder
+            if (!captureRunning || enc == null) {
+                val latch = CountDownLatch(1)
+                launchMain {
+                    startCamera(force = true)
+                    latch.countDown()
+                }
+                try { latch.await(3, TimeUnit.SECONDS) } catch (_: Exception) {}
             }
-            try { latch.await(3, TimeUnit.SECONDS) } catch (_: Exception) {}
-        }
 
-        var enc = h264StreamingEncoder?.h264HardwareEncoder
-        var attempts = 0
-        while (enc == null && attempts < 20) {
-            try { Thread.sleep(100) } catch (_: Exception) {}
-            enc = h264StreamingEncoder?.h264HardwareEncoder
-            attempts++
-        }
+            var attempts = 0
+            while (enc == null && attempts < 100) {
+                try { Thread.sleep(100) } catch (_: Exception) {}
+                enc = h264StreamingEncoder?.h264HardwareEncoder
+                attempts++
+            }
 
-        if (enc == null) {
-            recordingNeeded = false
-            restoreNoViewerCameraState()
-            return Triple(false, "503 Service Unavailable",
-                """{"error":"no_encoder","message":"Failed to initialize H.264 encoder"}"""
-            )
-        }
+            if (enc == null) {
+                recordingNeeded = false
+                restoreNoViewerCameraState()
+                return Triple(false, "503 Service Unavailable",
+                    """{"error":"no_encoder","message":"Failed to initialize H.264 encoder"}"""
+                )
+            }
 
-        return try {
-            val recorder = LocalRecorder(this, enc.width, enc.height)
-            recorder.start()
-            enc.onRecordFrame = { bytes, isKey, pts -> recorder.feedFrame(bytes, isKey, pts) }
-            enc.requestKeyFrame()
-            localRecorder = recorder
-            recordingNeeded = false
-            Triple(true, "201 Created", recorder.statusJson())
-        } catch (e: Exception) {
-            Log.e(TAG, "startRecording failed", e)
-            recordingNeeded = false
-            restoreNoViewerCameraState()
-            Triple(false, "500 Internal Server Error",
-                """{"error":"start_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
-            )
+            return try {
+                val recorder = LocalRecorder(this, enc.width, enc.height, trigger)
+                recorder.start()
+                enc.onRecordFrame = { bytes, isKey, pts -> recorder.feedFrame(bytes, isKey, pts) }
+                enc.requestKeyFrame()
+                localRecorder = recorder
+                recordingNeeded = false
+                Triple(true, "201 Created", recorder.statusJson())
+            } catch (e: Exception) {
+                Log.e(TAG, "startRecording failed", e)
+                recordingNeeded = false
+                restoreNoViewerCameraState()
+                Triple(false, "500 Internal Server Error",
+                    """{"error":"start_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
+                )
+            }
         }
     }
 
     fun stopRecording(): RecordingResponse {
-        val recorder = localRecorder ?: return Triple(false, "409 Conflict",
-            """{"error":"not_recording","message":"No recording is in progress"}"""
-        )
-        return try {
-            h264StreamingEncoder?.h264HardwareEncoder?.onRecordFrame = null
-            val finalStatus = recorder.statusJson()
-            recorder.stop()
-            localRecorder = null
-
-            // If no remote network streaming clients are connected, update camera state
-            if (!encoders.any { it.hasClients() }) {
-                restoreNoViewerCameraState()
-            }
-            Triple(true, "200 OK", finalStatus)
-        } catch (e: Exception) {
-            Log.e(TAG, "stopRecording failed", e)
-            localRecorder = null
-            Triple(false, "500 Internal Server Error",
-                """{"error":"stop_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
+        synchronized(recordingLock) {
+            val recorder = localRecorder ?: return Triple(false, "409 Conflict",
+                """{"error":"not_recording","message":"No recording is in progress"}"""
             )
+            return try {
+                if (recorder.trigger == LocalRecorder.Trigger.MOTION) {
+                    motionStopJob?.cancel()
+                    motionStopJob = null
+                }
+                h264StreamingEncoder?.h264HardwareEncoder?.onRecordFrame = null
+                val finalStatus = recorder.statusJson()
+                recorder.stop()
+                localRecorder = null
+
+                // If no remote network streaming clients are connected, update camera state
+                if (!encoders.any { it.hasClients() }) {
+                    restoreNoViewerCameraState()
+                }
+                Triple(true, "200 OK", finalStatus)
+            } catch (e: Exception) {
+                Log.e(TAG, "stopRecording failed", e)
+                localRecorder = null
+                Triple(false, "500 Internal Server Error",
+                    """{"error":"stop_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
+                )
+            }
         }
     }
 
     fun getRecordingStatus(): String {
         return localRecorder?.statusJson()
             ?: """{"recording":false}"""
+    }
+
+    /** Motion true starts a motion clip; motion false schedules the auto-stop after the set delay. */
+    private fun handleMotionRecording(active: Boolean) {
+        if (active) {
+            motionStopJob?.cancel()
+            motionStopJob = null
+            lifecycleScope.launch(Dispatchers.IO) { startMotionRecordingIfNeeded() }
+        } else {
+            scheduleMotionRecordingStop()
+        }
+    }
+
+    private fun startMotionRecordingIfNeeded() {
+        if (!motionEnabled() || localRecorder?.isRecording == true) return
+        val (ok, status, body) = startRecording(LocalRecorder.Trigger.MOTION)
+        if (!ok) {
+            Log.w(TAG, "Motion recording failed to start: $status $body")
+            return
+        }
+        // Record on Motion may have been turned off, or motion cleared, while the camera/encoder
+        // was starting. In both cases the clip should not linger.
+        if (!motionEnabled()) {
+            stopRecording()
+        } else if (motionMonitor?.detector?.active != true) {
+            scheduleMotionRecordingStop()
+        }
+    }
+
+    private fun scheduleMotionRecordingStop() {
+        val recorder = localRecorder
+        if (recorder?.isRecording != true || recorder.trigger != LocalRecorder.Trigger.MOTION) return
+        motionStopJob?.cancel()
+        val delaySec = motionMonitor?.stopDelaySeconds ?: MotionMonitor.DEFAULT_STOP_DELAY
+        motionStopJob = lifecycleScope.launch(Dispatchers.IO) {
+            if (delaySec > 0) kotlinx.coroutines.delay(delaySec * 1000L)
+            val current = localRecorder
+            if (current?.isRecording == true &&
+                current.trigger == LocalRecorder.Trigger.MOTION &&
+                motionMonitor?.detector?.active != true) {
+                stopRecording()
+            }
+        }
     }
 
     /**
@@ -1917,6 +1988,10 @@ class StreamingService : LifecycleService() {
      */
     private fun restoreNoViewerCameraState() {
         if (encoders.any { it.hasClients() }) return
+        // Motion detection needs the camera to keep delivering frames with no viewer connected.
+        // Stopping here (e.g. after a motion clip auto-stops) would end detection until the next
+        // client connects, so leave the running pipeline alone.
+        if (motionEnabled()) return
         launchMain {
             if (currentSurfaceProvider != null) {
                 debouncedStartCamera()

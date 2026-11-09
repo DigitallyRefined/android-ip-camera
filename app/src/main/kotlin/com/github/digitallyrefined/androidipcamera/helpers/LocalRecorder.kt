@@ -36,8 +36,14 @@ import java.util.Locale
 class LocalRecorder(
     private val context: Context,
     val width: Int,
-    val height: Int
+    val height: Int,
+    val trigger: Trigger = Trigger.MANUAL,
 ) {
+    enum class Trigger(val suffix: String) {
+        MANUAL("manual"),
+        MOTION("motion"),
+    }
+
     companion object {
         private const val TAG = "LocalRecorder"
         /** Subfolder of the public Movies directory where recordings are stored. */
@@ -386,11 +392,11 @@ class LocalRecorder(
         outputFile = null
     }
 
-    /** Manual recordings are grouped by year, month and day: YYYY/MM/DD. */
+    /** Recordings are grouped by year, month and day: YYYY/MM/DD. */
     private fun generateFolder(date: Date): String =
         SimpleDateFormat("yyyy/MM/dd", Locale.US).format(date)
 
-    /** File name inside the folder: YYYY-MM-DD-HHMMSS.mp4. */
+    /** File name inside the folder: YYYY-MM-DD-HHMMSS-<manual|motion>.mp4. */
     private fun generateFilename(date: Date): String =
-        SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(date) + ".mp4"
+        SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(date) + "-${trigger.suffix}.mp4"
 }

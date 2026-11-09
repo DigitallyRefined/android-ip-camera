@@ -165,7 +165,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, Wi-Fi signal strength and individual camera len settings.
   * **Format:** `application/json`
 * **Start Recording (`/record/start`, POST)**
-  * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Files are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS.mp4` inside the recordings folder.
+  * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Manual recordings are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS-manual.mp4` inside the recordings folder. Recordings started by **Record on Motion** use the same folder layout with a `-motion.mp4` suffix.
   * **Responses:**
     * `201 Created`: Recording started; returns the recording status JSON.
     * `409 Conflict`: `{"error":"already_recording", ...}` — a recording is already in progress.
@@ -187,7 +187,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query a recordings folder listing programmatically or feed custom front-ends. Use `?dir=2026/11/09` to list a subfolder; omit `dir` for the recordings root.
   * **Format:** `application/json` — `{"folder":<string>, "path":<string>, "entries":[{"name":<string>, "isDirectory":<bool>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
 * **Download Recording (`/files/<relative path>`, GET)**
-  * **Usage:** Download a recorded MP4 from the device. Browsers save the file instead of playing it (`Content-Disposition: attachment`). Path segments include recording folders, e.g. `/files/2026/11/09/2026-11-09-093000.mp4`.
+  * **Usage:** Download a recorded MP4 from the device. Browsers save the file instead of playing it (`Content-Disposition: attachment`). Path segments include recording folders, e.g. `/files/2026/11/09/2026-11-09-093000-manual.mp4`.
   * **Responses:** `200 OK` with the file bytes, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid paths.
 * **Delete Recording (`/files/<relative path>`, DELETE)**
   * **Usage:** Permanently delete a recorded MP4, or delete a folder and everything below it. The recordings root itself cannot be deleted.
@@ -237,8 +237,9 @@ ONVIF lets NVRs and home automation systems discover and control the camera as a
 * **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled
 * **Snapshot:** `https://[ip_address]:8000/onvif/snapshot.jpg` (or `http://` without TLS)
 * **RTSP:** `rtsps://[username]:[password]@[ip_address]:8554/live`, or `rtsps://` on the same port when TLS is enabled
-* **Motion events:** turn on **Motion Detection** in the web interface. The app compares luma frames in the background and publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`). The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
-* While motion detection is on, the camera runs continuously so it can see motion with no viewer connected. With it off, ONVIF and RTSP are still available on demand: the camera opens when a client connects and is released when the last one leaves.
+* **Motion events and recording:** turn on **Record on Motion** in the web interface. The app compares luma frames in the background, publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`), and records a `-motion.mp4` clip while motion is present. The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
+* **Stop Recording After Motion** (under Sensitivity, default 10 seconds) controls how long a motion recording keeps running after motion has cleared. Set it to `0` to stop as soon as motion ends.
+* While **Record on Motion** is on, the camera runs continuously so it can see motion with no viewer connected. With it off, ONVIF and RTSP are still available on demand: the camera opens when a client connects and is released when the last one leaves.
 
 ONVIF and RTSP use the username and password from the Authentication settings. ONVIF discovery uses UDP multicast, so the phone and the client must be on the same network (or reachable through a VPN that forwards multicast).
 

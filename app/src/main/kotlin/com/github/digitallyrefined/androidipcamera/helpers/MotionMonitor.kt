@@ -11,7 +11,7 @@ import androidx.preference.PreferenceManager
  * This is deliberately not an encoder: it produces no video and is independent of the H.264
  * pipeline. When enabled it keeps the camera open (see StreamingService.hasActiveClients()) so
  * motion can be detected with no viewer connected. The resulting motion state is published to the
- * ONVIF server as motion events.
+ * ONVIF server as motion events and used to start/stop motion-triggered recordings.
  */
 class MotionMonitor(
     private val context: Context,
@@ -20,7 +20,10 @@ class MotionMonitor(
     companion object {
         const val PREF_ENABLED = "motion_detection_enabled"
         const val PREF_SENSITIVITY = "motion_sensitivity"
+        const val PREF_STOP_DELAY = "motion_record_stop_delay"
         const val DEFAULT_SENSITIVITY = 5
+        const val DEFAULT_STOP_DELAY = 10
+        const val MAX_STOP_DELAY = 300
         private const val TAG = "MotionMonitor"
         private const val SAMPLE_INTERVAL_MS = 200L
     }
@@ -33,6 +36,11 @@ class MotionMonitor(
     @Volatile private var lastSampleMs = 0L
 
     val enabled get() = prefs.getBoolean(PREF_ENABLED, false)
+
+    /** Seconds to keep recording after motion has cleared (0 = stop immediately). */
+    val stopDelaySeconds: Int
+        get() = (prefs.getString(PREF_STOP_DELAY, DEFAULT_STOP_DELAY.toString())?.toIntOrNull()
+            ?: DEFAULT_STOP_DELAY).coerceIn(0, MAX_STOP_DELAY)
 
     @Synchronized
     fun processFrame(image: ImageProxy) {

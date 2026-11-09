@@ -170,8 +170,8 @@
       display: block;
       width: 100%;
       /* Fill the remaining viewport below the panel header; never shrink below 300px. */
-      height: calc(100vh - 670px);
-      min-height: 300px;
+      height: calc(100vh - 745px);
+      min-height: 270px;
       border: 1px solid #333;
       border-radius: 8px;
       background: #121212;
@@ -402,6 +402,14 @@
               <button id="snapBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="takeSnapshot()">📸 Take Snapshot</button>
             </div>
 
+            <label style="margin:12px 0 4px;">
+              <input type="checkbox" id="motionCheckbox" onchange="sendControl('motion_detection_enabled', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">Record on Motion</span>
+            </label>
+            <div class="hint" style="margin:0 0 4px; font-size:12px; color:#ccc">
+              Keeps the camera running with no viewer connected. Motion is also reported to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (Home Assistant, UniFi Protect) when ONVIF is enabled.
+            </div>
+
             <div id="recordingsSection">
               <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
                 <span class="group-title" style="margin:0;">Recordings</span>
@@ -462,19 +470,17 @@
               <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
             </div>
 
-            <div id="motionSettings" style="display:none;">
+            <div id="motionSettings">
               <p class="group-title">Motion Detection</p>
 
-              <label>
-                <input type="checkbox" id="motionCheckbox" onchange="sendControl('motion_detection_enabled', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
-                <span style="vertical-align:middle;">Enable Motion Detection</span>
-              </label>
-              <div class="hint" style="margin:-2px 0 12px; font-size:12px; color:#ccc">
-                Keeps the camera running and reports motion to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (Home Assistant, UniFi Protect).
-              </div>
-
               <label for="motionSensitivity">Sensitivity <span class='val-badge' id='motionSensitivityVal'>5</span></label>
-              <input id="motionSensitivity" type='range' min='1' max='10' step='1' value='5' data-control='motion_sensitivity' data-badge='motionSensitivityVal' style='margin-bottom: 0'>
+              <input id="motionSensitivity" type='range' min='1' max='10' step='1' value='5' data-control='motion_sensitivity' data-badge='motionSensitivityVal' style='margin-bottom: 20px'>
+
+              <label for="motionStopDelay">Stop Recording After Motion (seconds)</label>
+              <input id="motionStopDelay" type="number" min="0" max="300" step="1" value="10" data-control="motion_record_stop_delay">
+              <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                How long to keep a motion recording after motion stops.
+              </div>
             </div>
 
             <p class="group-title">Snapshot</p>
@@ -692,7 +698,8 @@
       if (param === 'focus' || param === 'focus_distance') return 'focusDistance';
       if (param === 'snapshot_res') return 'snapshotRes';
       // Motion detection is a global (camera-independent) setting, not a lens setting.
-      if (param === 'motion_detection_enabled' || param === 'motion_sensitivity') return null;
+      if (param === 'motion_detection_enabled' || param === 'motion_sensitivity' ||
+        param === 'motion_record_stop_delay') return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -1531,14 +1538,6 @@
       const fps = getElById('fps');
       if (fps && settings.fps) {
         fps.value = settings.fps;
-      }
-      // Motion detection is only meaningful with ONVIF (event reporting), so keep its
-      // controls hidden unless the server reports ONVIF as enabled.
-      if (settings.onvifEnabled !== undefined) {
-        const onvif = settings.onvifEnabled;
-        const enabled = onvif === true || onvif === 1 || onvif === 'true' || onvif === 'on' || onvif === '1';
-        const motionSettings = getElById('motionSettings');
-        if (motionSettings) motionSettings.style.display = enabled ? '' : 'none';
       }
       const motionEl = getElById('motionCheckbox');
       if (motionEl && settings.motionDetectionEnabled !== undefined) {
