@@ -17,6 +17,8 @@
     "bun-plugin-tailwind": "^0.1.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "kysely": "^0.29.8",
+    "kysely-bun-dialects": "^1.0.0",
     "lucide-react": "^1.70.0",
     "mediabunny": "^1.65.2",
     "qrcode.react": "^4.2.0",
@@ -27,9 +29,9 @@
     "werift": "^0.26.0"
   },
   "devDependencies": {
+    "@types/bun": "latest",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@types/bun": "latest",
     "tailwindcss": "^4.3.5"
   },
   "peerDependencies": {

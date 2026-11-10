@@ -1,6 +1,6 @@
 import type { CameraAuthResult } from "./relay";
 
-export function json(data: unknown, status = 200): Response {
+export function json<T>(data: T, status = 200): Response {
   return Response.json(data, {
     status,
     headers: { "Cache-Control": "no-store" },

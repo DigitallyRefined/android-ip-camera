@@ -8,7 +8,8 @@ The camera makes one outbound WebSocket connection to the relay. Browsers talk
 to the relay, and the relay multiplexes each request over that existing socket.
 Live video uses WebRTC: the app sends H.264 access units over the same socket
 and the relay packetizes them per viewer. Requests and media stay in memory;
-only device records and pairing codes are written to SQLite.
+only device records and pairing codes are written to the configured database
+(SQLite by default, with MySQL and PostgreSQL also supported).
 
 ```
 browser ──HTTPS/WebRTC──▶ relay (public) ◀──outbound WSS── Android app
@@ -73,24 +74,35 @@ the camera. Deleting a recording through the relay also drops its cached copy.
 
 ## Configuration
 
-| Variable                       | Default                      | Meaning                                              |
-| ------------------------------ | ---------------------------- | ---------------------------------------------------- |
-| `PORT`                         | `3000`                       | HTTP listen port                                     |
-| `DB_PATH`                      | `./data/relay.sqlite`        | SQLite file for devices + pairing codes              |
-| `PUBLIC_URL`                   | request origin               | Public origin used in pairing links                  |
-| `WEBRTC_STUN_URLS`             | Google STUN                  | Comma-separated STUN/TURN URLs                       |
-| `WEBRTC_TURN_URL`              | unset                        | Extra TURN URL used by the relay and viewers         |
-| `WEBRTC_TURN_USERNAME`         | unset                        | TURN username                                        |
-| `WEBRTC_TURN_CREDENTIAL`       | unset                        | TURN password                                        |
-| `WEBRTC_UDP_PORT_RANGE`        | ephemeral                    | Fixed UDP range, for example `40000-40100`           |
-| `WEBRTC_ADVERTISE_HOST`        | private `PUBLIC_URL` address | Host/IP viewers use for WebRTC candidates            |
-| `WEBRTC_FORCE_TURN`            | `false`                      | Force `iceTransportPolicy: relay` on both sides      |
-| `WEBRTC_RECORDING_MAX_BYTES`   | `536870912` (512 MiB)        | Maximum MP4 size buffered for one recording playback |
-| `WEBRTC_RECORDING_CACHE_BYTES` | same as max bytes            | LRU memory budget for downloaded recordings          |
+| Variable                       | Default                          | Meaning                                              |
+| ------------------------------ | -------------------------------- | ---------------------------------------------------- |
+| `PORT`                         | `3000`                           | HTTP listen port                                     |
+| `DATABASE_URL`                 | `sqlite:///storage/relay.sqlite` | `sqlite://`, `mysql://`, or `postgres://` database   |
+| `PUBLIC_URL`                   | request origin                   | Public origin used in pairing links                  |
+| `WEBRTC_STUN_URLS`             | Google STUN                      | Comma-separated STUN/TURN URLs                       |
+| `WEBRTC_TURN_URL`              | unset                            | Extra TURN URL used by the relay and viewers         |
+| `WEBRTC_TURN_USERNAME`         | unset                            | TURN username                                        |
+| `WEBRTC_TURN_CREDENTIAL`       | unset                            | TURN password                                        |
+| `WEBRTC_UDP_PORT_RANGE`        | ephemeral                        | Fixed UDP range, for example `40000-40100`           |
+| `WEBRTC_ADVERTISE_HOST`        | private `PUBLIC_URL` address     | Host/IP viewers use for WebRTC candidates            |
+| `WEBRTC_FORCE_TURN`            | `false`                          | Force `iceTransportPolicy: relay` on both sides      |
+| `WEBRTC_RECORDING_MAX_BYTES`   | `536870912` (512 MiB)            | Maximum MP4 size buffered for one recording playback |
+| `WEBRTC_RECORDING_CACHE_BYTES` | same as max bytes                | LRU memory budget for downloaded recordings          |
 
 Copy `.env.example` to `.env` and adjust the public URL and, if needed, TURN
 credentials. `PUBLIC_URL` matters when the server sits behind a reverse proxy,
 because the pairing link must contain the address the phone can reach.
+
+Set `DATABASE_URL` to choose the database backend. The relay creates its tables
+on startup, so an empty database is enough:
+
+```bash
+DATABASE_URL=sqlite:///storage/relay.sqlite
+DATABASE_URL=mysql://user:pass@localhost:3306/relay
+DATABASE_URL=postgres://user:pass@localhost:5432/relay
+```
+
+When `DATABASE_URL` is unset, the relay uses `sqlite:///storage/relay.sqlite`.
 
 ### WebRTC and firewalls
 
@@ -139,8 +151,8 @@ cp .env.example .env   # edit PUBLIC_URL / TURN settings
 docker compose up --build
 ```
 
-The compose file publishes the WebRTC UDP range and stores the SQLite database
-under `./storage`. Traefik terminates HTTPS and routes the web/API/WebSocket
+The compose file publishes the WebRTC UDP range and stores the default SQLite
+database under `./storage`. Traefik terminates HTTPS and routes the web/API/WebSocket
 traffic to port 3000; the UDP range bypasses Traefik.
 
 For a standalone run without Traefik:
@@ -150,7 +162,7 @@ docker build -t android-ip-camera-relay .
 docker run --rm -p 3000:3000 -p 40000-40100:40000-40100/udp \
   -v "$PWD/storage:/storage" \
   -e PUBLIC_URL=https://relay.example.com \
-  -e DB_PATH=/storage/relay.sqlite \
+  -e DATABASE_URL=sqlite:///storage/relay.sqlite \
   -e WEBRTC_UDP_PORT_RANGE=40000-40100 \
   android-ip-camera-relay
 ```

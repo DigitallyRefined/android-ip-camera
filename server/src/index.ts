@@ -1,6 +1,7 @@
 import { serve } from "bun";
 import type { BunRequest } from "bun";
 import index from "./index.html";
+import { initializeDatabase } from "./backend/db";
 import {
   handleAssociate,
   handleDevice,
@@ -18,6 +19,8 @@ import {
   handleDeviceOpen,
   handleDeviceSocket,
 } from "./backend/websocket";
+
+await initializeDatabase();
 
 const isDev = process.env.NODE_ENV !== "production";
 const devServerHostname = isDev ? process.env.DEV_SERVER_HOSTNAME : undefined;

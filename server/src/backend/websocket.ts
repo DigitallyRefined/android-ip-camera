@@ -1,5 +1,5 @@
 import type { Server, ServerWebSocket } from "bun";
-import { authenticateDevice, markDeviceSeen } from "./db";
+import { authenticateDevice, markDeviceSeen } from "./db/tables/devices";
 import {
   registerDevice,
   unregisterDevice,

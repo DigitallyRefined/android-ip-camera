@@ -1,14 +1,14 @@
 import type { BunRequest } from "bun";
 import { normalizeDeviceName } from "../shared/deviceName";
+import type { JsonValue } from "../shared/json";
 import {
-  consumePairingCode,
   createDevice,
-  createPairingCode,
   deleteDevice,
   deviceExists,
   listDevices,
   renameDevice,
-} from "./db";
+} from "./db/tables/devices";
+import { consumePairingCode, createPairingCode } from "./db/tables/pairing";
 import { forwardHeaders, getDeviceConnection, onlineDeviceIds } from "./relay";
 import type { DeviceConnection } from "./relay";
 import { cameraProxyPath } from "./proxyPath";
@@ -100,7 +100,7 @@ function invalidateDeletedRecordingPath(
  * Recording paths are relative to the camera's recordings root. Reject
  * anything that could escape it or reach a non-recording file.
  */
-function normalizeRecordingPath(raw: unknown): string | undefined {
+function normalizeRecordingPath(raw: JsonValue): string | undefined {
   if (typeof raw !== "string" || raw.length === 0) return undefined;
   if (raw.startsWith("/") || raw.includes("\\")) return undefined;
   for (const character of raw) {
@@ -260,7 +260,7 @@ export async function handleAssociate(request: Request): Promise<Response> {
   if (request.method !== "POST")
     return json({ error: "Method not allowed" }, 405);
 
-  let payload: { code?: unknown; name?: unknown };
+  let payload: { code?: JsonValue; name?: JsonValue };
   try {
     payload = (await request.json()) as typeof payload;
   } catch {
@@ -325,7 +325,7 @@ export async function handleRenameDevice(
   if (!(await deviceExists(deviceId)))
     return json({ error: "Unknown device" }, 404);
 
-  let payload: { name?: unknown };
+  let payload: { name?: JsonValue };
   try {
     payload = (await request.json()) as typeof payload;
   } catch {
@@ -411,7 +411,7 @@ export async function handleWebRtcOffer(
   const device = getDeviceConnection(request.params.deviceId);
   if (!device) return json({ error: "Camera is offline" }, 503);
 
-  let body: { type?: unknown; sdp?: unknown };
+  let body: { type?: JsonValue; sdp?: JsonValue };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -459,10 +459,10 @@ export async function handleWebRtcRecordingOffer(
   if (!device) return json({ error: "Camera is offline" }, 503);
 
   let body: {
-    type?: unknown;
-    sdp?: unknown;
-    path?: unknown;
-    startTime?: unknown;
+    type?: JsonValue;
+    sdp?: JsonValue;
+    path?: JsonValue;
+    startTime?: JsonValue;
   };
   try {
     body = (await request.json()) as typeof body;

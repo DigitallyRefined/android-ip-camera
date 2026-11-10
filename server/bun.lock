@@ -11,6 +11,8 @@
         "bun-plugin-tailwind": "^0.1.2",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
+        "kysely": "^0.29.8",
+        "kysely-bun-dialects": "^1.0.0",
         "lucide-react": "^1.70.0",
         "mediabunny": "^1.65.2",
         "qrcode.react": "^4.2.0",
@@ -169,6 +171,10 @@
     "get-nonce": ["get-nonce@1.0.1", "", {}, "sha512-FJhYRoDaiatfEkUK8HKlicmu/3SGFD51q3itKDGoSTysQJBnfOcxU5GxnhE1E6soB76MbT0MBtnKJuXyAx+96Q=="],
 
     "ieee754": ["ieee754@1.2.1", "", {}, "sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA=="],
+
+    "kysely": ["kysely@0.29.8", "", {}, "sha512-ixHU1H4R+LeC5Y0nAhYgiGRFpFRHm2DXKEmJSs/vbes9sKXyssyzxzE/NYiOJX5fY0BL28biCre3GqlCqUwyXQ=="],
+
+    "kysely-bun-dialects": ["kysely-bun-dialects@1.0.0", "", { "peerDependencies": { "kysely": ">=0.27.0" } }, "sha512-gsYQhLXCRI0a+f12TXw1NZKNF8KjnNWyVwR6blTCDjbDORAS3+0w/aNcZKQv65YfDwWqS6rR7+TtPD3BQmDZuQ=="],
 
     "lucide-react": ["lucide-react@1.70.0", "", { "peerDependencies": { "@types/react": "*", "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" }, "optionalPeers": ["@types/react"] }, "sha512-gCTPPN1MlQUBtUgdsUv+0CAUj+X8hifRUiRBw4E5v7lvDIOIpx0EZezdGQMSimS8pKA6esvullJub4GYr0mCHA=="],
 

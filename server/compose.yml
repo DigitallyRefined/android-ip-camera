@@ -7,11 +7,8 @@ services:
     volumes:
       - ./storage:/storage
     environment:
-      # Persist only device records and pairing codes. Media and proxied
-      # requests never touch the disk.
-      - DB_PATH=/storage/relay.sqlite
       # Public HTTPS origin used in the androidipcamera:// pairing link.
-      - PUBLIC_URL=https://android-ip-camera.example.com
+      - PUBLIC_URL=${PUBLIC_URL:-https://android-ip-camera-relay.example.com}
       # Werift binds inside this fixed UDP range; publish the same range below.
       - WEBRTC_UDP_PORT_RANGE=40000-40100
       # Address viewers use for the WebRTC UDP candidates. Leave unset to use
@@ -39,7 +36,7 @@ services:
       traefik.enable: true
 
       traefik.http.routers.android-ip-camera.entrypoints: websecure
-      traefik.http.routers.android-ip-camera.rule: Host(`android-ip-camera.example.com`)
+      traefik.http.routers.android-ip-camera.rule: Host(`android-ip-camera-relay.example.com`)
       traefik.http.routers.android-ip-camera.tls: true
 
 networks:

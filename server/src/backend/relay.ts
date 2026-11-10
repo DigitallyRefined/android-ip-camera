@@ -1,4 +1,5 @@
 import type { ServerWebSocket } from "bun";
+import type { JsonObject, JsonValue } from "../shared/json";
 
 /**
  * One camera connection. The protocol multiplexes all browser traffic over a
@@ -84,7 +85,7 @@ export class DeviceConnection {
     return this.viewers.size;
   }
 
-  sendJson(message: unknown): void {
+  sendJson(message: JsonObject): void {
     if (this.closed) return;
     try {
       this.ws.send(JSON.stringify(message));
@@ -145,12 +146,14 @@ export class DeviceConnection {
   }
 
   handleText(raw: string): void {
-    let message: Record<string, unknown>;
+    let parsed: JsonValue;
     try {
-      message = JSON.parse(raw) as Record<string, unknown>;
+      parsed = JSON.parse(raw) as JsonValue;
     } catch {
       return;
     }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    const message: JsonObject = parsed;
 
     const id = typeof message.id === "string" ? message.id : "";
     const type = typeof message.type === "string" ? message.type : "";
@@ -202,10 +205,12 @@ export class DeviceConnection {
         const status =
           typeof message.status === "number" ? message.status : 502;
         const headers = new Headers();
-        if (message.headers && typeof message.headers === "object") {
-          for (const [name, value] of Object.entries(
-            message.headers as Record<string, unknown>,
-          )) {
+        if (
+          message.headers &&
+          typeof message.headers === "object" &&
+          !Array.isArray(message.headers)
+        ) {
+          for (const [name, value] of Object.entries(message.headers)) {
             if (typeof value !== "string") continue;
             const lower = name.toLowerCase();
             if (
