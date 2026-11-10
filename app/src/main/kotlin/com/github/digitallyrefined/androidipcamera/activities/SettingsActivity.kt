@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import androidx.preference.EditTextPreference
@@ -18,6 +19,7 @@ import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
 import com.github.digitallyrefined.androidipcamera.helpers.ListenInterface
 import com.github.digitallyrefined.androidipcamera.helpers.RecordingsHelper
+import com.github.digitallyrefined.androidipcamera.helpers.RelayAssociation
 import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 import com.github.digitallyrefined.androidipcamera.helpers.TlsHelper
@@ -109,7 +111,10 @@ class SettingsActivity : AppCompatActivity() {
             // Configure username (optional - defaults available)
             findPreference<EditTextPreference>("username")?.apply {
                 // Load current value from secure storage
-                text = secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "")
+                val currentUsername =
+                    secureStorage.getSecureString(SecureStorage.KEY_USERNAME, "") ?: ""
+                text = currentUsername
+                summary = if (currentUsername.isBlank()) "Not set" else currentUsername
 
                 setOnPreferenceChangeListener { _, newValue ->
                     val username = newValue.toString()
@@ -121,6 +126,7 @@ class SettingsActivity : AppCompatActivity() {
                     }
                     // Store securely (empty string means use default)
                     secureStorage.putSecureString(SecureStorage.KEY_USERNAME, username)
+                    summary = if (username.isBlank()) "Not set" else username
                     // Restart server when username changes
                     restartStreamingServer()
                     true
@@ -129,6 +135,15 @@ class SettingsActivity : AppCompatActivity() {
 
             // Configure password (optional - defaults available)
             findPreference<EditTextPreference>("password")?.apply {
+                // Never reveal the stored password, only whether one is set.
+                summary = if (
+                    (secureStorage.getSecureString(SecureStorage.KEY_PASSWORD, "") ?: "").isEmpty()
+                ) {
+                    "Not set"
+                } else {
+                    "***"
+                }
+
                 // Do not show the existing password when editing
                 setOnBindEditTextListener { editText ->
                     editText.text = null
@@ -154,6 +169,7 @@ class SettingsActivity : AppCompatActivity() {
 
                     // Store securely only; do not persist plaintext in SharedPreferences
                     secureStorage.putSecureString(SecureStorage.KEY_PASSWORD, password)
+                    summary = "***"
                     // Restart server when password changes
                     restartStreamingServer()
                     // Returning false prevents EditTextPreference from saving the plaintext
@@ -445,6 +461,59 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
+            // Relay association is created from the relay web page (custom intent link).
+            // Disconnecting forgets the token and stops the outbound WebSocket.
+            findPreference<Preference>("relay_disconnect")?.setOnPreferenceClickListener {
+                AlertDialog.Builder(requireContext())
+                    .setTitle("Disconnect from relay?")
+                    .setMessage("The camera will stop reconnecting. You can pair it again from the relay web page.")
+                    .setPositiveButton("Disconnect") { _, _ ->
+                        requireContext().startService(
+                            Intent(requireContext(), StreamingService::class.java).apply {
+                                action = StreamingService.ACTION_DISCONNECT_RELAY
+                            }
+                        )
+                        refreshRelayPreferences()
+                        Toast.makeText(requireContext(), "Relay disconnected", Toast.LENGTH_SHORT).show()
+                        // The service clears the credentials asynchronously.
+                        Handler(Looper.getMainLooper()).postDelayed({ refreshRelayPreferences() }, 750)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+                true
+            }
+            refreshRelayPreferences()
+        }
+
+        override fun onResume() {
+            super.onResume()
+            refreshRelayPreferences()
+        }
+
+        private fun refreshRelayPreferences() {
+            val context = context ?: return
+            val credentials = RelayAssociation.load(context)
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val connected = prefs.getBoolean("relay_connected", false)
+            val status = prefs.getString("relay_status", null)
+
+            // Show the relay URL and connection status in a single preference,
+            // with the status on its own line beneath the URL. Without an
+            // association, the row links to the relay page to start pairing.
+            val relayPreference = findPreference<Preference>("relay_server")
+            if (credentials == null) {
+                relayPreference?.summary =
+                    "Not set. To join, scan the QR code on the relay page"
+            } else {
+                val connectionStatus = if (connected) {
+                    status ?: "Connected"
+                } else {
+                    status ?: "Connecting…"
+                }
+                relayPreference?.summary = "${credentials.serverUrl}\n$connectionStatus"
+                relayPreference?.setOnPreferenceClickListener(null)
+            }
+            findPreference<Preference>("relay_disconnect")?.isVisible = credentials != null
         }
 
         override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

@@ -29,6 +29,8 @@ class H264StreamingEncoder(
         private set
     /** RTSP server sharing this encoder's output, when RTSP is enabled. */
     @Volatile internal var rtspServer: RtspServer? = null
+    /** Outbound relay connection, when the camera is associated with a relay. */
+    @Volatile internal var relayClient: RelayClient? = null
     /**
      * True while a separate, smaller encoder feeds the RTSP sub stream. Otherwise (no sub encoder
      * running, or none possible on this capture path) sub stream viewers get this encoder's frames.
@@ -166,7 +168,8 @@ class H264StreamingEncoder(
 
     override fun hasClients(): Boolean {
         return streamingServerHelper?.getH264Clients()?.isNotEmpty() == true ||
-            rtspServer?.hasVideoClients() == true
+            rtspServer?.hasVideoClients() == true ||
+            relayClient?.isMediaActive == true
     }
 
     /**
@@ -178,6 +181,9 @@ class H264StreamingEncoder(
             rtsp.onVideoFrame(data, isKey, ptsUs, RtspStream.MAIN)
             if (!subStreamEncoded) rtsp.onVideoFrame(data, isKey, ptsUs, RtspStream.SUB)
         }
+        // The relay path is independent of the local HTTP viewers: browser
+        // WebRTC viewers only need the access units on the outbound socket.
+        relayClient?.sendVideo(data, isKey, ptsUs)
         val helper = streamingServerHelper ?: return
         val clients = helper.getH264Clients()
         if (clients.isEmpty()) return

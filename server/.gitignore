@@ -30,5 +30,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # IntelliJ based IDEs
 .idea
 
+# Relay runtime state (SQLite database)
+storage/
+data/
+
 # Finder (MacOS) folder config
 .DS_Store

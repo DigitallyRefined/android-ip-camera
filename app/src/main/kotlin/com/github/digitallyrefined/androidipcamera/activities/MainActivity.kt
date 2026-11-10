@@ -29,6 +29,7 @@ import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
 import com.github.digitallyrefined.androidipcamera.helpers.ListenInterface
+import com.github.digitallyrefined.androidipcamera.helpers.RelayAssociation
 import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -41,6 +42,9 @@ class MainActivity : AppCompatActivity() {
     private var userHiddenPreview = false
     private lateinit var noClientMessage: TextView
     private lateinit var backGestureCallback: OnBackPressedCallback
+    /** Pairing details from an androidipcamera://associate intent, waiting for the service. */
+    private var pendingAssociation: RelayAssociation.PairingIntent? = null
+    private var associationInFlight = false
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
@@ -80,6 +84,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             showNoClientMessage(!hasClients)
+
+            // An association intent may have arrived before the service was bound.
+            processPendingAssociation()
         }
 
         override fun onServiceDisconnected(arg0: ComponentName) {
@@ -123,6 +130,8 @@ class MainActivity : AppCompatActivity() {
         viewBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(viewBinding.root)
         noClientMessage = findViewById(R.id.noClientMessage)
+
+        captureAssociationIntent(intent)
 
         backGestureCallback = object : OnBackPressedCallback(false) {
             override fun handleOnBackPressed() {
@@ -238,6 +247,42 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         if (isBound) {
             streamingService?.setPreviewSurface(null)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        captureAssociationIntent(intent)
+    }
+
+    private fun captureAssociationIntent(intent: Intent?) {
+        val pairing = RelayAssociation.parseIntent(intent?.data) ?: return
+        // Consume the deep link so a configuration change does not replay the
+        // one-time pairing code.
+        intent?.data = null
+        pendingAssociation = pairing
+        Log.i(TAG, "Association intent for ${pairing.serverUrl}")
+        processPendingAssociation()
+    }
+
+    /** Runs once the service is bound. */
+    private fun processPendingAssociation() {
+        val pairing = pendingAssociation ?: return
+        val service = streamingService
+        if (!isBound || service == null || associationInFlight) return
+        pendingAssociation = null
+        associationInFlight = true
+        Toast.makeText(this, "Connecting to relay…", Toast.LENGTH_SHORT).show()
+        service.associateRelay(pairing.serverUrl, pairing.code) { success, message ->
+            associationInFlight = false
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            if (success) {
+                // The relay connection starts outbound; the local preview can go back to idle.
+                updateIpAddressText()
+            }
+            // An intent that arrived while this association was running.
+            processPendingAssociation()
         }
     }
 
