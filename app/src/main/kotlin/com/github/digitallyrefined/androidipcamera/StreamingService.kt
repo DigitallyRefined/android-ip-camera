@@ -385,18 +385,57 @@ class StreamingService : LifecycleService() {
         }
     }
 
-    /** Forget the relay association and stop the outbound connection. */
+    /**
+     * Forget the relay association, stop the outbound connection, and remove
+     * this camera from the relay's database. Everything that can block (secure
+     * storage, socket shutdown, HTTP delete) runs on the IO dispatcher so the
+     * Settings UI stays responsive. The relay section is disabled through the
+     * relay_deleting preference until the remote delete finishes.
+     */
     fun disconnectRelay() {
-        val relay = relayClient
-        if (relay != null) {
-            relay.disconnect()
-        } else {
-            RelayAssociation.clear(this)
-            PreferenceManager.getDefaultSharedPreferences(this).edit()
-                .putBoolean("relay_connected", false)
-                .putString("relay_status", "Not associated")
-                .putLong("relay_status_updated_at", System.currentTimeMillis())
-                .apply()
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit()
+            .putBoolean("relay_deleting", true)
+            .putLong("relay_deleting_since", System.currentTimeMillis())
+            .apply()
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val credentials = RelayAssociation.load(this@StreamingService)
+                val relay = relayClient
+                if (relay != null) {
+                    relay.disconnect()
+                } else {
+                    RelayAssociation.clear(this@StreamingService)
+                    prefs.edit()
+                        .putBoolean("relay_connected", false)
+                        .putString("relay_status", "Not associated")
+                        .putLong("relay_status_updated_at", System.currentTimeMillis())
+                        .apply()
+                }
+                if (credentials != null) {
+                    val removed = RelayAssociation.deleteRemote(credentials)
+                    if (removed) {
+                        Log.i(TAG, "Removed relay device ${credentials.deviceId}")
+                    } else {
+                        Log.w(TAG, "Could not remove relay device ${credentials.deviceId}")
+                    }
+                }
+            } catch (error: Exception) {
+                Log.w(TAG, "Relay disconnect failed: ${error.message}")
+            } finally {
+                // Whether the remote delete succeeded or exhausted its retries,
+                // the user asked to disconnect: always forget the association.
+                runCatching { RelayAssociation.clear(this@StreamingService) }
+                    .onFailure { Log.w(TAG, "Could not clear relay association: ${it.message}") }
+                prefs.edit()
+                    .putBoolean("relay_connected", false)
+                    .putString("relay_status", "Not associated")
+                    .putLong("relay_status_updated_at", System.currentTimeMillis())
+                    .putBoolean("relay_deleting", false)
+                    .remove("relay_deleting_since")
+                    .apply()
+            }
         }
     }
 

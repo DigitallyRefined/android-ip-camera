@@ -3,7 +3,7 @@ import type { BunRequest } from "bun";
 import index from "./index.html";
 import {
   handleAssociate,
-  handleDeleteDevice,
+  handleDevice,
   handlePairing,
   handleProxy,
   handleStatus,
@@ -29,7 +29,7 @@ const server = serve({
     "/api/pairing": (request) => handlePairing(request),
     "/api/associate": (request) => handleAssociate(request),
     "/api/devices/:id": (request) =>
-      handleDeleteDevice(
+      handleDevice(
         request,
         (request as BunRequest<"/api/devices/:id">).params.id,
       ),

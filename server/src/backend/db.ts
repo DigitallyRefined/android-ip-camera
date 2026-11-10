@@ -173,7 +173,20 @@ export async function markDeviceSeen(id: string): Promise<number> {
   return now;
 }
 
+export async function renameDevice(id: string, name: string): Promise<boolean> {
+  const result = await db`UPDATE devices SET name = ${name} WHERE id = ${id}`;
+  return result.count > 0;
+}
+
 export async function deleteDevice(id: string): Promise<boolean> {
   const result = await db`DELETE FROM devices WHERE id = ${id}`;
   return result.count > 0;
+}
+
+export async function deviceExists(id: string): Promise<boolean> {
+  if (!id) return false;
+  const rows = await db`
+    SELECT 1 FROM devices WHERE id = ${id} LIMIT 1
+  `;
+  return rows.length > 0;
 }

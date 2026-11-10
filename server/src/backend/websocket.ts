@@ -16,7 +16,10 @@ export async function handleDeviceSocket(
     request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
   const token = bearer || url.searchParams.get("token") || "";
   const device = await authenticateDevice(deviceId, token);
-  if (!device) return new Response("Unauthorized", { status: 401 });
+  // Keep the status at 401 for older clients, but include a specific body so
+  // the app can distinguish this from a WAF/proxy 401 or 403 and only forget
+  // the association for a real "device not registered" response.
+  if (!device) return new Response("device not registered", { status: 401 });
 
   const upgraded = server.upgrade(request, {
     data: {

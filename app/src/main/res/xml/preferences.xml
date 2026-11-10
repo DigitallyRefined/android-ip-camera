@@ -94,7 +94,10 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
-    <PreferenceCategory android:title="Remote Access (Relay)">
+    <PreferenceCategory
+        android:key="relay_category"
+        android:title="Remote Access (Relay)"
+        android:persistent="false">
         <Preference
             android:key="relay_server"
             android:title="Relay Server"

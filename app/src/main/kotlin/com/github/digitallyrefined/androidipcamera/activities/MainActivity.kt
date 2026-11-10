@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -45,6 +46,17 @@ class MainActivity : AppCompatActivity() {
     /** Pairing details from an androidipcamera://associate intent, waiting for the service. */
     private var pendingAssociation: RelayAssociation.PairingIntent? = null
     private var associationInFlight = false
+
+    // The relay URL shown under the local URLs depends on whether this camera
+    // is still associated. The relay client clears the association from a
+    // background thread when the relay rejects the device, so refresh the
+    // preview when that flag changes.
+    private val relayPreferenceListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "relay_connected") {
+                runOnUiThread { updateIpAddressText() }
+            }
+        }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
@@ -209,6 +221,8 @@ class MainActivity : AppCompatActivity() {
         }
         // Refresh the IP address text in case the port was changed in settings
         updateIpAddressText()
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .registerOnSharedPreferenceChangeListener(relayPreferenceListener)
         checkNotificationChannelEnabled()
     }
 
@@ -229,7 +243,18 @@ class MainActivity : AppCompatActivity() {
         } else {
             ""
         }
-        ipAddressText.text = "$protocol://$ipAddress:$port$rtspUrls"
+        val relayUrl = RelayAssociation.load(this)?.serverUrl
+        if (relayUrl == null) {
+            ipAddressText.isClickable = true
+            ipAddressText.setOnClickListener {
+                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(RelayAssociation.FALLBACK_SERVER_URL)))
+            }
+        } else {
+            ipAddressText.setOnClickListener(null)
+            ipAddressText.isClickable = false
+        }
+        val displayedRelayUrl = relayUrl ?: "Tap to setup optional remote relay"
+        ipAddressText.text = "$protocol://$ipAddress:$port$rtspUrls\n$displayedRelayUrl"
     }
 
     private fun checkNotificationChannelEnabled() {
@@ -245,6 +270,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .unregisterOnSharedPreferenceChangeListener(relayPreferenceListener)
         if (isBound) {
             streamingService?.setPreviewSurface(null)
         }

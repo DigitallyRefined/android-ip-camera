@@ -5,11 +5,13 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 /**
  * Custom-scheme association:
@@ -22,6 +24,7 @@ import java.net.URL
  */
 object RelayAssociation {
     private const val TAG = "RelayAssociation"
+    const val FALLBACK_SERVER_URL = "https://android.ip-cam.app"
 
     data class PairingIntent(val serverUrl: String, val code: String)
 
@@ -108,6 +111,65 @@ object RelayAssociation {
                 connection.disconnect()
             }
         }
+
+    /**
+     * Remove this camera from the relay's database. Called when the user
+     * presses Disconnect so the relay does not keep an orphaned device record.
+     * Network errors, timeouts, and generic 404s are retried three times in the
+     * background. Returns true when the device is gone, including when the
+     * relay reports it is already unregistered. Returns false after all
+     * attempts fail; the caller still clears the local association.
+     */
+    suspend fun deleteRemote(credentials: Credentials): Boolean =
+        withContext(Dispatchers.IO) {
+            val encodedId = URLEncoder.encode(credentials.deviceId, "UTF-8")
+            val endpoint = URL("${credentials.serverUrl}/api/devices/$encodedId")
+            for (attempt in 1..3) {
+                val connection = (endpoint.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "DELETE"
+                    connectTimeout = 10_000
+                    readTimeout = 10_000
+                    setRequestProperty("Authorization", "Bearer ${credentials.token}")
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("User-Agent", "Android-IP-Camera")
+                }
+                try {
+                    val status = connection.responseCode
+                    if (status in 200..299) return@withContext true
+                    val body = readErrorBody(connection)
+                    if (RelayHandshake.isAlreadyUnregistered(status, body)) {
+                        Log.i(TAG, "Relay already forgot this camera (HTTP $status)")
+                        return@withContext true
+                    }
+                    Log.w(TAG, "Relay device removal failed (HTTP $status), attempt $attempt")
+                } catch (error: IOException) {
+                    Log.w(TAG, "Relay device removal failed: ${error.message}, attempt $attempt")
+                } finally {
+                    connection.disconnect()
+                }
+                if (attempt < 3) delay(500L * attempt)
+            }
+            false
+        }
+
+    /** Read a bounded error body so a 404 "Unknown device" can be recognised. */
+    private fun readErrorBody(connection: HttpURLConnection): String? {
+        val stream = connection.errorStream ?: return null
+        return try {
+            val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(1024)
+            while (output.size() < 8 * 1024) {
+                val read = stream.read(buffer)
+                if (read <= 0) break
+                output.write(buffer, 0, read)
+            }
+            output.toString(Charsets.UTF_8.name())
+        } catch (_: IOException) {
+            null
+        } finally {
+            runCatching { stream.close() }
+        }
+    }
 
     fun save(context: Context, credentials: Credentials) {
         val storage = SecureStorage(context)

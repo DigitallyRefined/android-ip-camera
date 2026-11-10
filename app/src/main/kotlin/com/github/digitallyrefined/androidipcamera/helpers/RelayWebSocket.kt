@@ -16,7 +16,11 @@ import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
-/** The relay no longer recognises this camera's token (for example after removal). */
+/**
+ * The relay no longer recognises this camera: it was removed, is not
+ * registered, or its token was rejected. Reconnecting with the same
+ * credentials cannot succeed.
+ */
 class RelayUnauthorizedException(message: String) : IOException(message)
 
 /**
@@ -110,22 +114,28 @@ class RelayWebSocket(
         out.flush()
 
         val statusLine = readHttpLine(buffered)
-        if (!statusLine.contains(" 101 ")) {
-            if (statusLine.contains(" 401 ")) {
-                throw RelayUnauthorizedException("Relay rejected this camera's token")
-            }
-            throw IOException("Relay rejected WebSocket upgrade: $statusLine")
-        }
-        var accept: String? = null
+        val statusCode = RelayHandshake.parseStatusCode(statusLine)
+        val responseHeaders = linkedMapOf<String, String>()
         while (true) {
             val line = readHttpLine(buffered)
             if (line.isEmpty()) break
             val separator = line.indexOf(':')
             if (separator <= 0) continue
-            val name = line.substring(0, separator).trim()
+            val name = line.substring(0, separator).trim().lowercase()
             val value = line.substring(separator + 1).trim()
-            if (name.equals("Sec-WebSocket-Accept", ignoreCase = true)) accept = value
+            responseHeaders[name] = value
         }
+        if (statusCode != 101) {
+            val body = readErrorBody(activeSocket, buffered, responseHeaders)
+            if (RelayHandshake.isTerminalRejection(statusCode, body)) {
+                throw RelayUnauthorizedException(
+                    RelayHandshake.rejectionMessage(statusCode, body),
+                )
+            }
+            val detail = RelayHandshake.summarize(body)?.let { ": $it" }.orEmpty()
+            throw IOException("Relay rejected WebSocket upgrade: $statusLine$detail")
+        }
+        val accept = responseHeaders["sec-websocket-accept"]
         val expected = Base64.encodeToString(
             MessageDigest.getInstance("SHA-1").digest((key + WEBSOCKET_GUID).toByteArray(Charsets.ISO_8859_1)),
             Base64.NO_WRAP,
@@ -292,6 +302,29 @@ class RelayWebSocket(
             out.write(header, 0, size)
             out.write(maskedPayload)
             out.flush()
+        }
+    }
+
+    /**
+     * Read a short error body so the relay's "device not registered" message
+     * can be surfaced. Only bounded, length-delimited bodies are read; the
+     * connection is about to be discarded anyway.
+     */
+    private fun readErrorBody(
+        socket: Socket,
+        input: InputStream,
+        headers: Map<String, String>,
+    ): String? {
+        val length = headers["content-length"]?.toLongOrNull() ?: return null
+        if (length <= 0 || length > 8 * 1024) return null
+        val previousTimeout = socket.soTimeout
+        return try {
+            socket.soTimeout = 2_000
+            readFully(input, length.toInt()).toString(Charsets.UTF_8)
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { socket.soTimeout = previousTimeout }
         }
     }
 

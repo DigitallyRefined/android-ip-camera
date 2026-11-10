@@ -44,6 +44,7 @@ view. Both sides must be reset before pairing the phone again.
 | `GET /api/status`                  | Associated devices, online state, WebRTC ICE summary |
 | `POST /api/pairing`                | Create a one-time pairing code and intent link       |
 | `POST /api/associate`              | Exchange a code for a device ID + bearer token       |
+| `PATCH /api/devices/:id`           | Rename a device                                      |
 | `DELETE /api/devices/:id`          | Forget a device                                      |
 | `GET /r/:deviceId/*`               | In-memory HTTP proxy to the camera                   |
 | `POST /api/webrtc/:deviceId/offer` | WebRTC SDP offer/answer for live H.264               |
@@ -136,6 +137,13 @@ docker run --rm -p 3000:3000 -p 40000-40100:40000-40100/udp \
 
 ## Local development
 
+The base `compose.yml` builds and runs the production bundle. For hot reload,
+layer the development override on top of it:
+
+```bash
+docker compose -f compose.yml -f compose.dev.yml up --build
+```
+
 Bun and Java tooling are only expected inside Docker in this repository:
 
 ```bash
@@ -159,9 +167,16 @@ docker run --rm -e HOME=/tmp -v "$PWD/server:/app" -w /app oven/bun:1.4.4-alpine
 - Pairing codes expire after 10 minutes and are single-use.
 - The relay does not persist request bodies, snapshots, audio, or video.
 - `/r/:deviceId/*` is only reachable while that camera's WebSocket is online.
-- Pairing codes themselves are the authorization to add a camera.
+- Pairing codes themselves are the authorization to add a camera. A camera can
+  always remove its own record with its device token, which is what the app's
+  Disconnect button uses.
+- Device names are user generated and limited to 1–100 characters using letters,
+  numbers, spaces, and hyphens. The server trims the name and validates it with
+  the same rules the dashboard's rename prompt uses.
 - Put the relay behind HTTPS. The Android app validates the relay's certificate
   for the outbound WSS connection; only the loopback camera proxy uses a
   trust-all context (for the app's self-signed certificate).
 - After the relay removes a camera, its token is rejected with HTTP 401 and the
-  app stops reconnecting and forgets the association.
+  body `device not registered`; the app stops reconnecting and forgets the
+  association. The app treats 401/403 as terminal only when the body contains
+  that marker, so a WAF or proxy 401/403 does not clear the association.

@@ -196,12 +196,18 @@ class RelayClient(
                 socket.readLoop()
                 pingJob.cancel()
             } catch (error: RelayUnauthorizedException) {
-                // The relay removed this camera. Retrying would never succeed, so
-                // forget the association and let the user pair again.
+                // The relay no longer recognises this camera (removed, not
+                // registered, or the token was rejected). Retrying would never
+                // succeed, so forget the association and let the user pair again.
                 Log.w(TAG, "Relay rejected this camera: ${error.message}")
                 RelayAssociation.clear(context)
-                publishStatus(false, "Relay rejected this camera. Pair it again from the relay page.")
+                val detail = error.message?.takeIf { it.isNotBlank() }
+                    ?: "Relay rejected this camera"
+                publishStatus(false, "$detail. Pair it again from the relay page.")
                 running = false
+                videoWriter?.interrupt()
+                videoWriter = null
+                videoQueue.clear()
             } catch (error: Throwable) {
                 Log.w(TAG, "Relay connection failed: ${error.message}")
                 publishStatus(false, error.message ?: "Connection failed")

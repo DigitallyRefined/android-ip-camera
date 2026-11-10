@@ -1,10 +1,13 @@
 import type { BunRequest } from "bun";
+import { normalizeDeviceName } from "../shared/deviceName";
 import {
   consumePairingCode,
   createDevice,
   createPairingCode,
   deleteDevice,
+  deviceExists,
   listDevices,
+  renameDevice,
 } from "./db";
 import { forwardHeaders, getDeviceConnection, onlineDeviceIds } from "./relay";
 import {
@@ -74,16 +77,66 @@ export async function handleAssociate(request: Request): Promise<Response> {
   });
 }
 
+/** Route the device resource by method: DELETE removes, PATCH renames. */
+export async function handleDevice(
+  request: Request,
+  deviceId: string,
+): Promise<Response> {
+  if (request.method === "DELETE") return handleDeleteDevice(request, deviceId);
+  if (request.method === "PATCH") return handleRenameDevice(request, deviceId);
+  return json({ error: "Method not allowed" }, 405);
+}
+
 export async function handleDeleteDevice(
   request: Request,
   deviceId: string,
 ): Promise<Response> {
   if (request.method !== "DELETE")
     return json({ error: "Method not allowed" }, 405);
+
+  // Deleting an unknown device is idempotent: the caller's goal is already
+  // satisfied. Check this before auth so a retried delete still succeeds after
+  // the first attempt removed the row.
+  if (!(await deviceExists(deviceId)))
+    return json({ error: "Unknown device" }, 404);
+
   const removed = await deleteDevice(deviceId);
   if (!removed) return json({ error: "Unknown device" }, 404);
   getDeviceConnection(deviceId)?.close(4001, "removed from relay");
   return json({ ok: true });
+}
+
+export async function handleRenameDevice(
+  request: Request,
+  deviceId: string,
+): Promise<Response> {
+  if (request.method !== "PATCH")
+    return json({ error: "Method not allowed" }, 405);
+
+  if (!(await deviceExists(deviceId)))
+    return json({ error: "Unknown device" }, 404);
+
+  let payload: { name?: unknown };
+  try {
+    payload = (await request.json()) as typeof payload;
+  } catch {
+    return json({ error: "Expected a JSON body" }, 400);
+  }
+
+  const name = normalizeDeviceName(payload.name);
+  if (!name) {
+    return json(
+      {
+        error:
+          "Name must be 1-100 characters using letters, numbers, spaces, or hyphens",
+      },
+      400,
+    );
+  }
+
+  const renamed = await renameDevice(deviceId, name);
+  if (!renamed) return json({ error: "Unknown device" }, 404);
+  return json({ ok: true, device: { id: deviceId, name } });
 }
 
 export async function handleProxy(

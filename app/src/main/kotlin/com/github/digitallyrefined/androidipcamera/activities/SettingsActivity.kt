@@ -2,16 +2,16 @@ package com.github.digitallyrefined.androidipcamera.activities
 
 import android.app.Activity
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import androidx.preference.EditTextPreference
 import androidx.preference.Preference
+import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
@@ -40,7 +40,23 @@ class SettingsActivity : AppCompatActivity() {
             private const val PICK_RECORDING_FOLDER = 2
             private const val PREF_ONVIF_NAME = "onvif_name"
             private const val PREF_ONVIF_PORT = "onvif_port"
+            // Longer than the service's worst-case delete retry window, so a
+            // crashed service cannot leave the relay section disabled forever.
+            private const val RELAY_DELETING_TIMEOUT_MS = 120_000L
         }
+
+        // The relay client clears the association from the service when the
+        // relay rejects the camera. Refresh this screen immediately so the
+        // pairing row and disconnect button reflect that change.
+        private val relayPreferenceListener =
+            SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == "relay_connected" ||
+                    key == "relay_status" ||
+                    key == "relay_deleting"
+                ) {
+                    refreshRelayPreferences()
+                }
+            }
 
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
@@ -466,17 +482,18 @@ class SettingsActivity : AppCompatActivity() {
             findPreference<Preference>("relay_disconnect")?.setOnPreferenceClickListener {
                 AlertDialog.Builder(requireContext())
                     .setTitle("Disconnect from relay?")
-                    .setMessage("The camera will stop reconnecting. You can pair it again from the relay web page.")
+                    .setMessage("The camera will stop reconnecting and will be removed from the relay. You can pair it again from the relay web page.")
                     .setPositiveButton("Disconnect") { _, _ ->
                         requireContext().startService(
                             Intent(requireContext(), StreamingService::class.java).apply {
                                 action = StreamingService.ACTION_DISCONNECT_RELAY
                             }
                         )
-                        refreshRelayPreferences()
-                        Toast.makeText(requireContext(), "Relay disconnected", Toast.LENGTH_SHORT).show()
-                        // The service clears the credentials asynchronously.
-                        Handler(Looper.getMainLooper()).postDelayed({ refreshRelayPreferences() }, 750)
+                        Toast.makeText(
+                            requireContext(),
+                            "Removing camera from relay…",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                     .setNegativeButton("Cancel", null)
                     .show()
@@ -488,22 +505,68 @@ class SettingsActivity : AppCompatActivity() {
         override fun onResume() {
             super.onResume()
             refreshRelayPreferences()
+            PreferenceManager.getDefaultSharedPreferences(requireContext())
+                .registerOnSharedPreferenceChangeListener(relayPreferenceListener)
+        }
+
+        override fun onPause() {
+            PreferenceManager.getDefaultSharedPreferences(requireContext())
+                .unregisterOnSharedPreferenceChangeListener(relayPreferenceListener)
+            super.onPause()
+        }
+
+        private fun isRelayDeleting(prefs: SharedPreferences): Boolean {
+            if (!prefs.getBoolean("relay_deleting", false)) return false
+            val since = prefs.getLong("relay_deleting_since", 0L)
+            val active = since > 0L &&
+                System.currentTimeMillis() - since < RELAY_DELETING_TIMEOUT_MS
+            if (!active) {
+                // The service died or was killed before it could clear the flag.
+                prefs.edit()
+                    .putBoolean("relay_deleting", false)
+                    .remove("relay_deleting_since")
+                    .apply()
+            }
+            return active
         }
 
         private fun refreshRelayPreferences() {
             val context = context ?: return
-            val credentials = RelayAssociation.load(context)
             val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val deleting = isRelayDeleting(prefs)
+            val credentials = if (deleting) null else RelayAssociation.load(context)
             val connected = prefs.getBoolean("relay_connected", false)
             val status = prefs.getString("relay_status", null)
+
+            val relayPreference = findPreference<Preference>("relay_server")
+            val disconnectPreference = findPreference<Preference>("relay_disconnect")
+            val relayCategory = findPreference<PreferenceCategory>("relay_category")
+
+            // Disable the whole relay section while the remote delete is in
+            // flight so the user cannot start another operation.
+            relayCategory?.isEnabled = !deleting
+            relayPreference?.isEnabled = !deleting
+            disconnectPreference?.isEnabled = !deleting
+
+            if (deleting) {
+                relayPreference?.summary = "Removing this camera from the relay…"
+                relayPreference?.setOnPreferenceClickListener(null)
+                relayPreference?.isSelectable = false
+                disconnectPreference?.isVisible = true
+                return
+            }
 
             // Show the relay URL and connection status in a single preference,
             // with the status on its own line beneath the URL. Without an
             // association, the row links to the relay page to start pairing.
-            val relayPreference = findPreference<Preference>("relay_server")
             if (credentials == null) {
                 relayPreference?.summary =
-                    "Not set. To join, scan the QR code on the relay page"
+                    "Not set. Tap to setup or scan the QR code on the relay page"
+                relayPreference?.isSelectable = true
+                relayPreference?.setOnPreferenceClickListener {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(RelayAssociation.FALLBACK_SERVER_URL)))
+                    true
+                }
             } else {
                 val connectionStatus = if (connected) {
                     status ?: "Connected"
@@ -512,8 +575,9 @@ class SettingsActivity : AppCompatActivity() {
                 }
                 relayPreference?.summary = "${credentials.serverUrl}\n$connectionStatus"
                 relayPreference?.setOnPreferenceClickListener(null)
+                relayPreference?.isSelectable = false
             }
-            findPreference<Preference>("relay_disconnect")?.isVisible = credentials != null
+            disconnectPreference?.isVisible = credentials != null
         }
 
         override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

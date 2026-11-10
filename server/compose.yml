@@ -6,20 +6,25 @@ services:
     restart: unless-stopped
     volumes:
       - ./storage:/storage
-    #   # Development mode
-    #   - .:/home/bun/app
-    # # Bun's dev server only accepts the hostname passed to Bun.serve(). Map
-    # # DEV_SERVER_HOSTNAME to 0.0.0.0 so the dev server can bind to it on all
-    # # interfaces, and keep the FQDN so its Host-header check accepts requests
-    # # for this hostname. WebRTC address detection uses DNS directly, so this
-    # # hosts entry does not affect it.
-    # extra_hosts:
-    #   - "android-ip-camera.example.com:0.0.0.0"
     environment:
-      # # Development mode
-      # - DEV_SERVER_HOSTNAME=android-ip-camera.example.com
+      # Persist only device records and pairing codes. Media and proxied
+      # requests never touch the disk.
+      - DB_PATH=/storage/relay.sqlite
+      # Public HTTPS origin used in the androidipcamera:// pairing link.
+      - PUBLIC_URL=https://android-ip-camera.example.com
+      # Werift binds inside this fixed UDP range; publish the same range below.
+      - WEBRTC_UDP_PORT_RANGE=40000-40100
+      # Address viewers use for the WebRTC UDP candidates. Leave unset to use
+      # the private address PUBLIC_URL resolves to, or set it when the relay is
+      # behind Docker/NAT and the public hostname points at a proxy.
+      - WEBRTC_ADVERTISE_HOST=${WEBRTC_ADVERTISE_HOST:-}
+      # Add a TURN server here if viewers and the relay are behind symmetric NAT.
+      - WEBRTC_STUN_URLS=stun:stun.l.google.com:19302
     env_file:
       - ./.env
+    # WebRTC media is UDP and cannot go through Traefik's HTTP router.
+    ports:
+      - "40000-40100:40000-40100/udp"
     # Disable Core Dumps
     ulimits:
       core:
@@ -28,17 +33,6 @@ services:
     build:
       context: .
       target: production
-    #   # Development mode
-    #   target: builder
-    #   tags:
-    #     - android-ip-camera-server:develop
-    # develop:
-    #   watch:
-    #     - action: sync
-    #       path: ./src
-    #       target: /home/bun/app/src
-    #     - action: rebuild
-    #       path: package.json
     networks:
       - traefik
     labels:

@@ -1,0 +1,23 @@
+# Development overrides. Use together with the base compose file:
+#
+#   docker compose -f compose.yml -f compose.dev.yml up --build
+#
+# This bind-mounts the source tree and runs Bun's hot-reload server instead of
+# the production bundle. Do not use this file for a public deployment.
+services:
+  android-ip-camera-server:
+    volumes:
+      - .:/home/bun/app
+    # Bun's dev server only accepts the hostname passed to Bun.serve(). Map
+    # DEV_SERVER_HOSTNAME to 0.0.0.0 so the dev server can bind to it on all
+    # interfaces, and keep the FQDN so its Host-header check accepts requests
+    # for this hostname. WebRTC address detection uses DNS directly, so this
+    # hosts entry does not affect it.
+    extra_hosts:
+      - "android-ip-camera.example.com:0.0.0.0"
+    environment:
+      - DEV_SERVER_HOSTNAME=android-ip-camera.example.com
+    build:
+      target: builder
+      tags:
+        - android-ip-camera-server:develop

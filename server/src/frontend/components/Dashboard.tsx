@@ -1,4 +1,8 @@
 import { useState } from "react";
+import {
+  DEVICE_NAME_MAX_LENGTH,
+  DEVICE_NAME_PATTERN,
+} from "../../shared/deviceName";
 import { requestJson } from "../api";
 import type { Device, RelayStatus } from "../types";
 import { LiveView } from "./LiveView";
@@ -13,7 +17,41 @@ export function Dashboard({
   onPairAnotherCamera: () => void;
 }) {
   const [removing, setRemoving] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const renameDevice = async (device: Device) => {
+    const input = window.prompt(
+      `Rename ${device.name}.\n\nUse letters, numbers, spaces, and hyphens (max ${DEVICE_NAME_MAX_LENGTH} characters).`,
+      device.name,
+    );
+    // Cancelled prompt.
+    if (input === null) return;
+
+    const name = input.trim();
+    if (!DEVICE_NAME_PATTERN.test(name)) {
+      setError(
+        `Name must be 1-${DEVICE_NAME_MAX_LENGTH} characters using letters, numbers, spaces, or hyphens.`,
+      );
+      return;
+    }
+    if (name === device.name) return;
+
+    setRenaming(device.id);
+    setError(null);
+    try {
+      await requestJson(`/api/devices/${device.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRenaming(null);
+    }
+  };
 
   const removeDevice = async (device: Device) => {
     if (!confirm(`Remove ${device.name} from this relay?`)) return;
@@ -69,11 +107,19 @@ export function Dashboard({
             iceTransportPolicy={status.webrtc.iceTransportPolicy}
             advertiseHost={status.webrtc.advertiseHost}
           />
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-4">
+            <button
+              type="button"
+              onClick={() => void renameDevice(device)}
+              disabled={renaming === device.id || removing === device.id}
+              className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
+            >
+              {renaming === device.id ? "Renaming…" : "Rename camera"}
+            </button>
             <button
               type="button"
               onClick={() => void removeDevice(device)}
-              disabled={removing === device.id}
+              disabled={removing === device.id || renaming === device.id}
               className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-destructive hover:underline disabled:opacity-50"
             >
               {removing === device.id
