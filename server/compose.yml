@@ -1,0 +1,53 @@
+services:
+  android-ip-camera-server:
+    # https://github.com/DigitallyRefined/android-ip-camera/releases
+    image: ghcr.io/digitallyrefined/android-ip-camera-server:0.16.1
+    container_name: android-ip-camera-server
+    restart: unless-stopped
+    volumes:
+      - ./storage:/storage
+    #   # Development mode
+    #   - .:/home/bun/app
+    # # Bun's dev server only accepts the hostname passed to Bun.serve(). Map
+    # # DEV_SERVER_HOSTNAME to 0.0.0.0 so the dev server can bind to it on all
+    # # interfaces, and keep the FQDN so its Host-header check accepts requests
+    # # for this hostname. WebRTC address detection uses DNS directly, so this
+    # # hosts entry does not affect it.
+    # extra_hosts:
+    #   - "android-ip-camera.example.com:0.0.0.0"
+    environment:
+      # # Development mode
+      # - DEV_SERVER_HOSTNAME=android-ip-camera.example.com
+    env_file:
+      - ./.env
+    # Disable Core Dumps
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
+    build:
+      context: .
+      target: production
+    #   # Development mode
+    #   target: builder
+    #   tags:
+    #     - android-ip-camera-server:develop
+    # develop:
+    #   watch:
+    #     - action: sync
+    #       path: ./src
+    #       target: /home/bun/app/src
+    #     - action: rebuild
+    #       path: package.json
+    networks:
+      - traefik
+    labels:
+      traefik.enable: true
+
+      traefik.http.routers.android-ip-camera.entrypoints: websecure
+      traefik.http.routers.android-ip-camera.rule: Host(`android-ip-camera.example.com`)
+      traefik.http.routers.android-ip-camera.tls: true
+
+networks:
+  traefik:
+    external: true
