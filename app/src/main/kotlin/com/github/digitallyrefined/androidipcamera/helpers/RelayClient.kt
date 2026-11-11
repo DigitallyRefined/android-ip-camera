@@ -144,6 +144,27 @@ class RelayClient(
         }
     }
 
+    /**
+     * Tell the relay that motion was detected. The same authenticated device
+     * socket identifies the camera, so the payload carries no device ID or
+     * token. Motion detection calls this from the camera thread, so the write
+     * runs on the IO scope; events are dropped while the relay is offline
+     * because a notification delivered after reconnecting is stale. The
+     * detector only emits a start after motion has cleared, so no extra
+     * throttling is needed here.
+     */
+    fun sendMotion() {
+        if (!running || !connected) return
+        scope.launch {
+            if (!running || !connected) return@launch
+            sendJson(
+                JSONObject()
+                    .put("type", "motion")
+                    .put("at", System.currentTimeMillis()),
+            )
+        }
+    }
+
     fun requestKeyFrame() {
         onKeyFrameRequest()
     }

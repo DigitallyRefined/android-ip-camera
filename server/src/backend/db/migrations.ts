@@ -19,6 +19,8 @@ async function createInitialRelaySchema(db: Kysely<Database>): Promise<void> {
     .addColumn("token_hash", "varchar(64)", (column) => column.notNull())
     .addColumn("created_at", date, (column) => column.notNull())
     .addColumn("last_seen_at", date)
+    .addColumn("notification_urls", "text")
+    .addColumn("notification_last_sent", date)
     .execute();
 
   await db.schema

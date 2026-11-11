@@ -7,6 +7,10 @@ export interface DevicesTable {
   token_hash: string;
   created_at: DateValue;
   last_seen_at: DateValue | null;
+  /** Newline-separated Apprise URLs used for motion notifications. */
+  notification_urls: string | null;
+  /** Date of the last notification send, used to rate limit per camera. */
+  notification_last_sent: DateValue | null;
 }
 
 export interface PairingCodesTable {

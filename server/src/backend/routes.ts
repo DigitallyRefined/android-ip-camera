@@ -1,14 +1,24 @@
 import type { BunRequest } from "bun";
-import { normalizeDeviceName } from "../shared/deviceName";
-import type { JsonValue } from "../shared/json";
+import { normalizeDeviceName } from "@/shared/deviceName";
+import type { JsonValue } from "@/shared/json";
 import {
+  formatNotificationUrls,
+  parseNotificationUrls,
+} from "@/shared/notifications";
+import {
+  claimDeviceNotificationSend,
   createDevice,
   deleteDevice,
   deviceExists,
+  getDeviceName,
+  getDeviceNotificationUrls,
   listDevices,
+  NOTIFICATION_MIN_INTERVAL_MS,
   renameDevice,
+  setDeviceNotificationUrls,
 } from "./db/tables/devices";
 import { consumePairingCode, createPairingCode } from "./db/tables/pairing";
+import { sendAppriseNotification } from "./notifications";
 import { forwardHeaders, getDeviceConnection, onlineDeviceIds } from "./relay";
 import type { DeviceConnection } from "./relay";
 import { cameraProxyPath } from "./proxyPath";
@@ -346,6 +356,107 @@ export async function handleRenameDevice(
   const renamed = await renameDevice(deviceId, name);
   if (!renamed) return json({ error: "Unknown device" }, 404);
   return json({ ok: true, device: { id: deviceId, name } });
+}
+
+export async function handleDeviceNotifications(
+  request: Request,
+  deviceId: string,
+): Promise<Response> {
+  const method = request.method.toUpperCase();
+  if (method !== "GET" && method !== "PUT") {
+    return json({ error: "Method not allowed" }, 405);
+  }
+
+  if (!(await deviceExists(deviceId))) {
+    return json({ error: "Unknown device" }, 404);
+  }
+
+  if (method === "GET") {
+    return json({
+      notificationUrls: formatNotificationUrls(
+        await getDeviceNotificationUrls(deviceId),
+      ),
+    });
+  }
+
+  let payload: { notificationUrls?: JsonValue };
+  try {
+    payload = (await request.json()) as typeof payload;
+  } catch {
+    return json({ error: "Expected a JSON body" }, 400);
+  }
+
+  if (typeof payload.notificationUrls !== "string") {
+    return json(
+      { error: "Expected notificationUrls as a newline-separated string" },
+      400,
+    );
+  }
+
+  const parsed = parseNotificationUrls(payload.notificationUrls);
+  if (!parsed.ok) return json({ error: parsed.error }, 400);
+
+  const updated = await setDeviceNotificationUrls(deviceId, parsed.urls);
+  if (!updated) return json({ error: "Unknown device" }, 404);
+
+  return json({
+    ok: true,
+    notificationUrls: formatNotificationUrls(parsed.urls),
+  });
+}
+
+export async function handleTestDeviceNotification(
+  request: Request,
+  deviceId: string,
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return json({ error: "Method not allowed" }, 405);
+  }
+
+  const deviceName = await getDeviceName(deviceId);
+  if (deviceName === null) return json({ error: "Unknown device" }, 404);
+
+  let payload: { notificationUrls?: JsonValue };
+  try {
+    payload = (await request.json()) as typeof payload;
+  } catch {
+    return json({ error: "Expected a JSON body" }, 400);
+  }
+
+  if (typeof payload.notificationUrls !== "string") {
+    return json(
+      { error: "Expected notificationUrls as a newline-separated string" },
+      400,
+    );
+  }
+
+  const parsed = parseNotificationUrls(payload.notificationUrls);
+  if (!parsed.ok) return json({ error: parsed.error }, 400);
+  if (parsed.urls.length === 0) {
+    return json(
+      { error: "Add at least one Apprise URL before sending a test." },
+      400,
+    );
+  }
+
+  const claim = await claimDeviceNotificationSend(deviceId);
+  if (!claim.allowed) {
+    const seconds = Math.max(1, Math.ceil(claim.retryAfterMs / 1000));
+    return json(
+      {
+        error: `Notifications are limited to one every ${NOTIFICATION_MIN_INTERVAL_MS / 1000} seconds. Try again in ${seconds} second${seconds === 1 ? "" : "s"}.`,
+      },
+      429,
+    );
+  }
+
+  const result = await sendAppriseNotification(
+    parsed.urls,
+    "Test notification",
+    `Test notification for camera ${deviceName}.`,
+  );
+  if (!result.ok) return json({ error: result.error }, 502);
+  return json({ ok: true });
 }
 
 export async function handleProxy(

@@ -4,7 +4,7 @@ import { BunPostgresDialect } from "kysely-bun-dialects/postgres";
 import { BunSqliteDialect } from "kysely-bun-dialects/sqlite";
 import type { Database } from "./schema";
 
-const DEFAULT_DATABASE_URL = "sqlite:///storage/relay.sqlite";
+const DEFAULT_DATABASE_URL = "sqlite:///data/relay.sqlite";
 
 export type DatabaseType = "sqlite" | "mysql" | "postgres";
 

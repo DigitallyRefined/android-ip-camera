@@ -5,9 +5,11 @@ import { initializeDatabase } from "./backend/db";
 import {
   handleAssociate,
   handleDevice,
+  handleDeviceNotifications,
   handlePairing,
   handleProxy,
   handleStatus,
+  handleTestDeviceNotification,
   handleWebRtcAuth,
   handleWebRtcOffer,
   handleWebRtcRecordingOffer,
@@ -36,6 +38,17 @@ const server = serve({
       handleDevice(
         request,
         (request as BunRequest<"/api/devices/:id">).params.id,
+      ),
+    "/api/devices/:id/notifications": (request) =>
+      handleDeviceNotifications(
+        request,
+        (request as BunRequest<"/api/devices/:id/notifications">).params.id,
+      ),
+    "/api/devices/:id/notifications/test": (request) =>
+      handleTestDeviceNotification(
+        request,
+        (request as BunRequest<"/api/devices/:id/notifications/test">).params
+          .id,
       ),
     "/api/webrtc/:deviceId/offer": (request) =>
       handleWebRtcOffer(request as BunRequest<"/api/webrtc/:deviceId/offer">),

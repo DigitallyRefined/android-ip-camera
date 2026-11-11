@@ -4,8 +4,12 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
+import {
+  formatNotificationUrls,
+  parseNotificationUrls,
+} from "@/shared/notifications";
 import { db } from "../connection";
-import { dateMs, nowMs, sqlNow } from "../dateUtils";
+import { dateMs, nowMs, sqlDateOffset, sqlNow } from "../dateUtils";
 import type { DeviceRow } from "../schema";
 
 export interface DeviceSummary {
@@ -110,6 +114,100 @@ export async function deleteDevice(id: string): Promise<boolean> {
     .where("id", "=", id)
     .executeTakeFirst();
   return Number(result?.numDeletedRows ?? 0n) > 0;
+}
+
+export async function getDeviceName(id: string): Promise<string | null> {
+  if (!id) return null;
+  const row = await db
+    .selectFrom("devices")
+    .select("name")
+    .where("id", "=", id)
+    .limit(1)
+    .executeTakeFirst();
+  return row?.name ?? null;
+}
+
+export async function getDeviceNotificationUrls(id: string): Promise<string[]> {
+  if (!id) return [];
+  const row = await db
+    .selectFrom("devices")
+    .select("notification_urls")
+    .where("id", "=", id)
+    .limit(1)
+    .executeTakeFirst();
+  if (!row?.notification_urls) return [];
+  const parsed = parseNotificationUrls(row.notification_urls);
+  return parsed.ok ? parsed.urls : [];
+}
+
+export async function setDeviceNotificationUrls(
+  id: string,
+  urls: readonly string[],
+): Promise<boolean> {
+  const result = await db
+    .updateTable("devices")
+    .set({
+      notification_urls: urls.length > 0 ? formatNotificationUrls(urls) : null,
+    })
+    .where("id", "=", id)
+    .executeTakeFirst();
+  return Number(result?.numUpdatedRows ?? 0n) > 0;
+}
+
+export const NOTIFICATION_MIN_INTERVAL_MS = 5_000;
+
+export type NotificationClaimResult =
+  { allowed: true } | { allowed: false; retryAfterMs: number };
+
+/**
+ * Atomically reserve a notification send for a camera. Sends (including test
+ * notifications) share this window, so concurrent motion events cannot exceed
+ * one request every five seconds.
+ */
+export async function claimDeviceNotificationSend(
+  id: string,
+  now = nowMs(),
+): Promise<NotificationClaimResult> {
+  if (!id) return { allowed: false, retryAfterMs: 0 };
+
+  const result = await db
+    .updateTable("devices")
+    .set({ notification_last_sent: sqlNow() })
+    .where("id", "=", id)
+    .where((expression) =>
+      expression.or([
+        expression("notification_last_sent", "is", null),
+        expression(
+          "notification_last_sent",
+          "<=",
+          sqlDateOffset(-NOTIFICATION_MIN_INTERVAL_MS / 1000),
+        ),
+      ]),
+    )
+    .executeTakeFirst();
+
+  if (Number(result?.numUpdatedRows ?? 0n) > 0) return { allowed: true };
+
+  const row = await db
+    .selectFrom("devices")
+    .select("notification_last_sent")
+    .where("id", "=", id)
+    .limit(1)
+    .executeTakeFirst();
+  const lastSentAt = row?.notification_last_sent;
+  if (lastSentAt === null || lastSentAt === undefined) {
+    // The device disappeared between the update and the read. Let the caller
+    // report its own not-found response instead of treating this as a limit.
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    retryAfterMs: Math.max(
+      0,
+      dateMs(lastSentAt) + NOTIFICATION_MIN_INTERVAL_MS - now,
+    ),
+  };
 }
 
 export async function deviceExists(id: string): Promise<boolean> {

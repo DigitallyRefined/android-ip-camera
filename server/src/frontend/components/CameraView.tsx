@@ -7,6 +7,7 @@ import type {
 } from "../types";
 import { basicAuth, timeAgo } from "../utils";
 import { LiveView } from "./LiveView";
+import { NotificationSettings } from "./NotificationSettings";
 import { RecordingsView } from "./RecordingsView";
 
 /**
@@ -191,6 +192,7 @@ export function CameraView({
       )}
 
       <div className="flex flex-wrap items-center justify-end gap-4 border-t border-border pt-4">
+        <NotificationSettings device={device} />
         <button
           type="button"
           onClick={onRename}

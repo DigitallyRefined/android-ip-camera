@@ -1,5 +1,5 @@
 import type { ServerWebSocket } from "bun";
-import type { JsonObject, JsonValue } from "../shared/json";
+import type { JsonObject, JsonValue } from "@/shared/json";
 
 /**
  * One camera connection. The protocol multiplexes all browser traffic over a
@@ -8,8 +8,14 @@ import type { JsonObject, JsonValue } from "../shared/json";
  *   server -> camera (text)  http-request | http-cancel | media-start |
  *                            media-stop | keyframe | auth-check
  *   camera -> server (text)  http-response | http-chunk | http-end | http-error |
- *                            auth-result | media-denied
+ *                            auth-result | media-denied | motion
  *   camera -> server (binary) [1, flags, ptsUs:u64be, ...annex-b access unit]
+ *
+ * A motion message is { type: "motion", at?: epoch-ms }. It travels over the
+ * camera's authenticated socket, so the connection already identifies the
+ * device. The relay logs it and passes it to an optional listener, which sends
+ * the camera's configured Apprise notifications. Nothing is persisted or
+ * broadcast to viewers.
  *
  * Nothing is written to disk. Request and response bodies live in memory only
  * for as long as the browser request is active.
@@ -28,6 +34,14 @@ export interface DeviceSocketData {
   /** Set when the socket opens, so close/message events can verify identity. */
   connection?: DeviceConnection;
 }
+
+export interface MotionEvent {
+  deviceId: string;
+  deviceName: string;
+  at: string;
+}
+
+export type MotionListener = (event: MotionEvent) => void;
 
 interface PendingRequest {
   id: string;
@@ -58,6 +72,7 @@ export class DeviceConnection {
   readonly deviceName: string;
   readonly connectedAt = Date.now();
   private readonly ws: ServerWebSocket<DeviceSocketData>;
+  private readonly onMotion?: MotionListener;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly authPending = new Map<
     string,
@@ -71,10 +86,14 @@ export class DeviceConnection {
   private closed = false;
   private mediaActive = false;
 
-  constructor(ws: ServerWebSocket<DeviceSocketData>) {
+  constructor(
+    ws: ServerWebSocket<DeviceSocketData>,
+    onMotion?: MotionListener,
+  ) {
     this.ws = ws;
     this.deviceId = ws.data.deviceId;
     this.deviceName = ws.data.deviceName;
+    this.onMotion = onMotion;
   }
 
   isOpen(): boolean {
@@ -157,6 +176,27 @@ export class DeviceConnection {
 
     const id = typeof message.id === "string" ? message.id : "";
     const type = typeof message.type === "string" ? message.type : "";
+
+    if (type === "motion") {
+      const rawAt = typeof message.at === "number" ? message.at : Date.now();
+      const eventDate = new Date(rawAt);
+      const at = Number.isFinite(eventDate.getTime())
+        ? eventDate.toISOString()
+        : new Date().toISOString();
+      console.log(
+        `Motion detected: ${this.deviceName} (${this.deviceId}) at ${at}`,
+      );
+      try {
+        this.onMotion?.({
+          deviceId: this.deviceId,
+          deviceName: this.deviceName,
+          at,
+        });
+      } catch (error) {
+        console.warn("Motion notification dispatch failed", error);
+      }
+      return;
+    }
 
     if (type === "auth-result") {
       if (!id) return;
@@ -444,11 +484,12 @@ const online = new Map<string, DeviceConnection>();
 
 export function registerDevice(
   ws: ServerWebSocket<DeviceSocketData>,
+  onMotion?: MotionListener,
 ): DeviceConnection {
   const previous = online.get(ws.data.deviceId);
   if (previous && previous.isOpen())
     previous.close(4000, "replaced by a newer connection");
-  const connection = new DeviceConnection(ws);
+  const connection = new DeviceConnection(ws, onMotion);
   ws.data.connection = connection;
   online.set(connection.deviceId, connection);
   return connection;

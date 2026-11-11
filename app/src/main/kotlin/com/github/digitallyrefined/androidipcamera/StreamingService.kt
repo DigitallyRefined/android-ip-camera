@@ -479,6 +479,8 @@ class StreamingService : LifecycleService() {
             motionMonitor = MotionMonitor(this) { active ->
                 Log.i(TAG, "Motion ${if (active) "started" else "ended"}")
                 onvifServer?.setMotion(active)
+                // Report the start to the relay too, when the camera is associated.
+                if (active) relayClient?.sendMotion()
                 handleMotionRecording(active)
             }
             rtspServer = RtspServer(

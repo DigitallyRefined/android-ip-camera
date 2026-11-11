@@ -1,5 +1,6 @@
 import type { Server, ServerWebSocket } from "bun";
 import { authenticateDevice, markDeviceSeen } from "./db/tables/devices";
+import { notifyMotion } from "./notifications";
 import {
   registerDevice,
   unregisterDevice,
@@ -33,10 +34,12 @@ export async function handleDeviceSocket(
 }
 
 export function handleDeviceOpen(ws: ServerWebSocket<DeviceSocketData>): void {
-  const connection = registerDevice(ws);
+  const connection = registerDevice(ws, (event) => {
+    void notifyMotion(event);
+  });
   void markDeviceSeen(connection.deviceId);
   console.log(
-    `camera connected: ${connection.deviceName} (${connection.deviceId})`,
+    `Camera connected: ${connection.deviceName} (${connection.deviceId})`,
   );
 }
 
@@ -58,6 +61,6 @@ export function handleDeviceClose(ws: ServerWebSocket<DeviceSocketData>): void {
   const connection = ws.data.connection;
   if (connection) unregisterDevice(connection);
   console.log(
-    `camera disconnected: ${ws.data.deviceName} (${ws.data.deviceId})`,
+    `Camera disconnected: ${ws.data.deviceName} (${ws.data.deviceId})`,
   );
 }

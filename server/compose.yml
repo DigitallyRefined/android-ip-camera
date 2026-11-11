@@ -5,7 +5,7 @@ services:
     container_name: android-ip-camera-server
     restart: unless-stopped
     volumes:
-      - ./storage:/storage
+      - ./data/relay:/data
     environment:
       # Public HTTPS origin used in the androidipcamera:// pairing link.
       - PUBLIC_URL=${PUBLIC_URL:-https://android-ip-camera-relay.example.com}
@@ -17,6 +17,8 @@ services:
       - WEBRTC_ADVERTISE_HOST=${WEBRTC_ADVERTISE_HOST:-}
       # Add a TURN server here if viewers and the relay are behind symmetric NAT.
       - WEBRTC_STUN_URLS=stun:stun.l.google.com:19302
+      # Internal address of the Apprise API used for notifications.
+      - APPRISE_URL=${APPRISE_URL:-http://apprise:8000}
     env_file:
       - ./.env
     # WebRTC media is UDP and cannot go through Traefik's HTTP router.
@@ -30,15 +32,41 @@ services:
     build:
       context: .
       target: production
+    depends_on:
+      apprise:
+        condition: service_healthy
     networks:
       - traefik
+      - backend
     labels:
       traefik.enable: true
+      # The container is on two networks; tell Traefik which one to route over.
+      traefik.docker.network: traefik
 
       traefik.http.routers.android-ip-camera.entrypoints: websecure
       traefik.http.routers.android-ip-camera.rule: Host(`android-ip-camera-relay.example.com`)
       traefik.http.routers.android-ip-camera.tls: true
 
+  apprise:
+    # https://github.com/caronc/apprise/releases
+    image: caronc/apprise:2.1.0
+    container_name: android-ip-camera-apprise
+    restart: unless-stopped
+    volumes:
+      - ./data/apprise/config:/config
+      - ./data/apprise/attach:/attach
+    # Not exposed publicly: only the relay reaches it, over the backend network.
+    networks:
+      - backend
+    # Apprise needs outbound internet access to deliver notifications.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
 networks:
   traefik:
     external: true
+  backend:

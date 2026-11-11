@@ -2,7 +2,7 @@ import { useState } from "react";
 import {
   DEVICE_NAME_MAX_LENGTH,
   DEVICE_NAME_PATTERN,
-} from "../../shared/deviceName";
+} from "@/shared/deviceName";
 import { requestJson } from "../api";
 import type { Device, RelayStatus } from "../types";
 import { CameraView } from "./CameraView";

@@ -30,8 +30,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # IntelliJ based IDEs
 .idea
 
-# Relay runtime state (SQLite database)
-storage/
+# Relay (SQLite database) & Apprise (notification configs may contain secrets)
 data/
 
 # Finder (MacOS) folder config

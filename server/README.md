@@ -47,6 +47,9 @@ view. Both sides must be reset before pairing the phone again.
 | `POST /api/associate`                        | Exchange a code for a device ID + bearer token       |
 | `PATCH /api/devices/:id`                     | Rename a device                                      |
 | `DELETE /api/devices/:id`                    | Forget a device                                      |
+| `GET /api/devices/:id/notifications`         | Read the camera's Apprise notification URLs          |
+| `PUT /api/devices/:id/notifications`         | Replace the camera's Apprise notification URLs       |
+| `POST /api/devices/:id/notifications/test`   | Send a test to the supplied Apprise URLs (5s limit)  |
 | `GET /r/:deviceId/*`                         | In-memory HTTP proxy to the camera                   |
 | `POST /api/webrtc/:deviceId/offer`           | WebRTC SDP offer/answer for live H.264               |
 | `POST /api/webrtc/:deviceId/recording/offer` | Fetch and stream an H.264 MP4 recording over WebRTC  |
@@ -72,22 +75,72 @@ recordings are kept in an LRU cache (`WEBRTC_RECORDING_CACHE_BYTES`, defaulting
 to `WEBRTC_RECORDING_MAX_BYTES`) so repeated seeks do not refetch the file from
 the camera. Deleting a recording through the relay also drops its cached copy.
 
+### Motion events
+
+When **Record on Motion** is enabled in the app and the camera is connected to
+the relay, the app sends a `motion` text message over its normal authenticated
+device WebSocket:
+
+```json
+{ "type": "motion", "at": 1762862400000 }
+```
+
+The message travels on the same socket that is authenticated with the device's
+bearer token, so the relay identifies the camera from the connection itself. The
+payload contains no device ID or token and cannot name another camera. The app
+reports only motion starts; while motion remains active no further event is
+sent.
+
+The relay always writes the event to its log against that camera:
+
+```
+motion detected: Front Door (2f0c…) at 2026-11-11T14:00:00.000Z
+```
+
+Each camera can also have Apprise notification URLs configured under
+**Notification settings** in the dashboard. Enter one Apprise URL per line; the
+relay sends them as one Apprise request when motion arrives:
+
+```json
+{
+  "urls": [
+    "mailto://user:password@gmail.com",
+    "slack://TOKEN_A/TOKEN_B/TOKEN_C",
+    "tgram://BOT_TOKEN/CHAT_ID"
+  ],
+  "title": "Motion detected",
+  "body": "Camera Front Door detected motion at 2026-11-11 14:00"
+}
+```
+
+The request goes to `APPRISE_URL` (the bundled `apprise` service by default) at
+`POST /notify`. Delivery failures are only logged; they never disrupt the camera
+socket. Notification sends, including tests, are rate limited per camera to one
+every five seconds. Motion inside that window is still logged but is not sent,
+and a test request returns HTTP 429. The settings dialog's **Test** button sends
+the URLs currently entered without saving them and reports Apprise's success or
+error details. With no URLs configured, the relay only logs the event. Examples
+and a link to the Apprise documentation are shown in the settings dialog. Motion
+events are not stored, included in `/api/status`, or pushed to viewers. When the
+camera is offline, its motion events are dropped rather than queued.
+
 ## Configuration
 
-| Variable                       | Default                          | Meaning                                              |
-| ------------------------------ | -------------------------------- | ---------------------------------------------------- |
-| `PORT`                         | `3000`                           | HTTP listen port                                     |
-| `DATABASE_URL`                 | `sqlite:///storage/relay.sqlite` | `sqlite://`, `mysql://`, or `postgres://` database   |
-| `PUBLIC_URL`                   | request origin                   | Public origin used in pairing links                  |
-| `WEBRTC_STUN_URLS`             | Google STUN                      | Comma-separated STUN/TURN URLs                       |
-| `WEBRTC_TURN_URL`              | unset                            | Extra TURN URL used by the relay and viewers         |
-| `WEBRTC_TURN_USERNAME`         | unset                            | TURN username                                        |
-| `WEBRTC_TURN_CREDENTIAL`       | unset                            | TURN password                                        |
-| `WEBRTC_UDP_PORT_RANGE`        | ephemeral                        | Fixed UDP range, for example `40000-40100`           |
-| `WEBRTC_ADVERTISE_HOST`        | private `PUBLIC_URL` address     | Host/IP viewers use for WebRTC candidates            |
-| `WEBRTC_FORCE_TURN`            | `false`                          | Force `iceTransportPolicy: relay` on both sides      |
-| `WEBRTC_RECORDING_MAX_BYTES`   | `536870912` (512 MiB)            | Maximum MP4 size buffered for one recording playback |
-| `WEBRTC_RECORDING_CACHE_BYTES` | same as max bytes                | LRU memory budget for downloaded recordings          |
+| Variable                       | Default                       | Meaning                                              |
+| ------------------------------ | ----------------------------- | ---------------------------------------------------- |
+| `PORT`                         | `3000`                        | HTTP listen port                                     |
+| `DATABASE_URL`                 | `sqlite:///data/relay.sqlite` | `sqlite://`, `mysql://`, or `postgres://` database   |
+| `PUBLIC_URL`                   | request origin                | Public origin used in pairing links                  |
+| `APPRISE_URL`                  | `http://apprise:8000`         | Internal Apprise API used for motion notifications   |
+| `WEBRTC_STUN_URLS`             | Google STUN                   | Comma-separated STUN/TURN URLs                       |
+| `WEBRTC_TURN_URL`              | unset                         | Extra TURN URL used by the relay and viewers         |
+| `WEBRTC_TURN_USERNAME`         | unset                         | TURN username                                        |
+| `WEBRTC_TURN_CREDENTIAL`       | unset                         | TURN password                                        |
+| `WEBRTC_UDP_PORT_RANGE`        | ephemeral                     | Fixed UDP range, for example `40000-40100`           |
+| `WEBRTC_ADVERTISE_HOST`        | private `PUBLIC_URL` address  | Host/IP viewers use for WebRTC candidates            |
+| `WEBRTC_FORCE_TURN`            | `false`                       | Force `iceTransportPolicy: relay` on both sides      |
+| `WEBRTC_RECORDING_MAX_BYTES`   | `536870912` (512 MiB)         | Maximum MP4 size buffered for one recording playback |
+| `WEBRTC_RECORDING_CACHE_BYTES` | same as max bytes             | LRU memory budget for downloaded recordings          |
 
 Copy `.env.example` to `.env` and adjust the public URL and, if needed, TURN
 credentials. `PUBLIC_URL` matters when the server sits behind a reverse proxy,
@@ -97,12 +150,12 @@ Set `DATABASE_URL` to choose the database backend. The relay creates its tables
 on startup, so an empty database is enough:
 
 ```bash
-DATABASE_URL=sqlite:///storage/relay.sqlite
+DATABASE_URL=sqlite:///data/relay.sqlite
 DATABASE_URL=mysql://user:pass@localhost:3306/relay
 DATABASE_URL=postgres://user:pass@localhost:5432/relay
 ```
 
-When `DATABASE_URL` is unset, the relay uses `sqlite:///storage/relay.sqlite`.
+When `DATABASE_URL` is unset, the relay uses `sqlite:///data/relay.sqlite`.
 
 ### WebRTC and firewalls
 
@@ -162,7 +215,7 @@ docker build -t android-ip-camera-relay .
 docker run --rm -p 3000:3000 -p 40000-40100:40000-40100/udp \
   -v "$PWD/storage:/storage" \
   -e PUBLIC_URL=https://relay.example.com \
-  -e DATABASE_URL=sqlite:///storage/relay.sqlite \
+  -e DATABASE_URL=sqlite:///data/relay.sqlite \
   -e WEBRTC_UDP_PORT_RANGE=40000-40100 \
   android-ip-camera-relay
 ```
@@ -206,9 +259,10 @@ docker run --rm -e HOME=/tmp -v "$PWD/server:/app" -w /app oven/bun:1.4.4-alpine
   alive even if a newer one evicts it from the cache, so peak memory can exceed
   the cache limit while sessions are active.
 - `/r/:deviceId/*` is only reachable while that camera's WebSocket is online.
-- Pairing codes themselves are the authorization to add a camera. A camera can
-  always remove its own record with its device token, which is what the app's
-  Disconnect button uses.
+- Notification URLs can contain service tokens and passwords. They are stored in
+  the device row and returned by `GET /api/devices/:id/notifications`, so protect
+  the dashboard and API with your reverse proxy's authentication when the relay
+  is public.
 - Device names are user generated and limited to 1–100 characters using letters,
   numbers, spaces, and hyphens. The server trims the name and validates it with
   the same rules the dashboard's rename prompt uses.

@@ -244,17 +244,22 @@ class MainActivity : AppCompatActivity() {
             ""
         }
         val relayUrl = RelayAssociation.load(this)?.serverUrl
-        if (relayUrl == null) {
+        val tapToSetupRelayPressed = prefs.getBoolean(PREF_TAP_TO_SETUP_RELAY_PRESSED, false)
+        val showRelaySetupHint = relayUrl == null && !tapToSetupRelayPressed
+        if (showRelaySetupHint) {
             ipAddressText.isClickable = true
             ipAddressText.setOnClickListener {
+                prefs.edit().putBoolean(PREF_TAP_TO_SETUP_RELAY_PRESSED, true).apply()
+                updateIpAddressText()
                 startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(RelayAssociation.FALLBACK_SERVER_URL)))
             }
         } else {
             ipAddressText.setOnClickListener(null)
             ipAddressText.isClickable = false
         }
-        val displayedRelayUrl = relayUrl ?: "Tap to setup optional remote relay"
-        ipAddressText.text = "$protocol://$ipAddress:$port$rtspUrls\n$displayedRelayUrl"
+        val baseText = "$protocol://$ipAddress:$port$rtspUrls"
+        val displayedRelayUrl = relayUrl ?: if (showRelaySetupHint) "Tap to setup optional cloud relay" else null
+        ipAddressText.text = if (displayedRelayUrl == null) baseText else "$baseText\n$displayedRelayUrl"
     }
 
     private fun checkNotificationChannelEnabled() {
@@ -472,6 +477,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val REQUEST_CODE_PERMISSIONS = 10
+        private const val PREF_TAP_TO_SETUP_RELAY_PRESSED = "tap_to_setup_relay_pressed"
         private val REQUIRED_PERMISSIONS = when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
                 Manifest.permission.CAMERA,
