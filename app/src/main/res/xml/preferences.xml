@@ -23,27 +23,6 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
-    <PreferenceCategory
-        android:title="Startup">
-        <CheckBoxPreference
-            android:key="start_on_boot"
-            android:title="Start on Boot"
-            android:summary="Start the camera server automatically after the device restarts"
-            android:defaultValue="false" />
-        <EditTextPreference
-            android:key="server_port"
-            android:title="Streaming Port"
-            android:summary="Port for the streaming server (default: 4444)"
-            android:defaultValue="4444"
-            android:inputType="number"
-            android:singleLine="true" />
-        <ListPreference
-            android:key="listen_interface"
-            android:title="Listen Interface"
-            android:summary="Interface all servers listen on (default: all interfaces)"
-            android:defaultValue="0.0.0.0" />
-    </PreferenceCategory>
-
     <PreferenceCategory android:title="RTSP / ONVIF">
         <CheckBoxPreference
             android:key="rtsp_enabled"
@@ -97,6 +76,27 @@
             android:title="Reset to Default Location"
             android:summary="Save recordings back to Movies/AndroidIPCamera"
             android:persistent="false" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="Startup">
+        <EditTextPreference
+            android:key="server_port"
+            android:title="Streaming Port"
+            android:summary="Port for the streaming server (default: 4444)"
+            android:defaultValue="4444"
+            android:inputType="number"
+            android:singleLine="true" />
+        <ListPreference
+            android:key="listen_interface"
+            android:title="Listen Interface"
+            android:summary="Interface all servers listen on (default: all interfaces)"
+            android:defaultValue="0.0.0.0" />
+        <CheckBoxPreference
+            android:key="start_on_boot"
+            android:title="Start on Boot"
+            android:summary="Auto start on Android 13 and older. On Android 14+ a notification will be shown"
+            android:defaultValue="false" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Certificate Settings">

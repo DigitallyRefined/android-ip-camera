@@ -65,7 +65,7 @@ The app runs as a foreground service with a persistent notification, so it won't
 * **Don't swipe the app away** from recent apps - force-stopping it terminates the server.
 * Don't dismiss the persistent notification or the server may get stopped.
 * The display can be safely turned off while streaming.
-* Enable **Start on Boot** in the app settings for unattended setups.
+* Enable **Start on Boot** in the app settings for unattended setups. On Android 14 and newer, Android does not allow the camera/microphone foreground service to start from the background, so the app posts a notification after boot; tap it to open the app and start streaming.
 
 ## 🎥 Frigate config
 
@@ -306,7 +306,7 @@ The app uses the following permissions to function:
 * **Network (`android.permission.INTERNET`, `android.permission.ACCESS_NETWORK_STATE`):** Required to host the server and stream data to your browser/connected clients.
 * **Storage (`android.permission.READ_EXTERNAL_STORAGE`, `android.permission.WRITE_EXTERNAL_STORAGE`):** Required on older Android versions to load custom TLS/HTTPS certificates from file storage and to save locally recorded MP4 files (`WRITE_EXTERNAL_STORAGE` only applies to Android 9 / API 28 and below; on newer versions recordings are saved to app-specific storage without extra permissions).
 * **Wi-Fi & Location (`android.permission.ACCESS_WIFI_STATE`, `android.permission.ACCESS_FINE_LOCATION`, `android.permission.ACCESS_COARSE_LOCATION`, `android.permission.NEARBY_WIFI_DEVICES`):** Used optionally to read the current Wi-Fi network's connection signal strength so it can be displayed in the web control panel overlay. If not granted, the Wi-Fi icon will be hidden. (Location permissions only apply to Android 12L / API 32 and below.)
-* **Start on boot (`android.permission.RECEIVE_BOOT_COMPLETED`):** Allows the app to optionally start streaming automatically when the device boots. This feature is off by default and must be enabled in the app settings.
+* **Start on boot (`android.permission.RECEIVE_BOOT_COMPLETED`):** Allows the app to optionally offer to start streaming after the device boots. This feature is off by default and must be enabled in the app settings. On Android 14 and newer the app posts a notification after boot and streaming starts when it is tapped, because Android only allows the camera/microphone foreground service to start while the app is in the foreground.
 
 ## 🤖 AI generated code disclaimer
 

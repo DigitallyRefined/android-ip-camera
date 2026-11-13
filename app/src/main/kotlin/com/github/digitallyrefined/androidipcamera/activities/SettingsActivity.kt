@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -60,6 +61,19 @@ class SettingsActivity : AppCompatActivity() {
 
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
+
+            // Starting the camera/microphone foreground service from BOOT_COMPLETED is only
+            // blocked on Android 14+, where the app posts a notification instead. Only warn while
+            // the option is enabled.
+            findPreference<androidx.preference.CheckBoxPreference>("start_on_boot")?.apply {
+                summaryProvider = Preference.SummaryProvider<androidx.preference.CheckBoxPreference> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && it.isChecked) {
+                        "⚠️ Warning: Android 14+ does not let the camera or microphone start automatically after boot. A notification will be shown to open the app so streaming can start."
+                    } else {
+                        "Auto start on Android 13 and older. On Android 14+ a notification will be shown"
+                    }
+                }
+            }
 
             // Set up certificate selection preference
             findPreference<Preference>("certificate_path")?.apply {

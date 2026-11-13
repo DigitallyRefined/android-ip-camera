@@ -113,6 +113,16 @@ class StreamingService : LifecycleService() {
     @Volatile private var frontFacing = false             // false = back camera (read across threads)
     @Volatile private var selectedCameraId: String? = null
 
+    /**
+     * True once the foreground service was started with the camera/microphone types. Android 14+
+     * refuses those types when the service is started from the background, so the regular
+     * foreground notification may be running without camera/microphone access until an activity
+     * brings the app back to the foreground.
+     */
+    @Volatile private var whileInUseForegroundAllowed = false
+    /** True once any foreground notification was successfully posted (with or without types). */
+    @Volatile private var foregroundNotificationStarted = false
+
     private var currentSurfaceProvider: Preview.SurfaceProvider? = null
 
     /** True while a /video/snapshot request is running; lets startCamera() know frames are needed
@@ -177,24 +187,34 @@ class StreamingService : LifecycleService() {
 
     inner class LocalBinder : Binder() { fun getService(): StreamingService = this@StreamingService }
 
-    override fun onBind(intent: Intent): IBinder { super.onBind(intent); return binder }
+    override fun onBind(intent: Intent): IBinder {
+        super.onBind(intent)
+        // Binding means an activity is coming to the foreground; retry the restricted FGS types
+        // in case the service was restarted in the background.
+        ensureForegroundTypes()
+        return binder
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!foregroundNotificationStarted) return START_NOT_STICKY
         when (intent?.action) {
             ACTION_STOP_SERVICE -> { handleStopService(); return START_NOT_STICKY }
-            ACTION_RESTART_NOTIFICATION -> startForegroundService()
-            ACTION_RESTART_SERVER -> restartServer()
+            ACTION_RESTART_NOTIFICATION ->
+                if (!startForegroundService()) { stopSelf(); return START_NOT_STICKY }
+            ACTION_RESTART_SERVER -> if (ensureForegroundTypes()) restartServer()
             ACTION_DISCONNECT_RELAY -> { disconnectRelay(); return START_STICKY }
             // Cold start with no activity bound (e.g. from BootReceiver): the activity normally
             // calls startStreamingServer() after binding, so start it here instead.
-            ACTION_START_SERVER -> startStreamingServer()
+            ACTION_START_SERVER -> if (whileInUseForegroundAllowed) startStreamingServer()
         }
         // A null intent means the system re-created this START_STICKY service after killing the
         // process. Nothing starts the server in that path — no activity binds, and onCreate() only
         // posts the notification — so the service comes back looking healthy (foreground
         // notification, camera available) with nothing listening on the port. startStreamingServer()
         // early-returns when the socket is already open, so this is safe to reach on any path.
-        if (intent == null) startStreamingServer()
+        // Without camera/microphone access the server would not be able to serve video, so wait
+        // until an activity brings the app to the foreground.
+        if (intent == null && whileInUseForegroundAllowed) startStreamingServer()
         return super.onStartCommand(intent, flags, startId)
     }
 
@@ -217,7 +237,11 @@ class StreamingService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
-        startForegroundService()
+        if (!startForegroundService()) {
+            Log.e(TAG, "Unable to start the foreground service; stopping")
+            stopSelf()
+            return
+        }
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val savedCameraId = prefs.getString(PREF_CAMERA_ID, null)
         if (savedCameraId != null) {
@@ -274,20 +298,100 @@ class StreamingService : LifecycleService() {
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
 
-    private fun startForegroundService() {
+    /**
+     * Starts (or updates) the foreground notification with camera/microphone access.
+     *
+     * Returns true when any foreground notification was posted. If Android rejects the
+     * camera/microphone types because the service was started in the background, a notification
+     * without those types is posted instead so the process does not crash; the types are retried
+     * by [ensureForegroundTypes] once an activity brings the app to the foreground.
+     */
+    private fun startForegroundService(): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(NotificationChannel(CHANNEL_ID, "Streaming Service", NotificationManager.IMPORTANCE_LOW))
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildForegroundNotification(cameraActive = true),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+                markForegroundStarted(whileInUseAllowed = true)
+                return true
+            } catch (e: SecurityException) {
+                // Expected after a background start (boot, START_STICKY restart): camera and
+                // microphone are while-in-use permissions and cannot be claimed from the background.
+                Log.w(TAG, "Camera/microphone foreground service not allowed in the background", e)
+                whileInUseForegroundAllowed = false
+                return try {
+                    // Passing NONE explicitly is required: the two-argument startForeground() uses
+                    // the manifest types and would be rejected again.
+                    startForeground(
+                        NOTIFICATION_ID,
+                        buildForegroundNotification(cameraActive = false),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE
+                    )
+                    markForegroundStarted(whileInUseAllowed = false)
+                    true
+                } catch (fallback: Exception) {
+                    Log.e(TAG, "Unable to start the foreground service", fallback)
+                    foregroundNotificationStarted = false
+                    false
+                }
+            }
+        }
+        startForeground(NOTIFICATION_ID, buildForegroundNotification(cameraActive = true))
+        markForegroundStarted(whileInUseAllowed = true)
+        return true
+    }
+
+    private fun markForegroundStarted(whileInUseAllowed: Boolean) {
+        whileInUseForegroundAllowed = whileInUseAllowed
+        foregroundNotificationStarted = true
+        // The service notification supersedes the "tap to start" prompt posted after boot.
+        try { BootReceiver.cancelStartNotification(this) } catch (_: Exception) {}
+    }
+
+    /**
+     * Retries the camera/microphone foreground service types. Safe to call repeatedly; only
+     * startForeground() with the real types is attempted while the app is in the foreground.
+     */
+    fun ensureForegroundTypes(): Boolean {
+        if (whileInUseForegroundAllowed) return true
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            whileInUseForegroundAllowed = true
+            return true
+        }
+        return try {
+            startForeground(
+                NOTIFICATION_ID,
+                buildForegroundNotification(cameraActive = true),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+            markForegroundStarted(whileInUseAllowed = true)
+            Log.i(TAG, "Foreground service promoted to camera/microphone types")
+            true
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Still not allowed to use camera/microphone in a foreground service", e)
+            false
+        }
+    }
+
+    private fun buildForegroundNotification(cameraActive: Boolean): Notification {
         val contentPI = PendingIntent.getActivity(this, 0,
-            Intent(this, com.github.digitallyrefined.androidipcamera.activities.MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            Intent(this, com.github.digitallyrefined.androidipcamera.activities.MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stopPI = PendingIntent.getService(this, 1,
-            Intent(this, StreamingService::class.java).setAction(ACTION_STOP_SERVICE), PendingIntent.FLAG_IMMUTABLE)
+            Intent(this, StreamingService::class.java).setAction(ACTION_STOP_SERVICE),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val restartPI = PendingIntent.getService(this, 2,
-            Intent(this, StreamingService::class.java).setAction(ACTION_RESTART_NOTIFICATION), PendingIntent.FLAG_IMMUTABLE)
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Android IP Camera Streaming")
-            .setContentText("Camera server is running in background")
+            Intent(this, StreamingService::class.java).setAction(ACTION_RESTART_NOTIFICATION),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(if (cameraActive) "Android IP Camera Streaming" else "Android IP Camera")
+            .setContentText(if (cameraActive) "Camera server is running in background" else "Tap to start streaming")
             .setSmallIcon(R.drawable.ic_notification)
             .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
             .setContentIntent(contentPI)
@@ -295,9 +399,6 @@ class StreamingService : LifecycleService() {
             .setDeleteIntent(restartPI)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        else startForeground(NOTIFICATION_ID, notification)
     }
 
     // MainActivity attaches PreviewView here; camera restarts when a surface is set while streaming.
