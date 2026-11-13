@@ -1,0 +1,7 @@
+## What's Changed
+* Add remote access relay server & option to enable in #130
+* Fix stream resolution selection & move substream settings into web UI in #134
+* Fix crash when Start on Boot is enabled for Android >=14 in #135
+* Bump dependencies by @dependabot[bot] in #128 #131 #132 #133
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.16.1...v0.17.0
