@@ -1185,7 +1185,8 @@ class StreamingService : LifecycleService() {
                         // placeholder buffer size, so the selected resolution is what gets captured.
                         pipe.setCameraBufferSize(request.resolution.width, request.resolution.height)
                         Log.i(TAG, "Providing CameraX H.264 surface via GL pipe (${request.resolution}, mirror=${pipe.mirror})")
-                        enc.hasSurfaceBeenProvided = true
+                        // CameraX only gets the pipe's surface. The encoder's own surface stays with the
+                        // pipe, so stopCamera() can release the encoder as soon as the pipe has stopped.
                         request.provideSurface(surface, ContextCompat.getMainExecutor(this)) { result ->
                             Log.i(TAG, "CameraX H.264 surface released by CameraX (result code: ${result.resultCode})")
                         }
