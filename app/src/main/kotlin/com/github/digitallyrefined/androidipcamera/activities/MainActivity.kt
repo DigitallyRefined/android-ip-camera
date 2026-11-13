@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -29,6 +30,7 @@ import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
 import com.github.digitallyrefined.androidipcamera.helpers.ListenInterface
+import com.github.digitallyrefined.androidipcamera.helpers.RelayAssociation
 import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -41,6 +43,20 @@ class MainActivity : AppCompatActivity() {
     private var userHiddenPreview = false
     private lateinit var noClientMessage: TextView
     private lateinit var backGestureCallback: OnBackPressedCallback
+    /** Pairing details from an androidipcamera://associate intent, waiting for the service. */
+    private var pendingAssociation: RelayAssociation.PairingIntent? = null
+    private var associationInFlight = false
+
+    // The relay URL shown under the local URLs depends on whether this camera
+    // is still associated. The relay client clears the association from a
+    // background thread when the relay rejects the device, so refresh the
+    // preview when that flag changes.
+    private val relayPreferenceListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "relay_connected") {
+                runOnUiThread { updateIpAddressText() }
+            }
+        }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
@@ -80,6 +96,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             showNoClientMessage(!hasClients)
+
+            // An association intent may have arrived before the service was bound.
+            processPendingAssociation()
         }
 
         override fun onServiceDisconnected(arg0: ComponentName) {
@@ -123,6 +142,8 @@ class MainActivity : AppCompatActivity() {
         viewBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(viewBinding.root)
         noClientMessage = findViewById(R.id.noClientMessage)
+
+        captureAssociationIntent(intent)
 
         backGestureCallback = object : OnBackPressedCallback(false) {
             override fun handleOnBackPressed() {
@@ -200,6 +221,8 @@ class MainActivity : AppCompatActivity() {
         }
         // Refresh the IP address text in case the port was changed in settings
         updateIpAddressText()
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .registerOnSharedPreferenceChangeListener(relayPreferenceListener)
         checkNotificationChannelEnabled()
     }
 
@@ -220,7 +243,23 @@ class MainActivity : AppCompatActivity() {
         } else {
             ""
         }
-        ipAddressText.text = "$protocol://$ipAddress:$port$rtspUrls"
+        val relayUrl = RelayAssociation.load(this)?.serverUrl
+        val tapToSetupRelayPressed = prefs.getBoolean(PREF_TAP_TO_SETUP_RELAY_PRESSED, false)
+        val showRelaySetupHint = relayUrl == null && !tapToSetupRelayPressed
+        if (showRelaySetupHint) {
+            ipAddressText.isClickable = true
+            ipAddressText.setOnClickListener {
+                prefs.edit().putBoolean(PREF_TAP_TO_SETUP_RELAY_PRESSED, true).apply()
+                updateIpAddressText()
+                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(RelayAssociation.FALLBACK_SERVER_URL)))
+            }
+        } else {
+            ipAddressText.setOnClickListener(null)
+            ipAddressText.isClickable = false
+        }
+        val baseText = "$protocol://$ipAddress:$port$rtspUrls"
+        val displayedRelayUrl = relayUrl ?: if (showRelaySetupHint) "Tap to setup optional cloud relay" else null
+        ipAddressText.text = if (displayedRelayUrl == null) baseText else "$baseText\n$displayedRelayUrl"
     }
 
     private fun checkNotificationChannelEnabled() {
@@ -236,8 +275,56 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .unregisterOnSharedPreferenceChangeListener(relayPreferenceListener)
         if (isBound) {
             streamingService?.setPreviewSurface(null)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        captureAssociationIntent(intent)
+    }
+
+    private fun captureAssociationIntent(intent: Intent?) {
+        if (intent == null) return
+        // Some QR scanners (e.g. LineageOS) cannot open custom-scheme links and
+        // only offer to share the scanned text, so accept the link via
+        // ACTION_SEND as well as the normal VIEW deep link.
+        val sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+        val pairing = RelayAssociation.parseIntent(intent.data)
+            ?: RelayAssociation.parseSharedText(sharedText)
+            ?: return
+        // Consume the deep link/shared text so a configuration change does not
+        // replay the one-time pairing code.
+        intent.data = null
+        intent.removeExtra(Intent.EXTRA_TEXT)
+        intent.clipData = null
+        pendingAssociation = pairing
+        Log.i(TAG, "Association intent for ${pairing.serverUrl}")
+        processPendingAssociation()
+    }
+
+    /** Runs once the service is bound. */
+    private fun processPendingAssociation() {
+        val pairing = pendingAssociation ?: return
+        val service = streamingService
+        if (!isBound || service == null || associationInFlight) return
+        pendingAssociation = null
+        associationInFlight = true
+        Toast.makeText(this, "Connecting to relay…", Toast.LENGTH_SHORT).show()
+        service.associateRelay(pairing.serverUrl, pairing.code) { success, message ->
+            associationInFlight = false
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            if (success) {
+                // The relay connection starts outbound; the local preview can go back to idle.
+                updateIpAddressText()
+            }
+            // An intent that arrived while this association was running.
+            processPendingAssociation()
         }
     }
 
@@ -400,6 +487,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val REQUEST_CODE_PERMISSIONS = 10
+        private const val PREF_TAP_TO_SETUP_RELAY_PRESSED = "tap_to_setup_relay_pressed"
         private val REQUIRED_PERMISSIONS = when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
                 Manifest.permission.CAMERA,

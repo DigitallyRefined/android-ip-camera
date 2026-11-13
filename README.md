@@ -3,7 +3,7 @@
 [![downloads](https://img.shields.io/github/downloads/DigitallyRefined/android-ip-camera/total.svg)](https://github.com/DigitallyRefined/android-ip-camera/releases)
 [![downloads](https://img.shields.io/github/downloads/DigitallyRefined/android-ip-camera/latest/total.svg)](https://github.com/DigitallyRefined/android-ip-camera/releases)
 
-An Android H.264 / MJPEG IP Camera app
+Turn your Android device into a remote security IP camera
 
 ![Desktop Browser](screenshot.webp)
 
@@ -31,10 +31,23 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🛰️ Optional ONVIF camera mode with WS-Discovery, snapshots and motion events for UniFi Protect, Home Assistant and other NVRs
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
+* ☁️ Optionally connect your device to a hosted or [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/server) cloud relay server for remote access for when your not on your home/work network
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
 * 🛂 Username and password protection
 * 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS/RTSPS
 * 🥾 Optional start on boot
+
+## 🔓 Why open source
+
+Other similar IP camera apps exist, but most are closed source. You cannot verify that they keep video on the device, that they never send recordings to someone else, or that security issues get fixed. With this app you can.
+
+This app is open source so you do not have to take its privacy claims on trust. The code that controls the camera, encodes video and handles logins is in this repository. You can read it, build it and compare it with the APK you install.
+
+By default, video stays on your local network. The phone serves the stream and the recordings directly to the clients you point at it. Nothing leaves your network unless you explicitly pair the camera with a relay server for remote access. Recordings are written to the phone, not uploaded anywhere.
+
+Logins and streams are protected by username and password authentication across the web, RTSP and ONVIF endpoints. When TLS is enabled, the same certificate encrypts all three. You can check how credentials and certificates are handled in the source instead of trusting a privacy policy.
+
+The F-Droid release is built from this same source, and the [reproducible build workflow](https://github.com/DigitallyRefined/android-ip-camera/actions/workflows/reproducible-build.yml) checks a clean rebuild against it.
 
 ## ⚠️ Warning
 
@@ -165,7 +178,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, Wi-Fi signal strength and individual camera len settings.
   * **Format:** `application/json`
 * **Start Recording (`/record/start`, POST)**
-  * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running.
+  * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Manual recordings are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS-manual.mp4` inside the recordings folder. Recordings started by **Record on Motion** use the same folder layout with a `-motion.mp4` suffix.
   * **Responses:**
     * `201 Created`: Recording started; returns the recording status JSON.
     * `409 Conflict`: `{"error":"already_recording", ...}` — a recording is already in progress.
@@ -181,20 +194,20 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query whether a local MP4 recording is currently active.
   * **Format:** `application/json` — `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>}` (or `{"recording":false}` when idle).
 * **Recordings Index (`/files`)**
-  * **Usage:** Open `https://[ip_address]:[port]/files` in a web browser for a folder index of the recordings stored on the device (`Movies/AndroidIPCamera`). Lists files only — no subfolder browsing.
-  * **Format:** `text/html` — static page shell that loads the file list from `/files.json`, renders each file as a link to its download URL plus a Delete button (with a browser confirmation prompt) that issues a `DELETE /files/<filename>` request.
+  * **Usage:** Open `https://[ip_address]:[port]/files` in a web browser for a folder browser of the recordings stored on the device (`Movies/AndroidIPCamera`). Folders can be opened from the list or via the breadcrumb.
+  * **Format:** `text/html` — static page shell that loads the current folder listing from `/files.json?dir=<relative path>`, renders folders as navigation links, and renders every entry with emoji-only 💾 **Download** and 🗑️ **Delete** buttons (the Delete button asks for confirmation and issues a `DELETE /files/<relative path>` request). File names open the recording in the browser's video player. Deleting a folder removes the folder and all of its contents.
 * **Recordings List JSON (`/files.json`)**
-  * **Usage:** Query the recordings folder listing programmatically or feed custom front-ends.
-  * **Format:** `application/json` — `{"folder":<string>, "files":[{"name":<string>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
-* **Download Recording (`/files/<filename>`, GET)**
-  * **Usage:** Download a recorded MP4 from the device. Browsers save the file instead of playing it (`Content-Disposition: attachment`).
-  * **Responses:** `200 OK` with the file bytes, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid file names.
-* **Delete Recording (`/files/<filename>`, DELETE)**
-  * **Usage:** Permanently delete a recorded MP4 from the device.
+  * **Usage:** Query a recordings folder listing programmatically or feed custom front-ends. Use `?dir=2026/11/09` to list a subfolder; omit `dir` for the recordings root.
+  * **Format:** `application/json` — `{"folder":<string>, "path":<string>, "entries":[{"name":<string>, "isDirectory":<bool>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
+* **Play or Download Recording (`/files/<relative path>`, GET or HEAD)**
+  * **Usage:** Open a recorded MP4 in the browser's native video player, which starts streaming immediately and keeps working while the file is being read (MP4s are served as `video/mp4` with `Content-Disposition: inline`). Other files download as before. Use the 💾 **Download** button in the recordings list to save a copy; the player's own save/download control also works. Path segments include recording folders, e.g. `/files/2026/11/09/2026-11-09-093000-manual.mp4`. Supports a single `Range: bytes=...` request (including open-ended and suffix forms) so browsers and the relay can seek and stream progressively; the response advertises `Accept-Ranges: bytes`.
+  * **Responses:** `200 OK` with the file bytes (or headers only for `HEAD`), `206 Partial Content` with `Content-Range` for a range request, `416 Range Not Satisfiable` for a range outside the file, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid paths.
+* **Delete Recording (`/files/<relative path>`, DELETE)**
+  * **Usage:** Permanently delete a recorded MP4, or delete a folder and everything below it. The recordings root itself cannot be deleted.
   * **Responses:**
-    * `200 OK`: `{"deleted":true}` — file deleted.
-    * `404 Not Found`: `{"error":"not_found"}` — no such file in the recordings folder.
-    * `500 Internal Server Error`: `{"error":"delete_failed"}` — the file exists but could not be deleted.
+    * `200 OK`: `{"deleted":true}` — file or folder deleted.
+    * `404 Not Found`: `{"error":"not_found"}` — no such file or folder in the recordings folder.
+    * `500 Internal Server Error`: `{"error":"delete_failed"}` — the entry exists but could not be deleted.
 * **Enable Streaming (`/control/start`)**
   * **Usage:** Re-enable streaming of the media routes after it has been disabled (e.g. by a home-automation system).
   * **Format:** `application/json` — `{"streaming":true}`
@@ -237,8 +250,9 @@ ONVIF lets NVRs and home automation systems discover and control the camera as a
 * **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled
 * **Snapshot:** `https://[ip_address]:8000/onvif/snapshot.jpg` (or `http://` without TLS)
 * **RTSP:** `rtsps://[username]:[password]@[ip_address]:8554/live`, or `rtsps://` on the same port when TLS is enabled
-* **Motion events:** turn on **Motion Detection** in the web interface. The app compares luma frames in the background and publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`). The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
-* While motion detection is on, the camera runs continuously so it can see motion with no viewer connected. With it off, ONVIF and RTSP are still available on demand: the camera opens when a client connects and is released when the last one leaves.
+* **Motion events and recording:** turn on **Record on Motion** in the web interface. The app compares luma frames in the background, publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`), and records a `-motion.mp4` clip while motion is present. If the camera is associated with the relay server, it also reports motion starts there so the relay can send a notification per camera. The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
+* **Stop Recording After Motion** (under Sensitivity, default 10 seconds) controls how long a motion recording keeps running after motion has cleared. Set it to `0` to stop as soon as motion ends.
+* While **Record on Motion** is on, the camera runs continuously so it can see motion with no viewer connected. With it off, ONVIF and RTSP are still available on demand: the camera opens when a client connects and is released when the last one leaves.
 
 ONVIF and RTSP use the username and password from the Authentication settings. ONVIF discovery uses UDP multicast, so the phone and the client must be on the same network (or reachable through a VPN that forwards multicast).
 

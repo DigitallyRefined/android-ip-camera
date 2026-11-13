@@ -13,11 +13,22 @@
         padding: 16px;
       }
 
-      h1 {
-        font-size: 1.1rem;
-        font-weight: 600;
-        color: #fff;
+      .breadcrumb {
+        max-width: 720px;
+        margin: 0 0 12px;
+        color: #aaa;
+        font-size: 0.92rem;
+        line-height: 1.6;
         word-break: break-all;
+      }
+
+      .breadcrumb .sep {
+        color: #555;
+        margin: 0 6px;
+      }
+
+      .breadcrumb .current {
+        color: #fff;
       }
 
       table {
@@ -55,13 +66,36 @@
       }
 
       a {
-        color: #007AFF;
+        color: #459eff;
         text-decoration: none;
         word-break: break-all;
       }
 
       a:hover {
         text-decoration: underline;
+      }
+
+      a.dir {
+        color: #fff;
+        font-weight: 600;
+      }
+
+      a.dir:hover {
+        color: #007AFF;
+      }
+
+      button.download {
+        margin-right: 8px;
+      }
+
+      button.download:hover {
+        background: #007AFF;
+        border-color: #007AFF;
+      }
+
+      td.actions {
+        white-space: nowrap;
+        text-align: right;
       }
 
       button {
@@ -93,10 +127,27 @@
         color: #888;
         padding: 24px 12px;
       }
+
+      /* Compact layout for the embedded recordings panel and narrow screens. */
+      @media (max-width: 600px) {
+        body {
+          padding: 10px;
+        }
+
+        td,
+        th {
+          padding: 8px 6px;
+        }
+
+        th:nth-child(3),
+        td:nth-child(3) {
+          display: none;
+        }
+      }
     </style>
   </head>
   <body>
-    <h1 id="folder">Recordings</h1>
+    <nav id="breadcrumb" class="breadcrumb" aria-label="Breadcrumb">Loading...</nav>
     <table>
       <thead>
         <tr>
@@ -113,6 +164,10 @@
       </tbody>
     </table>
     <script>
+      const rowsEl = document.getElementById('rows');
+      const breadcrumbEl = document.getElementById('breadcrumb');
+      let currentDir = '';
+
       function formatSize(bytes) {
         const units = ['B', 'KB', 'MB', 'GB', 'TB'];
         let size = bytes,
@@ -135,75 +190,152 @@
         return dateFormat.format(ms);
       }
 
-      async function loadFiles() {
-        const rowsEl = document.getElementById('rows');
-        const setStatus = message => {
-          rowsEl.textContent = '';
-          if (!message)
-            return;
-          const tr = document.createElement('tr');
-          const td = document.createElement('td');
-          td.colSpan = 4;
-          td.className = 'empty';
-          td.textContent = message;
-          tr.appendChild(td);
-          rowsEl.appendChild(tr);
-        };
+      function joinPath(dir, name) {
+        return dir ? dir + '/' + name : name;
+      }
+
+      function fileUrl(path) {
+        return '/files/' + path.split('/').map(encodeURIComponent).join('/');
+      }
+
+      function downloadFile(path, name) {
+        // Same-origin download attribute forces a save even though the server
+        // serves MP4s inline for playback.
+        const link = document.createElement('a');
+        link.href = fileUrl(path);
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+
+      function dirUrl(path) {
+        return '?dir=' + encodeURIComponent(path);
+      }
+
+      function setStatus(message) {
+        rowsEl.textContent = '';
+        if (!message)
+          return;
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 4;
+        td.className = 'empty';
+        td.textContent = message;
+        tr.appendChild(td);
+        rowsEl.appendChild(tr);
+      }
+
+      function renderBreadcrumb(dir) {
+        breadcrumbEl.textContent = '';
+        // Paths are shown relative to the recordings root, which is represented by a home icon.
+        const root = document.createElement('a');
+        root.href = dirUrl('');
+        root.className = 'home';
+        root.title = 'Recordings root';
+        root.setAttribute('aria-label', 'Recordings root');
+        root.textContent = '🏠';
+        breadcrumbEl.appendChild(root);
+
+        let accumulated = '';
+        for (const segment of dir.split('/').filter(Boolean)) {
+          accumulated = joinPath(accumulated, segment);
+          const sep = document.createElement('span');
+          sep.className = 'sep';
+          sep.textContent = '/';
+          const link = document.createElement('a');
+          link.href = dirUrl(accumulated);
+          link.textContent = segment;
+          breadcrumbEl.append(sep, link);
+        }
+      }
+
+      async function loadFiles(dir) {
+        const target = dir || '';
+        setStatus('Loading...');
         try {
-          const res = await fetch('/files.json');
+          const res = await fetch('/files.json?dir=' + encodeURIComponent(target));
           if (!res.ok)
             throw new Error('HTTP ' + res.status);
           const data = await res.json();
-          document.title = 'Index of /' + data.folder;
-          document
-            .getElementById('folder')
-            .textContent = 'Index of /' + data.folder;
+          currentDir = data.path || '';
+          const suffix = currentDir ? '/' + currentDir : '/';
+          document.title = 'Index of ' + suffix;
+          renderBreadcrumb(currentDir);
           setStatus(null);
-          for (const file of data.files) {
+
+          const entries = Array.isArray(data.entries) ? data.entries : [];
+          for (const entry of entries) {
             const tr = document.createElement('tr');
 
             const nameTd = document.createElement('td');
             const link = document.createElement('a');
-            link.href = '/files/' + encodeURIComponent(file.name);
-            link.setAttribute('download', '');
-            link.textContent = file.name;
+            if (entry.isDirectory) {
+              link.className = 'dir';
+              link.href = dirUrl(joinPath(currentDir, entry.name));
+              link.textContent = '📁 ' + entry.name;
+            } else {
+              link.href = fileUrl(joinPath(currentDir, entry.name));
+              link.textContent = entry.name;
+              link.setAttribute('target', '_blank');
+            }
             nameTd.appendChild(link);
 
             const sizeTd = document.createElement('td');
             sizeTd.className = 'num';
-            sizeTd.textContent = formatSize(file.sizeBytes);
+            sizeTd.textContent = entry.isDirectory ? '—' : formatSize(entry.sizeBytes);
 
             const dateTd = document.createElement('td');
-            dateTd.textContent = formatDate(file.lastModifiedMs);
+            dateTd.textContent = formatDate(entry.lastModifiedMs);
 
             const delTd = document.createElement('td');
+            delTd.className = 'actions';
+            if (!entry.isDirectory) {
+              // The file link plays inline; this button saves it explicitly.
+              const downloadBtn = document.createElement('button');
+              downloadBtn.type = 'button';
+              downloadBtn.className = 'download';
+              downloadBtn.title = 'Download';
+              downloadBtn.setAttribute('aria-label', 'Download ' + entry.name);
+              downloadBtn.textContent = '💾';
+              downloadBtn.onclick = () =>
+                downloadFile(joinPath(currentDir, entry.name), entry.name);
+              delTd.appendChild(downloadBtn);
+            }
             const btn = document.createElement('button');
-            btn.dataset.name = file.name;
-            btn.onclick = () => deleteFile(btn);
-            btn.textContent = 'Delete';
+            btn.type = 'button';
+            btn.title = 'Delete';
+            btn.setAttribute('aria-label', 'Delete ' + entry.name);
+            btn.dataset.path = joinPath(currentDir, entry.name);
+            btn.dataset.isDirectory = entry.isDirectory ? '1' : '';
+            btn.onclick = () => deleteEntry(btn);
+            btn.textContent = '🗑️';
             delTd.appendChild(btn);
 
             tr.append(nameTd, sizeTd, dateTd, delTd);
             rowsEl.appendChild(tr);
           }
-          if (data.files.length === 0)
-            setStatus('No files.');
-          }
-        catch (e) {
+          if (entries.length === 0)
+            setStatus(currentDir ? 'This folder is empty.' : 'No files.');
+        } catch (e) {
+          renderBreadcrumb(target);
           setStatus('Failed to load file list: ' + e.message);
         }
       }
 
-      async function deleteFile(btn) {
-        const name = btn.dataset.name;
-        if (!confirm('Delete "' + name + '"? This cannot be undone.'))
+      async function deleteEntry(btn) {
+        const path = btn.dataset.path;
+        const message = btn.dataset.isDirectory
+          ? 'Delete folder "' + path + '" and all of its contents? This cannot be undone.'
+          : 'Delete "' + path + '"? This cannot be undone.';
+        if (!confirm(message))
           return;
         btn.disabled = true;
-        btn.textContent = 'Deleting...';
+        btn.textContent = '⏳';
         try {
-          const res = await fetch('/files/' + encodeURIComponent(name), {method: 'DELETE'});
+          const res = await fetch(fileUrl(path), {method: 'DELETE'});
           if (res.ok) {
-            location.reload();
+            await loadFiles(currentDir);
             return;
           }
           alert('Delete failed (HTTP ' + res.status + ')');
@@ -211,10 +343,11 @@
           alert('Delete failed: ' + e);
         }
         btn.disabled = false;
-        btn.textContent = 'Delete';
+        btn.textContent = '🗑️';
       }
 
-      loadFiles();
+      const initialDir = new URLSearchParams(location.search).get('dir') || '';
+      loadFiles(initialDir);
     </script>
   </body>
 </html>

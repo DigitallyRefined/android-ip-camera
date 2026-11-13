@@ -33,6 +33,13 @@ class SecureStorage(context: Context) {
         const val KEY_PASSWORD = "secure_password"
         const val KEY_CERT_PASSWORD = "secure_cert_password"
         const val KEY_JWT_SECRET = "secure_jwt_secret"
+
+        // Relay association. The token is a bearer credential for the outbound
+        // WebSocket and never leaves secure storage.
+        const val KEY_RELAY_SERVER = "secure_relay_server"
+        const val KEY_RELAY_DEVICE_ID = "secure_relay_device_id"
+        const val KEY_RELAY_DEVICE_NAME = "secure_relay_device_name"
+        const val KEY_RELAY_TOKEN = "secure_relay_token"
     }
 
     private fun createEncryptedPreferences(context: Context) = synchronized(initializationLock) {

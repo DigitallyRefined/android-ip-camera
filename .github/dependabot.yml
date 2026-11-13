@@ -36,3 +36,13 @@ updates:
       timezone: Europe/London
     cooldown:
       default-days: 5
+
+  - package-ecosystem: bun
+    directory: /server
+    schedule:
+      interval: weekly
+      day: sunday
+      time: '01:32'
+      timezone: Europe/London
+    cooldown:
+      default-days: 5

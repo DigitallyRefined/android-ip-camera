@@ -20,6 +20,7 @@ import android.hardware.camera2.CameraManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import android.util.Size
 import android.widget.Toast
@@ -72,6 +73,8 @@ class StreamingService : LifecycleService() {
     // Streaming encoders (initialized when server is created)
     private var h264StreamingEncoder: H264StreamingEncoder? = null
     private var mjpegStreamingEncoder: MjpegStreamingEncoder? = null
+    /** Outbound relay connection to the public server, when this camera is associated. */
+    @Volatile private var relayClient: RelayClient? = null
     private val encoders: List<StreamingEncoder>
         get() = listOfNotNull(h264StreamingEncoder, mjpegStreamingEncoder)
 
@@ -93,8 +96,19 @@ class StreamingService : LifecycleService() {
      *  session-bound torch, a setTorchMode torch survives process death. */
     @Volatile private var deviceTorchOn = false
     @Volatile private var localRecorder: LocalRecorder? = null
+    /** Serializes manual and motion-triggered recording start/stop transitions. */
+    private val recordingLock = Any()
+    /** Pending auto-stop for a motion-triggered recording (cancelled when motion resumes). */
+    @Volatile private var motionStopJob: kotlinx.coroutines.Job? = null
     /** Smaller encoder feeding the RTSP sub stream (/live/sub) while it has viewers. */
     @Volatile private var subEncoder: H264HardwareEncoder? = null
+
+    /**
+     * Keeps the CPU awake while a viewer is connected. Without it the device enters deep sleep
+     * shortly after the screen turns off, the camera stops delivering frames, and WebRTC viewers
+     * freeze until the phone is unlocked again.
+     */
+    private var streamingWakeLock: PowerManager.WakeLock? = null
 
     @Volatile private var frontFacing = false             // false = back camera (read across threads)
     @Volatile private var selectedCameraId: String? = null
@@ -158,6 +172,7 @@ class StreamingService : LifecycleService() {
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
         const val ACTION_START_SERVER = "com.github.digitallyrefined.androidipcamera.START_SERVER"
+        const val ACTION_DISCONNECT_RELAY = "com.github.digitallyrefined.androidipcamera.DISCONNECT_RELAY"
     }
 
     inner class LocalBinder : Binder() { fun getService(): StreamingService = this@StreamingService }
@@ -169,6 +184,7 @@ class StreamingService : LifecycleService() {
             ACTION_STOP_SERVICE -> { handleStopService(); return START_NOT_STICKY }
             ACTION_RESTART_NOTIFICATION -> startForegroundService()
             ACTION_RESTART_SERVER -> restartServer()
+            ACTION_DISCONNECT_RELAY -> { disconnectRelay(); return START_STICKY }
             // Cold start with no activity bound (e.g. from BootReceiver): the activity normally
             // calls startStreamingServer() after binding, so start it here instead.
             ACTION_START_SERVER -> startStreamingServer()
@@ -252,6 +268,9 @@ class StreamingService : LifecycleService() {
         rtspServer?.let { server -> Thread { server.stop() }.start() }
         motionMonitor?.detector?.reset()
         stopOnvif()
+        relayClient?.stop()
+        relayClient = null
+        releaseStreamingWakeLock()
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
 
@@ -335,6 +354,95 @@ class StreamingService : LifecycleService() {
         } catch (e: Exception) { Log.e(TAG, "start server: ${e.message}") }
     }
 
+    // ---------------- relay association ----------------
+
+    val isRelayAssociated: Boolean get() = RelayAssociation.load(this) != null
+    val isRelayConnected: Boolean get() = relayClient?.isConnected == true
+
+    /**
+     * Exchange a one-time pairing code for a device token, then bring the outbound
+     * connection up. Called from the activity when an androidipcamera://associate
+     * intent is opened.
+     */
+    fun associateRelay(serverUrl: String, code: String, onResult: (success: Boolean, message: String) -> Unit) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val credentials = RelayAssociation.associate(this@StreamingService, serverUrl, code)
+                val relay = relayClient
+                if (relay != null) {
+                    relay.restartAfterAssociation()
+                } else {
+                    // The HTTP server has not been initialized yet; starting it also creates
+                    // the relay client, which reads the credentials we just stored.
+                    kotlinx.coroutines.withContext(Dispatchers.Main) { startStreamingServer() }
+                }
+                Log.i(TAG, "Associated relay: ${credentials.deviceId} @ ${credentials.serverUrl}")
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    onResult(true, "Associated with ${credentials.serverUrl}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "relay associate failed: ${e.message}")
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    onResult(false, e.message ?: "Association failed")
+                }
+            }
+        }
+    }
+
+    /**
+     * Forget the relay association, stop the outbound connection, and remove
+     * this camera from the relay's database. Everything that can block (secure
+     * storage, socket shutdown, HTTP delete) runs on the IO dispatcher so the
+     * Settings UI stays responsive. The relay section is disabled through the
+     * relay_deleting preference until the remote delete finishes.
+     */
+    fun disconnectRelay() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit()
+            .putBoolean("relay_deleting", true)
+            .putLong("relay_deleting_since", System.currentTimeMillis())
+            .apply()
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val credentials = RelayAssociation.load(this@StreamingService)
+                val relay = relayClient
+                if (relay != null) {
+                    relay.disconnect()
+                } else {
+                    RelayAssociation.clear(this@StreamingService)
+                    prefs.edit()
+                        .putBoolean("relay_connected", false)
+                        .putString("relay_status", "Not associated")
+                        .putLong("relay_status_updated_at", System.currentTimeMillis())
+                        .apply()
+                }
+                if (credentials != null) {
+                    val removed = RelayAssociation.deleteRemote(credentials)
+                    if (removed) {
+                        Log.i(TAG, "Removed relay device ${credentials.deviceId}")
+                    } else {
+                        Log.w(TAG, "Could not remove relay device ${credentials.deviceId}")
+                    }
+                }
+            } catch (error: Exception) {
+                Log.w(TAG, "Relay disconnect failed: ${error.message}")
+            } finally {
+                // Whether the remote delete succeeded or exhausted its retries,
+                // the user asked to disconnect: always forget the association.
+                runCatching { RelayAssociation.clear(this@StreamingService) }
+                    .onFailure { Log.w(TAG, "Could not clear relay association: ${it.message}") }
+                prefs.edit()
+                    .putBoolean("relay_connected", false)
+                    .putString("relay_status", "Not associated")
+                    .putLong("relay_status_updated_at", System.currentTimeMillis())
+                    .putBoolean("relay_deleting", false)
+                    .remove("relay_deleting_since")
+                    .apply()
+            }
+        }
+    }
+
     private fun generateCertificateAndStart() {
         val pw = generateRandomPassword()
         lifecycleScope.launch(Dispatchers.IO) {
@@ -371,6 +479,9 @@ class StreamingService : LifecycleService() {
             motionMonitor = MotionMonitor(this) { active ->
                 Log.i(TAG, "Motion ${if (active) "started" else "ended"}")
                 onvifServer?.setMotion(active)
+                // Report the start to the relay too, when the camera is associated.
+                if (active) relayClient?.sendMotion()
+                handleMotionRecording(active)
             }
             rtspServer = RtspServer(
                 AndroidRtspHost(
@@ -390,6 +501,25 @@ class StreamingService : LifecycleService() {
                 tls = { TlsHelper.serverConfig(this) }
             )
             h264StreamingEncoder?.rtspServer = rtspServer
+
+            val relay = RelayClient(
+                this,
+                onLog = { Log.i(TAG, "Relay: $it"); onLog?.invoke("Relay: $it") },
+                onStatusChanged = { connected, status ->
+                    Log.i(TAG, "Relay status: ${if (connected) "connected" else "disconnected"} - $status")
+                },
+                // A browser WebRTC viewer starts or stops the camera through the relay. The
+                // encoder taps the same frames, so the normal connected/disconnected paths apply.
+                onMediaActiveChanged = { active ->
+                    if (active) handleClientConnected() else handleClientDisconnected()
+                },
+                onKeyFrameRequest = {
+                    h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
+                }
+            )
+            relayClient = relay
+            h264StreamingEncoder?.relayClient = relay
+            relay.start()
         }
         streamingServerHelper?.startStreamingServer()
         startRtspServerIfEnabled()
@@ -505,8 +635,25 @@ class StreamingService : LifecycleService() {
         return (0 until 6).joinToString(":") { String.format(Locale.US, "%02x", h[it]) }
     }
 
+    /** Keeps the CPU and camera pipeline running while a viewer is connected. */
+    private fun acquireStreamingWakeLock() {
+        val lock = streamingWakeLock ?: run {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "$packageName:streaming"
+            ).apply { setReferenceCounted(false) }.also { streamingWakeLock = it }
+        }
+        if (!lock.isHeld) lock.acquire()
+    }
+
+    private fun releaseStreamingWakeLock() {
+        streamingWakeLock?.let { if (it.isHeld) it.release() }
+    }
+
     /** A viewer (HTTP or RTSP) connected: make sure the camera runs in a configuration that serves it. */
     private fun handleClientConnected() {
+        acquireStreamingWakeLock()
         launchMain {
             onClientConnected?.invoke()
             // While recording, the camera is already running and feeding the encoder; a
@@ -534,6 +681,8 @@ class StreamingService : LifecycleService() {
                 return@launchMain
             }
             if (!hasActiveClients()) {
+                // No viewers left: the device may sleep again.
+                releaseStreamingWakeLock()
                 // Reload/idle: keep the LED lit across the session gap before the
                 // shed-restart tears the streaming camera down.
                 bridgeTorchAcrossIdle()
@@ -994,6 +1143,7 @@ class StreamingService : LifecycleService() {
         encoders.forEach { it.stop() }
         motionMonitor?.reset()
         captureRunning = false
+        if (!hasActiveClients()) releaseStreamingWakeLock()
     }
 
     // ---------------- RTSP sub stream ----------------
@@ -1657,6 +1807,15 @@ class StreamingService : LifecycleService() {
                 }
                 prefs.edit().putBoolean(MotionMonitor.PREF_ENABLED, enabled).apply()
                 motionMonitor?.onSettingsChanged()
+                if (!enabled) {
+                    // Turning Record on Motion off also ends any motion clip immediately.
+                    motionStopJob?.cancel()
+                    motionStopJob = null
+                    val recorder = localRecorder
+                    if (recorder?.isRecording == true && recorder.trigger == LocalRecorder.Trigger.MOTION) {
+                        lifecycleScope.launch(Dispatchers.IO) { stopRecording() }
+                    }
+                }
                 launchMain {
                     if (enabled) {
                         if (captureRunning) debouncedStartCamera() else startCameraIfNeeded()
@@ -1672,6 +1831,10 @@ class StreamingService : LifecycleService() {
                 val sensitivity = value.toIntOrNull()?.coerceIn(1, 10) ?: return
                 prefs.edit().putString(MotionMonitor.PREF_SENSITIVITY, sensitivity.toString()).apply()
             }
+            MotionMonitor.PREF_STOP_DELAY -> {
+                val delay = value.toIntOrNull()?.coerceIn(0, MotionMonitor.MAX_STOP_DELAY) ?: return
+                prefs.edit().putString(MotionMonitor.PREF_STOP_DELAY, delay.toString()).apply()
+            }
         }
 
         // Delegate to encoders for codec-specific controls
@@ -1685,86 +1848,139 @@ class StreamingService : LifecycleService() {
 
     // ---------------- local recording ----------------
 
-    fun startRecording(): RecordingResponse {
-        if (localRecorder?.isRecording == true) return Triple(false, "409 Conflict",
-            """{"error":"already_recording","message":"Recording is already in progress","uri":"${localRecorder?.recordingLocation() ?: ""}"}"""
-        )
+    fun startRecording(trigger: LocalRecorder.Trigger = LocalRecorder.Trigger.MANUAL): RecordingResponse {
+        synchronized(recordingLock) {
+            if (localRecorder?.isRecording == true) return Triple(false, "409 Conflict",
+                """{"error":"already_recording","message":"Recording is already in progress","uri":"${localRecorder?.recordingLocation() ?: ""}"}"""
+            )
 
-        // Make the camera deliver frames and initialize the H.264 encoder even with no viewers
-        // connected; cleared once localRecorder takes over (or the start fails).
-        recordingNeeded = true
+            // Make the camera deliver frames and initialize the H.264 encoder even with no viewers
+            // connected; cleared once localRecorder takes over (or the start fails).
+            recordingNeeded = true
 
-        // Ensure camera and H.264 encoder are started on demand
-        if (!captureRunning || !hasActiveClients()) {
-            val latch = CountDownLatch(1)
-            launchMain {
-                startCamera(force = true)
-                latch.countDown()
+            // Ensure camera and H.264 encoder are started on demand. Motion detection counts as an
+            // active client, so checking hasActiveClients() alone would skip the restart needed to
+            // create the H.264 encoder for a motion-triggered recording.
+            var enc = h264StreamingEncoder?.h264HardwareEncoder
+            if (!captureRunning || enc == null) {
+                val latch = CountDownLatch(1)
+                launchMain {
+                    startCamera(force = true)
+                    latch.countDown()
+                }
+                try { latch.await(3, TimeUnit.SECONDS) } catch (_: Exception) {}
             }
-            try { latch.await(3, TimeUnit.SECONDS) } catch (_: Exception) {}
-        }
 
-        var enc = h264StreamingEncoder?.h264HardwareEncoder
-        var attempts = 0
-        while (enc == null && attempts < 20) {
-            try { Thread.sleep(100) } catch (_: Exception) {}
-            enc = h264StreamingEncoder?.h264HardwareEncoder
-            attempts++
-        }
+            var attempts = 0
+            while (enc == null && attempts < 100) {
+                try { Thread.sleep(100) } catch (_: Exception) {}
+                enc = h264StreamingEncoder?.h264HardwareEncoder
+                attempts++
+            }
 
-        if (enc == null) {
-            recordingNeeded = false
-            restoreNoViewerCameraState()
-            return Triple(false, "503 Service Unavailable",
-                """{"error":"no_encoder","message":"Failed to initialize H.264 encoder"}"""
-            )
-        }
+            if (enc == null) {
+                recordingNeeded = false
+                restoreNoViewerCameraState()
+                return Triple(false, "503 Service Unavailable",
+                    """{"error":"no_encoder","message":"Failed to initialize H.264 encoder"}"""
+                )
+            }
 
-        return try {
-            val recorder = LocalRecorder(this, enc.width, enc.height)
-            recorder.start()
-            enc.onRecordFrame = { bytes, isKey, pts -> recorder.feedFrame(bytes, isKey, pts) }
-            enc.requestKeyFrame()
-            localRecorder = recorder
-            recordingNeeded = false
-            Triple(true, "201 Created", recorder.statusJson())
-        } catch (e: Exception) {
-            Log.e(TAG, "startRecording failed", e)
-            recordingNeeded = false
-            restoreNoViewerCameraState()
-            Triple(false, "500 Internal Server Error",
-                """{"error":"start_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
-            )
+            return try {
+                val recorder = LocalRecorder(this, enc.width, enc.height, trigger)
+                recorder.start()
+                enc.onRecordFrame = { bytes, isKey, pts -> recorder.feedFrame(bytes, isKey, pts) }
+                enc.requestKeyFrame()
+                localRecorder = recorder
+                recordingNeeded = false
+                Triple(true, "201 Created", recorder.statusJson())
+            } catch (e: Exception) {
+                Log.e(TAG, "startRecording failed", e)
+                recordingNeeded = false
+                restoreNoViewerCameraState()
+                Triple(false, "500 Internal Server Error",
+                    """{"error":"start_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
+                )
+            }
         }
     }
 
     fun stopRecording(): RecordingResponse {
-        val recorder = localRecorder ?: return Triple(false, "409 Conflict",
-            """{"error":"not_recording","message":"No recording is in progress"}"""
-        )
-        return try {
-            h264StreamingEncoder?.h264HardwareEncoder?.onRecordFrame = null
-            val finalStatus = recorder.statusJson()
-            recorder.stop()
-            localRecorder = null
-
-            // If no remote network streaming clients are connected, update camera state
-            if (!encoders.any { it.hasClients() }) {
-                restoreNoViewerCameraState()
-            }
-            Triple(true, "200 OK", finalStatus)
-        } catch (e: Exception) {
-            Log.e(TAG, "stopRecording failed", e)
-            localRecorder = null
-            Triple(false, "500 Internal Server Error",
-                """{"error":"stop_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
+        synchronized(recordingLock) {
+            val recorder = localRecorder ?: return Triple(false, "409 Conflict",
+                """{"error":"not_recording","message":"No recording is in progress"}"""
             )
+            return try {
+                if (recorder.trigger == LocalRecorder.Trigger.MOTION) {
+                    motionStopJob?.cancel()
+                    motionStopJob = null
+                }
+                h264StreamingEncoder?.h264HardwareEncoder?.onRecordFrame = null
+                val finalStatus = recorder.statusJson()
+                recorder.stop()
+                localRecorder = null
+
+                // If no remote network streaming clients are connected, update camera state
+                if (!encoders.any { it.hasClients() }) {
+                    restoreNoViewerCameraState()
+                }
+                Triple(true, "200 OK", finalStatus)
+            } catch (e: Exception) {
+                Log.e(TAG, "stopRecording failed", e)
+                localRecorder = null
+                Triple(false, "500 Internal Server Error",
+                    """{"error":"stop_failed","message":"${e.message?.replace("\"", "'") ?: "unknown error"}"}"""
+                )
+            }
         }
     }
 
     fun getRecordingStatus(): String {
         return localRecorder?.statusJson()
             ?: """{"recording":false}"""
+    }
+
+    /** Motion true starts a motion clip; motion false schedules the auto-stop after the set delay. */
+    private fun handleMotionRecording(active: Boolean) {
+        if (active) {
+            motionStopJob?.cancel()
+            motionStopJob = null
+            lifecycleScope.launch(Dispatchers.IO) { startMotionRecordingIfNeeded() }
+        } else {
+            scheduleMotionRecordingStop()
+        }
+    }
+
+    private fun startMotionRecordingIfNeeded() {
+        if (!motionEnabled() || localRecorder?.isRecording == true) return
+        val (ok, status, body) = startRecording(LocalRecorder.Trigger.MOTION)
+        if (!ok) {
+            Log.w(TAG, "Motion recording failed to start: $status $body")
+            return
+        }
+        // Record on Motion may have been turned off, or motion cleared, while the camera/encoder
+        // was starting. In both cases the clip should not linger.
+        if (!motionEnabled()) {
+            stopRecording()
+        } else if (motionMonitor?.detector?.active != true) {
+            scheduleMotionRecordingStop()
+        }
+    }
+
+    private fun scheduleMotionRecordingStop() {
+        val recorder = localRecorder
+        if (recorder?.isRecording != true || recorder.trigger != LocalRecorder.Trigger.MOTION) return
+        motionStopJob?.cancel()
+        val delaySec = motionMonitor?.stopDelaySeconds ?: MotionMonitor.DEFAULT_STOP_DELAY
+        motionStopJob = lifecycleScope.launch(Dispatchers.IO) {
+            if (delaySec > 0) kotlinx.coroutines.delay(delaySec * 1000L)
+            val current = localRecorder
+            if (current?.isRecording == true &&
+                current.trigger == LocalRecorder.Trigger.MOTION &&
+                motionMonitor?.detector?.active != true) {
+                stopRecording()
+            }
+        }
     }
 
     /**
@@ -1774,6 +1990,10 @@ class StreamingService : LifecycleService() {
      */
     private fun restoreNoViewerCameraState() {
         if (encoders.any { it.hasClients() }) return
+        // Motion detection needs the camera to keep delivering frames with no viewer connected.
+        // Stopping here (e.g. after a motion clip auto-stops) would end detection until the next
+        // client connects, so leave the running pipeline alone.
+        if (motionEnabled()) return
         launchMain {
             if (currentSurfaceProvider != null) {
                 debouncedStartCamera()

@@ -729,7 +729,7 @@ class StreamingServerHelper(
             }
 
             // ---- Recorded files endpoints (Movies/AndroidIPCamera or the custom folder) ----
-            if (fileManager.handleRequest(httpMethod, path, writer, outputStream)) {
+            if (fileManager.handleRequest(httpMethod, path, uri, headers, writer, outputStream)) {
                 try { socket.close() } catch (_: Exception) {}
                 return
             }
@@ -1483,6 +1483,7 @@ class StreamingServerHelper(
         val snapshotRes: String,
         val motionDetectionEnabled: Boolean,
         val motionSensitivity: String,
+        val motionRecordStopDelay: String,
         val onvifEnabled: Boolean,
     )
 
@@ -1550,7 +1551,8 @@ class StreamingServerHelper(
                 put("snapshotRes", settings.snapshotRes)
                 put("motionDetectionEnabled", settings.motionDetectionEnabled)
                 put("motionSensitivity", settings.motionSensitivity)
-                // Motion detection is only exposed in the web UI when ONVIF is enabled.
+                put("motionRecordStopDelay", settings.motionRecordStopDelay)
+                // Whether RTSP/ONVIF is enabled. Motion detection is always available in the web UI.
                 put("onvifEnabled", settings.onvifEnabled)
             })
             put("appVersion", context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty())
@@ -1698,8 +1700,11 @@ class StreamingServerHelper(
             deviceHasFlash = anyBackCameraWithFlash(),
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
             snapshotRes = prefs.getString("snapshot_res_$cameraId", "max") ?: "max",
-            motionDetectionEnabled = prefs.getBoolean("motion_detection_enabled", false),
-            motionSensitivity = prefs.getString("motion_sensitivity", "5") ?: "5",
+            motionDetectionEnabled = prefs.getBoolean(MotionMonitor.PREF_ENABLED, false),
+            motionSensitivity = prefs.getString(MotionMonitor.PREF_SENSITIVITY, MotionMonitor.DEFAULT_SENSITIVITY.toString())
+                ?: MotionMonitor.DEFAULT_SENSITIVITY.toString(),
+            motionRecordStopDelay = prefs.getString(MotionMonitor.PREF_STOP_DELAY, MotionMonitor.DEFAULT_STOP_DELAY.toString())
+                ?: MotionMonitor.DEFAULT_STOP_DELAY.toString(),
             onvifEnabled = prefs.getBoolean("rtsp_enabled", false),
         )
     }

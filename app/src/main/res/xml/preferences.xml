@@ -11,11 +11,13 @@
         <EditTextPreference
             android:key="username"
             android:title="Username"
+            android:summary="Not set"
             android:defaultValue=""
             android:singleLine="true" />
         <EditTextPreference
             android:key="password"
             android:title="Password"
+            android:summary="Not set"
             android:defaultValue=""
             android:inputType="textPassword"
             android:singleLine="true" />
@@ -90,6 +92,21 @@
             android:defaultValue="8000"
             android:inputType="number"
             android:singleLine="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:key="relay_category"
+        android:title="Remote Access (Relay)"
+        android:persistent="false">
+        <Preference
+            android:key="relay_server"
+            android:title="Relay Server"
+            android:persistent="false" />
+        <Preference
+            android:key="relay_disconnect"
+            android:title="Disconnect from Relay"
+            android:summary="Forget this relay association and stop the outbound connection"
+            android:persistent="false" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Recording">

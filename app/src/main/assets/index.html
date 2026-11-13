@@ -124,6 +124,59 @@
       pointer-events: none;
     }
 
+    .tabs {
+      position: sticky;
+      top: -20px;
+      z-index: 3;
+      display: flex;
+      gap: 4px;
+      margin: -20px -20px 10px;
+      padding: 20px 20px 10px;
+      background: #1e1e1e;
+    }
+
+    .tab-btn {
+      flex: 1;
+      background: transparent;
+      color: #aaa;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: 0.2s;
+    }
+
+    .tab-btn:hover {
+      background: #333;
+      color: #fff;
+    }
+
+    .tab-btn.active {
+      background: #007AFF;
+      color: #fff;
+    }
+
+    .tab-pane {
+      display: none;
+    }
+
+    .tab-pane.active {
+      display: block;
+    }
+
+    .recordings-frame {
+      display: block;
+      width: 100%;
+      /* Fill the remaining viewport below the panel header; never shrink below 300px. */
+      height: calc(100vh - 745px);
+      min-height: 270px;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #121212;
+    }
+
     .spinner {
       width: 28px;
       height: 28px;
@@ -188,6 +241,7 @@
       background: #252525;
       padding: 15px;
       border-radius: 10px;
+      margin-top: 0;
       margin-bottom: 15px;
     }
 
@@ -296,129 +350,186 @@
       </div>
 
       <div class='controls-content'>
-        <div class='setting-group'>
-          <h3>Settings</h3>
-          <div style="display:flex; gap:8px; align-items:flex-end; margin-bottom:15px;">
-            <div style="width:calc(50% - 4px); min-width:0;">
-              <label for="cameraSelect">Camera <span class="val-badge" id="cameraFacingBadge">&mdash;</span></label>
-              <div class="camera-controls" style="margin-bottom:0;">
-                <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
+        <div class='tabs' role='tablist' aria-label='Control tabs'>
+          <button id='tabCameraBtn' class='tab-btn active' role='tab' aria-selected='true' aria-controls='tabCamera' onclick="showTab('camera')">Camera</button>
+          <button id='tabSettingsBtn' class='tab-btn' role='tab' aria-selected='false' aria-controls='tabSettings' onclick="showTab('settings')">Settings</button>
+        </div>
+
+        <div id='tabCamera' class='tab-pane active' role='tabpanel' aria-labelledby='tabCameraBtn'>
+          <div class='setting-group'>
+            <div style="display:flex; gap:8px; align-items:flex-end; margin-bottom:15px;">
+              <div style="width:calc(50% - 4px); min-width:0;">
+                <label for="cameraSelect">Camera <span class="val-badge" id="cameraFacingBadge">&mdash;</span></label>
+                <div class="camera-controls" style="margin-bottom:0;">
+                  <select id="cameraSelect" class="camera-select" onchange='setCamera(this.value)'></select>
+                </div>
+              </div>
+              <button id="flashBtn" class="btn btn-action" style="width:calc(50% - 4px); margin-bottom:0;">💡 Flash On</button>
+            </div>
+
+            <div>
+              <button id="muteBtn" class="btn btn-action" style="width: 49%;">🔇 Unmute Audio</button>
+              <button id="pttBtn" class="btn btn-action" style="width: 49%; margin-bottom: 0;">🎙️ Hold to Talk</button>
+            </div>
+
+            <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
+            <input id="zoom" type='range' min='0.1' max='8.0' step='0.1' value='1.0' data-control='zoom'
+              data-badge='zoomVal' data-fmt='suffix' data-suffix='x' style='margin-bottom:0'>
+
+            <p class="group-title">Rotation &amp; Mirror</p>
+
+            <div style="margin-bottom: 12px">
+              <label for="rotate">Rotation <span class='val-badge' id='rotateVal'>0°</span></label>
+              <input id="rotate" type="range" min="0" max="359" step="1" value="0" data-control="rotate"
+                data-badge="rotateVal" data-fmt="suffix" data-suffix="°" style="margin-bottom: 8px;">
+              <div style="display:flex;gap:8px;margin-bottom:8px;width:100%;">
+                <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0" data-badge="rotateVal">0°</button>
+                <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90" data-badge="rotateVal">90°</button>
+                <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180" data-badge="rotateVal">180°</button>
+                <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270" data-badge="rotateVal">270°</button>
               </div>
             </div>
-            <button id="flashBtn" class="btn btn-action" style="width:calc(50% - 4px); margin-bottom:0;">💡 Flash On</button>
-          </div>
-
-          <div>
-            <button id="muteBtn" class="btn btn-action" style="width: 49%;">🔇 Unmute Audio</button>
-            <button id="pttBtn" class="btn btn-action" style="width: 49%; margin-bottom: 0;">🎙️ Hold to Talk</button>
-          </div>
-
-          <div id="audioControls">
-            <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.5s</span></label>
-            <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
-
-            <label for="audioGain">Audio Gain <span class='val-badge' id='audioGainVal'>1.0</span></label>
-            <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='1.0' data-control='audio_gain'
-              data-badge='audioGainVal'>
-          </div>
-
-          <div>
-            <button id="modeH264Btn" class="btn btn-action" style="width: 49%;">H.264</button>
-            <button id="modeMjpegBtn" class="btn btn-action" style="width: 49%;">MJPEG</button>
-          </div>
-
-          <p class="group-title">Camera Control</p>
-
-          <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
-          <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
-
-          <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
-          <input id="zoom" type='range' min='0.1' max='8.0' step='0.1' value='1.0' data-control='zoom'
-            data-badge='zoomVal' data-fmt='suffix' data-suffix='x'>
-
-          <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
-          <input id="exposure" type='range' min='-10' max='10' step='1' value='0' data-control='exposure'
-            data-badge='exposureVal'>
-
-          <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
-          <input id="focusDistance" type='range' min='-0.05' max='1.0' step='0.05' value='-1'
-            data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
-
-          <div style="margin-bottom: 12px">
-            <label for="rotate">Rotation <span class='val-badge' id='rotateVal'>0°</span></label>
-            <input id="rotate" type="range" min="0" max="359" step="1" value="0" data-control="rotate"
-              data-badge="rotateVal" data-fmt="suffix" data-suffix="°" style="margin-bottom: 8px;">
-            <div style="display:flex;gap:8px;margin-bottom:8px;width:100%;">
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0" data-badge="rotateVal">0°</button>
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90" data-badge="rotateVal">90°</button>
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180" data-badge="rotateVal">180°</button>
-              <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270" data-badge="rotateVal">270°</button>
-            </div>
-          </div>
-
-          <label>
-            <input type="checkbox" id="mirrorCheckbox" onchange="sendControl('mirror', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
-            <span style="vertical-align:middle;">Mirror</span>
-          </label>
-
-          <p class="group-title">Post Processing</p>
-
-          <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
-          <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='1.0' data-control='scale'
-            data-badge='scaleVal' data-fmt='suffix' data-suffix='x' data-setview='original'>
-
-          <label for="contrast">Contrast <span class='val-badge' id='contVal'>0</span></label>
-          <input id="contrast" type='range' min='-50' max='50' step='10' value='0' data-control='contrast'
-            data-badge='contVal'>
-
-          <label for="fps">Frame Rate (fps)</label>
-          <input id="fps" type='number' min='1' max='60' value='30' data-control='fps'>
-
-          <div style="margin-top:12px;">
-            <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
-          </div>
-
-          <div id="motionSettings" style="display:none;">
-            <p class="group-title">Motion Detection</p>
 
             <label>
-              <input type="checkbox" id="motionCheckbox" onchange="sendControl('motion_detection_enabled', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
-              <span style="vertical-align:middle;">Enable Motion Detection</span>
+              <input type="checkbox" id="mirrorCheckbox" onchange="sendControl('mirror', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">Mirror</span>
             </label>
-            <div class="hint" style="margin:-2px 0 12px; font-size:12px; color:#ccc">
-              Keeps the camera running and reports motion to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (Home Assistant, UniFi Protect).
+
+            <p class="group-title">Capture</p>
+
+            <div style="display:flex; gap:8px; margin-bottom:8px;">
+              <button id="recordToggleBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
+              <button id="snapBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="takeSnapshot()">📸 Take Snapshot</button>
             </div>
 
-            <label for="motionSensitivity">Sensitivity <span class='val-badge' id='motionSensitivityVal'>5</span></label>
-            <input id="motionSensitivity" type='range' min='1' max='10' step='1' value='5' data-control='motion_sensitivity' data-badge='motionSensitivityVal' style='margin-bottom: 0'>
-          </div>
+            <label style="margin:12px 0 4px;">
+              <input type="checkbox" id="motionCheckbox" onchange="sendControl('motion_detection_enabled', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">Record on Motion</span>
+            </label>
+            <div class="hint" style="margin:0 0 4px; font-size:12px; color:#ccc">
+              Keeps the camera running with no viewer connected. Motion is also reported to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (Home Assistant, UniFi Protect) when ONVIF is enabled.
+            </div>
 
-          <p class="group-title">Snapshot</p>
-
-          <label for="snapshotRes">Snapshot Resolution</label>
-          <select id="snapshotRes" style="margin-bottom: 12px" data-control="snapshot_res">
-            <option value="stream">Match stream (fast)</option>
-            <option value="max">Max (full sensor)</option>
-          </select>
-          <div style="display:flex; gap:8px; margin-bottom:8px;">
-            <button id="recordToggleBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
-            <button id="snapBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="takeSnapshot()">📸 Take Snapshot</button>
-          </div>
-          <div style="display:flex; justify-content:flex-end; align-items:center; gap:4px; margin-bottom:8px;">
-            <label style="margin:0; font-size:13px; color:#ccc; cursor:pointer;" title="Timer (seconds, 0 = instant)">⏱️</label>
-            <input type="number" id="timerInput" min="0" max="300" step="1" value="0"
-              style="width:50px; padding:4px 6px; font-size:13px; text-align:center; background:#333; color:#fff; border:1px solid #555; border-radius:4px; margin:0;">
+            <div id="recordingsSection">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
+                <span class="group-title" style="margin:0;">Recordings</span>
+                <button class="btn" style="padding:4px 10px; font-size:12px;" onclick="refreshRecordings()">↻ Refresh</button>
+              </div>
+              <iframe id="recordingsFrame" class="recordings-frame" title="Recordings" src="/files"></iframe>
+            </div>
           </div>
         </div>
 
-        <p class="notice">Some changes will momentarily restart the camera.</p>
-        <p class="version"><a href="https://github.com/DigitallyRefined/android-ip-camera" target="_blank">Android IP Camera <span id="appVersion"></span></a></p>
+        <div id='tabSettings' class='tab-pane' role='tabpanel' aria-labelledby='tabSettingsBtn'>
+          <div class='setting-group'>
+            <div id="audioControls">
+              <p class="group-title" style="margin-top:0;">Audio</p>
+
+              <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.5s</span></label>
+              <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
+
+              <label for="audioGain">Audio Gain <span class='val-badge' id='audioGainVal'>1.0</span></label>
+              <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='1.0' data-control='audio_gain'
+                data-badge='audioGainVal'>
+            </div>
+
+            <p class="group-title" style="margin-top:0">Stream</p>
+
+            <div>
+              <button id="modeH264Btn" class="btn btn-action" style="width: 49%;">H.264</button>
+              <button id="modeMjpegBtn" class="btn btn-action" style="width: 49%;">MJPEG</button>
+            </div>
+
+            <p class="group-title">Camera Control</p>
+
+            <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
+            <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
+
+            <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
+            <input id="exposure" type='range' min='-10' max='10' step='1' value='0' data-control='exposure'
+              data-badge='exposureVal'>
+
+            <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
+            <input id="focusDistance" type='range' min='-0.05' max='1.0' step='0.05' value='-1'
+              data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
+
+            <p class="group-title">Post Processing</p>
+
+            <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
+            <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='1.0' data-control='scale'
+              data-badge='scaleVal' data-fmt='suffix' data-suffix='x' data-setview='original'>
+
+            <label for="contrast">Contrast <span class='val-badge' id='contVal'>0</span></label>
+            <input id="contrast" type='range' min='-50' max='50' step='10' value='0' data-control='contrast'
+              data-badge='contVal'>
+
+            <label for="fps">Frame Rate (fps)</label>
+            <input id="fps" type='number' min='1' max='60' value='30' data-control='fps'>
+
+            <div style="margin-top:12px;">
+              <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
+            </div>
+
+            <div id="motionSettings">
+              <p class="group-title">Motion Detection</p>
+
+              <label for="motionSensitivity">Sensitivity <span class='val-badge' id='motionSensitivityVal'>5</span></label>
+              <input id="motionSensitivity" type='range' min='1' max='10' step='1' value='5' data-control='motion_sensitivity' data-badge='motionSensitivityVal' style='margin-bottom: 20px'>
+
+              <label for="motionStopDelay">Stop Recording After Motion (seconds)</label>
+              <input id="motionStopDelay" type="number" min="0" max="300" step="1" value="10" data-control="motion_record_stop_delay">
+              <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                How long to keep a motion recording after motion stops.
+              </div>
+            </div>
+
+            <p class="group-title">Snapshot</p>
+
+            <label for="snapshotRes">Snapshot Resolution</label>
+            <select id="snapshotRes" style="margin-bottom: 12px" data-control="snapshot_res">
+              <option value="stream">Match stream (fast)</option>
+              <option value="max">Max (full sensor)</option>
+            </select>
+
+            <label for="timerInput">Snapshot Delay (seconds)</label>
+            <input type="number" id="timerInput" min="0" max="300" step="1" value="0">
+            <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+              Countdown before a snapshot is captured. Set to 0 to take it instantly. Use the Take Snapshot button in the Camera tab.
+            </div>
+          </div>
+
+          <p class="notice">Some changes will momentarily restart the camera.</p>
+          <p class="version"><a href="https://github.com/DigitallyRefined/android-ip-camera" target="_blank">Android IP Camera <span id="appVersion"></span></a></p>
+        </div>
       </div>
     </div>
   </div>
 
   <script>
     const getElById = (id) => document.getElementById(id);
+
+    function showTab(name) {
+      const showCamera = name !== 'settings';
+      const cameraPane = getElById('tabCamera');
+      const settingsPane = getElById('tabSettings');
+      const cameraBtn = getElById('tabCameraBtn');
+      const settingsBtn = getElById('tabSettingsBtn');
+
+      if (cameraPane) cameraPane.classList.toggle('active', showCamera);
+      if (settingsPane) settingsPane.classList.toggle('active', !showCamera);
+      if (cameraBtn) {
+        cameraBtn.classList.toggle('active', showCamera);
+        cameraBtn.setAttribute('aria-selected', showCamera ? 'true' : 'false');
+      }
+      if (settingsBtn) {
+        settingsBtn.classList.toggle('active', !showCamera);
+        settingsBtn.setAttribute('aria-selected', showCamera ? 'false' : 'true');
+      }
+
+      // Start each tab at the top of the panel instead of keeping the previous scroll offset.
+      const panel = getElById('controlsPanel');
+      if (panel) panel.scrollTop = 0;
+    }
 
     let currentCamera = '';
     const audioEl = getElById('audioEl');
@@ -587,7 +698,8 @@
       if (param === 'focus' || param === 'focus_distance') return 'focusDistance';
       if (param === 'snapshot_res') return 'snapshotRes';
       // Motion detection is a global (camera-independent) setting, not a lens setting.
-      if (param === 'motion_detection_enabled' || param === 'motion_sensitivity') return null;
+      if (param === 'motion_detection_enabled' || param === 'motion_sensitivity' ||
+        param === 'motion_record_stop_delay') return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -1427,14 +1539,6 @@
       if (fps && settings.fps) {
         fps.value = settings.fps;
       }
-      // Motion detection is only meaningful with ONVIF (event reporting), so keep its
-      // controls hidden unless the server reports ONVIF as enabled.
-      if (settings.onvifEnabled !== undefined) {
-        const onvif = settings.onvifEnabled;
-        const enabled = onvif === true || onvif === 1 || onvif === 'true' || onvif === 'on' || onvif === '1';
-        const motionSettings = getElById('motionSettings');
-        if (motionSettings) motionSettings.style.display = enabled ? '' : 'none';
-      }
       const motionEl = getElById('motionCheckbox');
       if (motionEl && settings.motionDetectionEnabled !== undefined) {
         const v = settings.motionDetectionEnabled;
@@ -1587,6 +1691,25 @@
         .catch(() => {});
     }
 
+    function refreshRecordings() {
+      const frame = getElById('recordingsFrame');
+      if (!frame) return;
+      // Keep the folder being browsed, and cache-bust so new recordings show immediately.
+      let dir = '';
+      try {
+        dir = new URL(frame.contentWindow.location.href).searchParams.get('dir') || '';
+      } catch (_) { }
+      frame.src = '/files?dir=' + encodeURIComponent(dir) + '&ts=' + Date.now();
+    }
+
+    function showRecordings() {
+      const section = getElById('recordingsSection');
+      if (!section) return;
+      section.style.display = '';
+      refreshRecordings();
+      try { section.scrollIntoView({ block: 'nearest' }); } catch (_) { }
+    }
+
     function toggleRecording() {
       const wasRecording = isRecording;
       const url = wasRecording ? '/record/stop' : '/record/start';
@@ -1596,8 +1719,8 @@
           if (data.error) {
             alert('Recording Message: ' + (data.message || data.error));
           } else if (wasRecording) {
-            // Recording stopped: show the recordings list
-            window.open('/files', 'recordings');
+            // Recording stopped: show the recordings list inline under Capture.
+            showRecordings();
           }
           checkRecordingStatus();
         })
