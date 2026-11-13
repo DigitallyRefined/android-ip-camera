@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -20,7 +21,9 @@ import android.hardware.camera2.CameraManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import android.widget.Toast
@@ -102,6 +105,8 @@ class StreamingService : LifecycleService() {
     @Volatile private var motionStopJob: kotlinx.coroutines.Job? = null
     /** Smaller encoder feeding the RTSP sub stream (/live/sub) while it has viewers. */
     @Volatile private var subEncoder: H264HardwareEncoder? = null
+    /** Sub stream settings the running sub encoder was built with. */
+    private var subEncoderSettings: List<Int>? = null
 
     /**
      * Keeps the CPU awake while a viewer is connected. Without it the device enters deep sleep
@@ -139,9 +144,14 @@ class StreamingService : LifecycleService() {
     private val snapCache = ConcurrentHashMap<String, CachedSnapshot>()
     private val snapLock = Any()
     private val cameraMutex = Mutex()
-    private var pendingStartJob: kotlinx.coroutines.Job? = null
+    @Volatile private var pendingStartJob: kotlinx.coroutines.Job? = null
+    /** The viewer check waiting to run, so a burst of viewer changes and a settings restart are decided once. */
+    private var pendingViewerCheck: kotlinx.coroutines.Job? = null
     private var torchVerifyJob: kotlinx.coroutines.Job? = null
     @Volatile private var cameraCloseStartTime: Long = 0L
+    /** What the running session was built for, so a viewer change restarts it only when needed. Null while stopped. */
+    private var runningSession: CameraSession? = null
+    @Volatile private var runningStartedAtMs = 0L
 
     var onClientConnected: (() -> Unit)? = null
     var onClientDisconnected: (() -> Unit)? = null
@@ -178,6 +188,14 @@ class StreamingService : LifecycleService() {
         /** CameraX grace period for its first analysis frame; if none arrives the session never
          *  configured and the service falls back to the Camera1 backend. */
         private const val CAMERAX_FRAME_GRACE_MS = 8_000L
+        /** A viewer change waits this long, so a burst of connections or a reconnect is decided once. */
+        private const val VIEWER_CHECK_DELAY_MS = 300L
+        /** A running session with no camera frame or encoder output for this long counts as stalled, and a viewer change restarts it. */
+        private const val CAMERA_STALL_MS = 5_000L
+        /** Longest a start waits for the previous Camera1 release (about 21 s seen) before opening anyway. */
+        private const val CAMERA1_RELEASE_WAIT_MS = 30_000L
+        /** A CameraX start without frames this soon after a slow Camera1 release is not counted as a miss. */
+        private const val CAMERA1_SETTLE_MS = 30_000L
         const val ACTION_STOP_SERVICE = "com.github.digitallyrefined.androidipcamera.STOP_SERVICE"
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
@@ -243,6 +261,9 @@ class StreamingService : LifecycleService() {
             return
         }
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        // Earlier versions kept "camera2_unusable" forever after one CameraX start without frames, which
+        // pinned capable phones to Camera1. Drop it so the next frame-needing start tests CameraX again.
+        if (prefs.contains(CameraXFallback.LEGACY_PREF)) prefs.edit().remove(CameraXFallback.LEGACY_PREF).apply()
         val savedCameraId = prefs.getString(PREF_CAMERA_ID, null)
         if (savedCameraId != null) {
             // resolveCamera maps "1:3" → the openable camera ID (e.g. "3") and correct facing
@@ -412,7 +433,7 @@ class StreamingService : LifecycleService() {
             debouncedStartCamera()
         } else {
             launchMain {
-                stopCamera()
+                stopCameraWhenIdle()
                 bridgeTorchAcrossIdle()
             }
         }
@@ -424,7 +445,10 @@ class StreamingService : LifecycleService() {
         PreferenceManager.getDefaultSharedPreferences(this).edit()
             .putString(PREF_CAMERA_ID, camId())
             .apply()
-        if (captureRunning) debouncedStartCamera(force = true)
+        launchMain {
+            awaitCameraSettled()
+            if (captureRunning) debouncedStartCamera(force = true)
+        }
     }
 
     fun getLocalIpAddress(): String {
@@ -764,11 +788,9 @@ class StreamingService : LifecycleService() {
                 updateSubStream()
                 return@launchMain
             }
-            if (captureRunning) {
-                debouncedStartCamera()
-            } else {
-                startCameraIfNeeded()
-            }
+            // Restart only when the running session cannot serve the new viewer. startCamera() decides under
+            // the camera lock, so a viewer arriving during a start is checked once that start ends.
+            if (captureRunning) scheduleViewerCheck() else startCamera(viewersChanged = true)
         }
     }
 
@@ -795,6 +817,11 @@ class StreamingService : LifecycleService() {
                     pendingStartJob?.cancel()
                     pendingStartJob = lifecycleScope.launch(Dispatchers.Main) {
                         kotlinx.coroutines.delay(300)
+                        // Past its delay a start is not replaced any more: it may be opening or closing a Camera1 device
+                        // on another thread. A newer request runs after it on cameraMutex instead.
+                        if (pendingStartJob === coroutineContext[kotlinx.coroutines.Job]) pendingStartJob = null
+                        // A viewer leaving during a Camera1 open sheds the session that open ends with.
+                        awaitCameraSettled()
                         if (!captureRunning) return@launch   // camera stopped meanwhile
                         if (encoders.any { it.hasClients() } || currentSurfaceProvider != null || motionEnabled()) return@launch
                         startCamera(force = true)
@@ -803,7 +830,7 @@ class StreamingService : LifecycleService() {
                     debouncedStartCamera()
                 }
             } else if (captureRunning) {
-                debouncedStartCamera()
+                scheduleViewerCheck()
             }
         }
     }
@@ -892,8 +919,9 @@ class StreamingService : LifecycleService() {
         return 0
     }
 
-    private fun camera1IndexForSelectedOrFacing(front: Boolean): Int {
-        val selected = selectedCameraId?.toIntOrNull()
+    /** Reads the camera list from cameraserver, so it runs on the Camera1 thread. [selectedId] is read on main. */
+    private fun camera1IndexForSelectedOrFacing(selectedId: String?, front: Boolean): Int {
+        val selected = selectedId?.toIntOrNull()
         return if (selected != null && selected in 0 until Camera.getNumberOfCameras()) {
             selected
         } else {
@@ -985,7 +1013,78 @@ class StreamingService : LifecycleService() {
         return Size(even(w * scale), even(h * scale))
     }
 
-    private suspend fun startCameraIfNeeded() { if (!captureRunning) startCamera() }
+    private suspend fun startCameraIfNeeded() {
+        awaitCameraSettled()
+        if (!captureRunning) startCamera()
+    }
+
+    /**
+     * Waits for a camera start or stop in flight. Camera1 opens off the main thread, so captureRunning
+     * reads false until that start ends. Callers that act on captureRunning wait here, as they used to
+     * wait behind the blocked main thread.
+     */
+    private suspend fun awaitCameraSettled() { cameraMutex.withLock {} }
+
+    /**
+     * Stops the camera if nothing needs it any more, checked again after any start in flight, so a viewer
+     * that joined meanwhile keeps its stream. Returns once a Camera1 device is released too, so a device
+     * torch lit next is not refused with CAMERA_IN_USE. True when the camera was stopped.
+     */
+    private suspend fun stopCameraWhenIdle(): Boolean {
+        val stopped = cameraMutex.withLock {
+            if (hasActiveClients() || currentSurfaceProvider != null) false else { stopCamera(); true }
+        }
+        if (stopped) Camera1Capture.awaitReleased(CAMERA1_RELEASE_WAIT_MS)
+        return stopped
+    }
+
+    /** What the viewers, recording, motion detection, a snapshot and the on-phone preview ask of the camera now. */
+    private fun cameraDemand() = CameraDemand(
+        h264Viewers = h264StreamingEncoder?.hasClients() == true,
+        mjpegViewers = mjpegStreamingEncoder?.hasClients() == true,
+        recording = recordingNeeded || localRecorder?.isRecording == true,
+        motion = motionEnabled(),
+        snapshot = snapshotInProgress,
+        preview = currentSurfaceProvider != null,
+    )
+
+    private fun streamFps(): Int =
+        (PreferenceManager.getDefaultSharedPreferences(this).getString("stream_fps", "30")?.toIntOrNull() ?: 30).coerceIn(1, 60)
+
+    /**
+     * The running session drew a camera frame lately, or only just started. One that stopped (camera
+     * taken by another app, cameraserver restarted) is restarted by the next viewer change, as every
+     * viewer change used to do. So is one whose H.264 encoder stopped while the camera kept running.
+     */
+    private fun cameraDelivering(): Boolean {
+        val lastFrameAt = when (val b = backend) {
+            is CameraXCapture -> b.lastFrameAtMs
+            is Camera1Capture -> glPipe?.lastFrameAtMs ?: 0L
+            else -> 0L
+        }
+        // A GL pipe draws every camera frame into a surface encoder, so one with no output lately has
+        // stopped (codec reclaimed or failed, pipe gone). A byte-buffer encoder is fed only while H.264
+        // is wanted, so for it only a failed drain counts.
+        val enc = h264StreamingEncoder?.h264HardwareEncoder
+        if (enc?.drainFailed == true) return false
+        val encodedAt = enc?.takeIf { it.useSurface }?.lastOutputAtMs
+        return CameraSession.delivering(SystemClock.elapsedRealtime(), runningStartedAtMs, CAMERA_STALL_MS, lastFrameAt, encodedAt)
+    }
+
+    /**
+     * A viewer joined or left while the camera runs. After a short settle, which folds a burst of
+     * connections into one decision, [startCamera] restarts it only if the running session cannot serve
+     * the viewers then connected. A settings restart scheduled meanwhile replaces the check, since it
+     * rebuilds the session for the viewers connected when it runs.
+     */
+    private fun scheduleViewerCheck() {
+        pendingViewerCheck?.cancel()
+        pendingViewerCheck = lifecycleScope.launch(Dispatchers.Main) {
+            kotlinx.coroutines.delay(VIEWER_CHECK_DELAY_MS)
+            val self = coroutineContext[kotlinx.coroutines.Job]
+            startCamera(viewersChanged = true) { if (pendingViewerCheck === self) pendingViewerCheck = null }
+        }
+    }
 
     /**
      * Debounced camera restart. Coalesces rapid [startCamera] calls (e.g. when a settings
@@ -993,6 +1092,17 @@ class StreamingService : LifecycleService() {
      * after [delayMs]. Immediate restarts (force=true) bypass the debounce.
      */
     private fun debouncedStartCamera(force: Boolean = false, delayMs: Long = 300) {
+        // Remote controls call in from the server's IO threads. The pending jobs are only read and
+        // replaced on main, so a start cannot be cancelled after it has claimed the camera lock.
+        if (Looper.myLooper() !== Looper.getMainLooper()) {
+            launchMain { debouncedStartCamera(force, delayMs) }
+            return
+        }
+        // The running session no longer matches what was asked for. A viewer change before this start
+        // runs, or after it is bypassed or replaced by the shed, rebuilds it instead of keeping it.
+        runningSession = null
+        pendingViewerCheck?.cancel()
+        pendingViewerCheck = null
         if (force) {
             pendingStartJob?.cancel()
             pendingStartJob = null
@@ -1002,12 +1112,24 @@ class StreamingService : LifecycleService() {
         pendingStartJob?.cancel()
         pendingStartJob = lifecycleScope.launch(Dispatchers.Main) {
             kotlinx.coroutines.delay(delayMs)
-            startCamera()
+            val self = coroutineContext[kotlinx.coroutines.Job]
+            startCamera { if (pendingStartJob === self) pendingStartJob = null }
         }
     }
 
-    private suspend fun startCamera(force: Boolean = false) = cameraMutex.withLock {
-        Log.i(TAG, "startCamera() called. force=$force, selectedCameraId=$selectedCameraId, frontFacing=$frontFacing, currentSurfaceProvider=$currentSurfaceProvider, captureRunning=$captureRunning")
+    /**
+     * Restarts the camera for the current settings and consumers. [onLocked] runs first once the
+     * camera lock is held: a delayed start clears its pending job there. Until then a newer request
+     * replaces it, so settings changed during a slow start cost one restart. After that it may open or
+     * close a Camera1 device on another thread, so a newer request runs after it instead.
+     */
+    private suspend fun startCamera(
+        force: Boolean = false,
+        viewersChanged: Boolean = false,
+        onLocked: () -> Unit = {},
+    ) = cameraMutex.withLock {
+        onLocked()
+        Log.i(TAG, "startCamera() called. force=$force, viewersChanged=$viewersChanged, selectedCameraId=$selectedCameraId, frontFacing=$frontFacing, currentSurfaceProvider=$currentSurfaceProvider, captureRunning=$captureRunning")
         if (!allPermissionsGranted()) {
             Log.w(TAG, "startCamera bypassed: permissions not granted")
             return@withLock
@@ -1015,6 +1137,19 @@ class StreamingService : LifecycleService() {
         val hasClients = encoders.any { it.hasClients() }
         if (!force && !hasClients && currentSurfaceProvider == null && !motionEnabled()) {
             Log.i(TAG, "startCamera bypassed: no force, no clients, and preview surface is null")
+            return@withLock
+        }
+        // A viewer joining or leaving restarts the camera only when the running session cannot serve the
+        // viewers now connected, or has stopped delivering frames. Restarting on every connection cost a
+        // close and an open each time, over 40 s on some Camera1 HALs, long enough to crash cameraserver.
+        // A session the torch holds open was built for nobody, so a viewer restarts it, ending the hold.
+        if (viewersChanged && captureRunning && !cameraHeldForTorch && cameraDelivering() &&
+            runningSession?.serves(cameraDemand(), streamFps(), camId()) == true) {
+            Log.i(TAG, "startCamera skipped: the running camera already serves the connected viewers")
+            // A /live/sub viewer joining or leaving starts or stops the sub stream encoder.
+            updateSubStream()
+            // New HTTP H.264 viewers wait for a keyframe, which a restart used to send at once.
+            h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
             return@withLock
         }
         // An explicit restart must always be able to tear down the current session — even one the
@@ -1025,6 +1160,11 @@ class StreamingService : LifecycleService() {
         cameraHeldForTorch = false
         stopCamera()
         h264StreamingEncoder?.awaitRelease()
+        // stopCamera() hands a Camera1 device to its own thread to close. Opening a camera before that ends
+        // fails, or starves CameraX of frames and gets Camera2 blamed for it.
+        if (!Camera1Capture.awaitReleased(CAMERA1_RELEASE_WAIT_MS)) {
+            Log.w(TAG, "Camera1 still closing after ${CAMERA1_RELEASE_WAIT_MS}ms, starting the camera anyway")
+        }
         try {
             val want = desiredSize()
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -1039,33 +1179,37 @@ class StreamingService : LifecycleService() {
                     prefs.edit().putString(PREF_CAMERA_ID, camId()).apply()
                 }
             }
-            val camxUnusable = prefs.getBoolean("camera2_unusable", false)
+            val demand = cameraDemand()
+            val surfaceEncoder = supportsSurfaceEncoder()
+            val fps = streamFps()
+            val camera = camId()
+            val cameraXMissed = cameraXMissedRecently(prefs, camera)
             // The on-phone preview is only wired to CameraX, so the idle/preview-only state is
             // ALWAYS CameraX — its Preview use case renders even on devices whose Camera2 session
             // never configures ImageAnalysis/ImageCapture. The backend choice only matters when
             // frames are actually needed (clients / recording / snapshot in flight): then honor the
-            // API preference and the known-bad-Camera2 flag, which route to the Camera1 backend.
-            val needsFrames = snapshotInProgress || recordingNeeded ||
-                encoders.any { it.hasClients() } || localRecorder?.isRecording == true || motionEnabled()
-            val useCamera1 = needsFrames && (chooseApi() == "camera1" || camxUnusable)
+            // API preference and a recent CameraX start without frames, which route to the Camera1 backend.
+            val useCamera1 = demand.frames && (chooseApi() == "camera1" || cameraXMissed)
             if (useCamera1) {
-                if (camxUnusable) {
-                    Log.i(TAG, "Camera2 known unusable on this device and frames are needed — using Camera1 backend")
+                if (cameraXMissed) {
+                    Log.i(TAG, "CameraX recently bound without frames on this device and frames are needed, using Camera1 backend")
                 }
-                startCamera1Backend(want)
+                startCamera1Backend(want, demand)
             } else {
-                startCameraXBackend(want)
+                startCameraXBackend(want, demand, surfaceEncoder)
                 // CameraX can bind without the session ever configuring (e.g. "Unable to configure
                 // camera ... TimeoutException") — no analysis frames ever arrive. Detect that and fall
                 // back to the Camera1 backend so streaming and snapshots keep working on such devices.
-                if (needsFrames && !waitForCameraXFrame()) {
-                    Log.w(TAG, "CameraX bound but no frames within ${CAMERAX_FRAME_GRACE_MS}ms — Camera2 session config failed on this device; falling back to Camera1")
-                    stopCamera()
-                    // Remember the device is Camera2-broken (not the API preference) so the CameraX
-                    // on-phone preview can come back once frames are no longer needed, while future
-                    // frame-needing starts go straight to Camera1 without another 8s wait.
-                    prefs.edit().putBoolean("camera2_unusable", true).apply()
-                    startCamera1Backend(want)
+                if (demand.frames) {
+                    val framed = waitForCameraXFrame()
+                    // While a Camera1 device closes, or soon after a slow close that may have taken
+                    // cameraserver down with it, a start without frames says nothing about Camera2.
+                    if (framed || !Camera1Capture.unsettled(CAMERA1_SETTLE_MS)) recordCameraXFrames(prefs, camera, framed)
+                    if (!framed) {
+                        Log.w(TAG, "CameraX bound but no frames within ${CAMERAX_FRAME_GRACE_MS}ms, falling back to Camera1")
+                        stopCamera()
+                        startCamera1Backend(want, demand)
+                    }
                 }
             }
             // Persist the active camera id so encoders and helpers can read per-camera prefs
@@ -1073,6 +1217,8 @@ class StreamingService : LifecycleService() {
                 prefs.edit().putString(PREF_CAMERA_ID, camId()).apply()
             } catch (_: Exception) {}
 
+            runningSession = CameraSession(demand, camera1 = backend is Camera1Capture, surfaceEncoder = surfaceEncoder, fps = fps, camera = camera)
+            runningStartedAtMs = SystemClock.elapsedRealtime()
             captureRunning = true
             encoders.forEach { it.start() }
             updateSubStream()
@@ -1118,29 +1264,69 @@ class StreamingService : LifecycleService() {
         return b.hasProducedFrame
     }
 
-    private fun startCamera1Backend(want: Size) {
-        // Camera1 → GL pipe → surface encoder (true 1920×1080 on legacy HALs).
-        val cap = Camera1Capture(camera1IndexForSelectedOrFacing(frontFacing), want.width, want.height)
-        val pipe = newPipe(Size(cap.chosenW, cap.chosenH))
-        cap.start(pipe.surfaceTexture)
-        val mjpeg = mjpegStreamingEncoder?.takeIf { it.hasClients() }
-        val motion = motionMonitor?.takeIf { it.enabled }
-        if (mjpeg != null || motion != null) {
-            cap.setPreviewFrameCallback { nv21 ->
-                mjpeg?.processNv21Frame(nv21, cap.chosenW, cap.chosenH)
-                motion?.processNv21Frame(nv21, cap.chosenW, cap.chosenH)
-            }
+    /** A frame-needing start on [camera] uses Camera1 while a recent CameraX miss holds, see [CameraXFallback]. */
+    private fun cameraXMissedRecently(prefs: SharedPreferences, camera: String): Boolean = CameraXFallback.useCamera1(
+        prefs.getInt(CameraXFallback.missesKey(camera), 0),
+        prefs.getLong(CameraXFallback.missedAtKey(camera), 0L),
+        System.currentTimeMillis()
+    )
+
+    /** Records a frame-needing CameraX start on [camera]: frames clear its misses, none adds one and restarts the hold. */
+    private fun recordCameraXFrames(prefs: SharedPreferences, camera: String, framed: Boolean) {
+        val missesKey = CameraXFallback.missesKey(camera)
+        val missedAtKey = CameraXFallback.missedAtKey(camera)
+        if (framed) {
+            if (prefs.contains(missesKey)) prefs.edit().remove(missesKey).remove(missedAtKey).apply()
+            return
+        }
+        val misses = prefs.getInt(missesKey, 0) + 1
+        prefs.edit()
+            .putInt(missesKey, misses)
+            .putLong(missedAtKey, System.currentTimeMillis())
+            .apply()
+        Log.w(TAG, "CameraX bound without frames on camera $camera ($misses in a row), frame-needing starts use Camera1 for the next ${CameraXFallback.holdMs(misses) / 60_000} min")
+    }
+
+    /** Ends the Camera1 hold on every camera, so the next frame-needing start tests CameraX again. */
+    private fun forgetCameraXMisses(prefs: SharedPreferences) {
+        val edit = prefs.edit().remove(CameraXFallback.LEGACY_PREF)
+        prefs.all.keys.filter { CameraXFallback.isRecordKey(it) }.forEach { edit.remove(it) }
+        edit.apply()
+    }
+
+    private suspend fun startCamera1Backend(want: Size, demand: CameraDemand) {
+        // Camera1 → GL pipe → surface encoder (true 1920×1080 on legacy HALs). Opening the camera and
+        // starting its preview block for seconds on some HALs (24 s seen), so both run on the Camera1 thread.
+        val selectedId = selectedCameraId
+        val front = frontFacing
+        val cap = Camera1Capture.open({ camera1IndexForSelectedOrFacing(selectedId, front) }, want.width, want.height)
+        // Read on every frame, so an MJPEG viewer joining a session started for motion detection is fed too.
+        // Both skip frames they have no use for (no MJPEG viewer, motion detection off).
+        val onFrame = { nv21: ByteArray ->
+            mjpegStreamingEncoder?.processNv21Frame(nv21, cap.chosenW, cap.chosenH)
+            motionMonitor?.processNv21Frame(nv21, cap.chosenW, cap.chosenH)
+            Unit
+        }.takeIf { demand.nv21 }
+        try {
+            val pipe = newPipe(Size(cap.chosenW, cap.chosenH))
+            cap.start(pipe.surfaceTexture, onFrame = onFrame)
+        } catch (e: Exception) {
+            // Not the backend yet, so stopCamera() cannot release it. Its pipe goes once the preview stops.
+            val pipe = glPipe
+            glPipe = null
+            cap.stop(afterPreview = { pipe?.stop() })
+            throw e
         }
         backend = cap
         Log.i(TAG, "stream ${camId()} api=camera1 ${cap.chosenW}x${cap.chosenH}")
     }
 
-    private fun startCameraXBackend(want: Size) {
+    private fun startCameraXBackend(want: Size, demand: CameraDemand, surfaceEncoder: Boolean) {
         // CameraX → ImageAnalysis YUV → encoders + optional Preview on the phone.
         val h264 = h264StreamingEncoder
         var h264SurfaceProvider: Preview.SurfaceProvider? = null
 
-        if (h264 != null && (h264.hasClients() || recordingNeeded || localRecorder?.isRecording == true) && supportsSurfaceEncoder()) {
+        if (h264 != null && demand.h264 && surfaceEncoder) {
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
             val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
             val fpsCoerced = fps.coerceIn(1, 60)
@@ -1201,7 +1387,7 @@ class StreamingService : LifecycleService() {
             h264.setEncoder(null)
         }
 
-        val showScreenPreview = !encoders.any { it.hasClients() } && currentSurfaceProvider != null
+        val showScreenPreview = demand.screenPreview
         backend = CameraXCapture(
             this, this, frontFacing, selectedCameraId, want,
             if (showScreenPreview) currentSurfaceProvider else null,
@@ -1242,17 +1428,28 @@ class StreamingService : LifecycleService() {
         // the one caller that can still close a torch-held session.
         if (cameraHeldForTorch) return
         safeStopRecording()
-        cameraCloseStartTime = System.currentTimeMillis()
-        backend?.stop(); backend = null
-        val closeDuration = System.currentTimeMillis() - cameraCloseStartTime
-        if (closeDuration > 1000) {
-            Log.w(TAG, "Camera close took ${closeDuration}ms — HAL is slow to release resources")
-        }
         stopSubStream()   // detach it from the GL pipe while the pipe is still running
+        val old = backend
+        backend = null
+        if (old is Camera1Capture) {
+            // Camera1 closes on its own thread (over 20 s on some HALs) and draws into this pipe until its
+            // preview stops there, so the pipe is stopped there too. The next start waits for the release.
+            val pipe = glPipe
+            glPipe = null
+            old.stop(afterPreview = { pipe?.stop() })
+        } else {
+            cameraCloseStartTime = System.currentTimeMillis()
+            old?.stop()
+            val closeDuration = System.currentTimeMillis() - cameraCloseStartTime
+            if (closeDuration > 1000) {
+                Log.w(TAG, "Camera close took ${closeDuration}ms — HAL is slow to release resources")
+            }
+        }
         cameraXGlPipe?.stop(); cameraXGlPipe = null
         glPipe?.stop(); glPipe = null
         encoders.forEach { it.stop() }
         motionMonitor?.reset()
+        runningSession = null
         captureRunning = false
         if (!hasActiveClients()) releaseStreamingWakeLock()
     }
@@ -1273,11 +1470,17 @@ class StreamingService : LifecycleService() {
             stopSubStream()
             return
         }
-        if (subEncoder != null) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val shortSide = prefs.getString(RtspServer.PREF_SUB_SIZE, null)?.toIntOrNull() ?: RtspServer.DEFAULT_SUB_SIZE
         val fps = (prefs.getString(RtspServer.PREF_SUB_FPS, null)?.toIntOrNull() ?: RtspServer.DEFAULT_SUB_FPS).coerceIn(1, 60)
         val kbps = prefs.getString(RtspServer.PREF_SUB_BITRATE, null)?.toIntOrNull() ?: RtspServer.DEFAULT_SUB_BITRATE_KBPS
+        // A viewer joining no longer restarts the camera, so rebuild the sub encoder here when its
+        // settings changed since it started.
+        val settings = listOf(shortSide, fps, kbps)
+        if (subEncoder != null) {
+            if (settings == subEncoderSettings) return
+            stopSubStream()
+        }
         val bitrate = H264HardwareEncoder.clampBitrate(kbps * 1000L)
         val (w, h) = CameraGlPipe.scaledFrame(pipe.width, pipe.height, shortSide)
         val enc = try {
@@ -1289,6 +1492,7 @@ class StreamingService : LifecycleService() {
             return
         }
         subEncoder = enc
+        subEncoderSettings = settings
         // Switch the sub stream's source: viewers wait for the new encoder's first keyframe.
         h264.subStreamEncoded = true
         rtsp.resyncVideo(RtspStream.SUB)
@@ -1304,6 +1508,7 @@ class StreamingService : LifecycleService() {
     private fun stopSubStream() {
         val enc = subEncoder ?: return
         subEncoder = null
+        subEncoderSettings = null
         h264StreamingEncoder?.subStreamEncoded = false
         rtspServer?.resyncVideo(RtspStream.SUB)
         h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
@@ -1533,8 +1738,8 @@ class StreamingService : LifecycleService() {
                     frontFacing = orig
                     selectedCameraId = origCameraId
                     launchMain {
-                        if (hadViewers) startCamera() else {
-                            stopCamera()
+                        // Decided when this runs: a viewer may have joined during the capture.
+                        if (hadViewers || !stopCameraWhenIdle()) startCamera() else {
                             // The snapshot's temporary session may have stripped the idle torch.
                             bridgeTorchAcrossIdle()
                         }
@@ -1559,7 +1764,7 @@ class StreamingService : LifecycleService() {
                     // session is broken — remember it and rebind via startCamera() so it falls back to
                     // Camera1 before capturing.
                     if (live is CameraXCapture && !live.hasProducedFrame) {
-                        if (prefs.getBoolean("camera2_unusable", false)) {
+                        if (cameraXMissedRecently(prefs, idForPref)) {
                             // Known-broken device: go straight to Camera1, no grace wait.
                             return captureViaRebind()
                         }
@@ -1572,7 +1777,12 @@ class StreamingService : LifecycleService() {
                         if (live.hasProducedFrame) {
                             return captureFrom(live, key, deadline) ?: freshCached(key)
                         }
-                        prefs.edit().putBoolean("camera2_unusable", true).apply()
+                        // Only a settled session says something about Camera2: not one replaced during the
+                        // wait (a viewer restart), not one a start in flight is still measuring (it records
+                        // itself), and not one bound while Camera1 closes or soon after a slow close.
+                        if (backend === live && !cameraMutex.isLocked && !Camera1Capture.unsettled(CAMERA1_SETTLE_MS)) {
+                            recordCameraXFrames(prefs, idForPref, framed = false)
+                        }
                         return captureViaRebind()
                     }
                     return captureFrom(live, key, deadline) ?: freshCached(key)
@@ -1772,6 +1982,7 @@ class StreamingService : LifecycleService() {
                 // restarts that happen every time a stream starts or stops.
                 prefs.edit().putString(PREF_CAMERA_TORCH, if (next) "on" else "off").apply()
                 launchMain {
+                    awaitCameraSettled()
                     if (next && !captureRunning) {
                         // Nothing is streaming, so there is no backend to talk to. Open the camera
                         // just for the torch and record that this session is ours to close.
@@ -1786,7 +1997,7 @@ class StreamingService : LifecycleService() {
                     if (backend?.hasFlashUnit != true || !next) setDeviceTorch(next)
                     if (!next && cameraHeldForTorch) {
                         cameraHeldForTorch = false
-                        if (!hasActiveClients() && currentSurfaceProvider == null) stopCamera()
+                        stopCameraWhenIdle()
                     }
                 }
             }
@@ -1837,6 +2048,7 @@ class StreamingService : LifecycleService() {
                     .putString(PREF_CAMERA_ID, camId())
                     .apply()
                 launchMain {
+                    awaitCameraSettled()
                     if (captureRunning) {
                         debouncedStartCamera(force = true)
                         if (keepTorchOn) backend?.setTorch(true)
@@ -1948,8 +2160,8 @@ class StreamingService : LifecycleService() {
                 if (value in listOf("auto", "camerax", "camera1")) {
                     prefs.edit().putString("capture_api", value).apply()
                     // Explicitly choosing CameraX again re-tests the device (clears the remembered
-                    // "Camera2 session never configures" flag).
-                    if (value != "camera1") prefs.edit().putBoolean("camera2_unusable", false).apply()
+                    // CameraX starts without frames).
+                    if (value != "camera1") forgetCameraXMisses(prefs)
                     debouncedStartCamera()
                 }
             }
@@ -1972,11 +2184,12 @@ class StreamingService : LifecycleService() {
                 }
                 launchMain {
                     if (enabled) {
+                        awaitCameraSettled()
                         if (captureRunning) debouncedStartCamera() else startCameraIfNeeded()
                     } else if (localRecorder?.isRecording != true &&
                         !encoders.any { it.hasClients() } && currentSurfaceProvider == null) {
                         // Motion was the only frame consumer: release the camera again.
-                        stopCamera()
+                        stopCameraWhenIdle()
                         bridgeTorchAcrossIdle()
                     }
                 }
@@ -2152,7 +2365,7 @@ class StreamingService : LifecycleService() {
             if (currentSurfaceProvider != null) {
                 debouncedStartCamera()
             } else {
-                stopCamera()
+                stopCameraWhenIdle()
             }
         }
     }

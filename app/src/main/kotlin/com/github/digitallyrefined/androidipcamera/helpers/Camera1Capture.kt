@@ -4,6 +4,7 @@ import android.graphics.SurfaceTexture
 import android.hardware.Camera
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -12,9 +13,13 @@ import kotlin.math.abs
  * Legacy backend. Camera1 reaches true 1920×1080 preview on old HALs (where CameraX caps at 720p),
  * and — with recordingHint on — supports a full-resolution "video snapshot": takePicture during the
  * live preview, so a 13MP still can be grabbed without stopping the stream. [captureStill] grabs it.
+ * Opening, starting and closing block on the HAL for many seconds on some phones (24 s seen), so they
+ * run one at a time on a background thread, see [open], [start] and [stop]. That thread has no Looper,
+ * so Camera1 still delivers preview frames and its autofocus and picture callbacks on the main looper,
+ * where every control call runs too.
  */
 @Suppress("DEPRECATION")
-class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : CaptureBackend {
+class Camera1Capture private constructor(private val cameraId: Int, targetW: Int, targetH: Int) : CaptureBackend {
     private val camera: Camera = openWithRetry(cameraId)
     var chosenW = targetW; private set
     var chosenH = targetH; private set
@@ -39,7 +44,11 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         } catch (_: Exception) { false }
     }
 
-    fun start(st: SurfaceTexture, fps: Int = 30) {
+    /** Starts the preview into [st] on the Camera1 thread. [onFrame] gets the NV21 preview frames. */
+    suspend fun start(st: SurfaceTexture, fps: Int = 30, onFrame: ((ByteArray) -> Unit)? = null) =
+        worker.call { startPreview(st, fps, onFrame) }
+
+    private fun startPreview(st: SurfaceTexture, fps: Int, onFrame: ((ByteArray) -> Unit)?) {
         val p = camera.parameters
         p.setRecordingHint(true)                         // video mode → enables concurrent video snapshot
         p.setPreviewSize(chosenW, chosenH)
@@ -60,21 +69,21 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
         try { p.set("jpeg-quality", "95") } catch (_: Exception) {}
         camera.parameters = p
         camera.setPreviewTexture(st)
+        // Installed before the preview starts, so the HAL configures its streams once. The first
+        // callback buffer added to a running preview reconfigures them, as slow as a start on some HALs.
+        if (onFrame != null) setPreviewFrameCallback(onFrame)
         camera.startPreview()
         Log.i(TAG, "Camera1[$cameraId] preview ${chosenW}x$chosenH recHint focus=${p.focusMode}")
     }
 
-    /** NV21 preview frames for MJPEG when the GL pipe feeds H.264 only. */
-    fun setPreviewFrameCallback(callback: ((ByteArray) -> Unit)?) {
+    /** NV21 preview frames for MJPEG and motion detection, delivered on the main looper. */
+    private fun setPreviewFrameCallback(callback: (ByteArray) -> Unit) {
         onPreviewFrame = callback
-        if (callback == null) {
-            try { camera.setPreviewCallbackWithBuffer(null) } catch (_: Exception) {}
-            previewBuffers = null
-            return
-        }
         val bufferSize = chosenW * chosenH * 3 / 2
         previewBuffers = Array(3) { ByteArray(bufferSize) }
         camera.setPreviewCallbackWithBuffer { data, cam ->
+            // A frame queued before stop() must not touch a camera the Camera1 thread is releasing.
+            if (stopped) return@setPreviewCallbackWithBuffer
             onPreviewFrame?.invoke(data)
             cam.addCallbackBuffer(data)
         }
@@ -87,6 +96,7 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
      * camera looper thread.
      */
     override fun captureStill(onJpeg: (ByteArray?) -> Unit) {
+        if (stopped) { onJpeg(null); return }
         // One completion is guaranteed: either the picture callback fires, takePicture throws, or a
         // watchdog bails out — so the caller can never hang and the preview is always resumed.
         val fired = AtomicBoolean(false)   // guards the AF-callback vs 1200ms-fallback double shoot
@@ -104,13 +114,13 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
                 if (stopped) { finish(null); return@shoot }
                 try {
                     camera.takePicture(null, null, Camera.PictureCallback { data, cam ->
-                        try { cam.startPreview() } catch (_: Exception) {}   // resume the GL feed if the HAL paused it
+                        if (!stopped) try { cam.startPreview() } catch (_: Exception) {}   // resume the GL feed if the HAL paused it
                         finish(data)
                     })
                     // Some HALs never call back; bail out rather than strand the camera in "capturing".
                     handler.postDelayed({
                         Log.w(TAG, "Camera1 capture timeout — resuming preview")
-                        try { camera.startPreview() } catch (_: Exception) {}
+                        if (!stopped) try { camera.startPreview() } catch (_: Exception) {}
                         finish(null)
                     }, 3000)
                 } catch (e: Exception) {
@@ -147,6 +157,7 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
     }
     /** Robust AF: continuous mode ignores autoFocus(), so switch to AUTO, scan, then restore continuous. */
     override fun triggerAutoFocus() {
+        if (stopped) return
         try {
             val p = camera.parameters
             if (p.supportedFocusModes?.contains(Camera.Parameters.FOCUS_MODE_AUTO) == true) {
@@ -189,18 +200,72 @@ class Camera1Capture(private val cameraId: Int, targetW: Int, targetH: Int) : Ca
     }
 
     private fun live(block: (Camera.Parameters) -> Unit) {
+        if (stopped) return
         try { val p = camera.parameters; block(p); camera.parameters = p } catch (_: Exception) {}
     }
 
-    override fun stop() {
+    override fun stop() = stop(afterPreview = null)
+
+    /**
+     * Stops the camera without blocking the caller. The preview stops and the device is released on the
+     * Camera1 thread, where some HALs take 20 s or more. [afterPreview] runs there once the preview has
+     * stopped and before the slow release, for the GL pipe the preview drew into.
+     */
+    fun stop(afterPreview: (() -> Unit)?) {
+        if (stopped) return
         stopped = true
-        setPreviewFrameCallback(null)
+        worker.release { close(afterPreview) }
+    }
+
+    /** Stops the preview and releases the device. Blocks, so it runs on the Camera1 thread only. */
+    private fun close(afterPreview: (() -> Unit)?) {
+        val startedAt = SystemClock.elapsedRealtime()
+        try { camera.setPreviewCallbackWithBuffer(null) } catch (_: Exception) {}
         try { camera.stopPreview() } catch (_: Exception) {}
+        try { afterPreview?.invoke() } catch (_: Exception) {}
         try { camera.release() } catch (_: Exception) {}
+        val endedAt = SystemClock.elapsedRealtime()
+        val took = endedAt - startedAt
+        if (took > 1000) Log.w(TAG, "Camera1[$cameraId] close took ${took}ms, HAL is slow to release resources")
+        if (took > SLOW_RELEASE_MS) slowReleaseEndedAt = endedAt
     }
 
     companion object {
         private const val TAG = "Camera1Capture"
+
+        /** Every Camera1 open, preview start and release, one at a time and in order. */
+        private val worker = CameraWorker("Camera1")
+
+        /** A release slower than this can take cameraserver down with it: its watchdog aborts it. */
+        private const val SLOW_RELEASE_MS = 3_000L
+        /** Elapsed realtime when the last release slower than [SLOW_RELEASE_MS] ended, 0 if none did. */
+        @Volatile private var slowReleaseEndedAt = 0L
+
+        /**
+         * Opens the camera [pickCamera] names on the Camera1 thread, after any release still running
+         * there. [pickCamera] runs there too, since the camera list comes from cameraserver, which can
+         * take seconds to answer while it restarts. A caller cancelled meanwhile never leaks the
+         * device: it is released there once the open ends, before anything queued after it.
+         */
+        suspend fun open(pickCamera: () -> Int, targetW: Int, targetH: Int): Camera1Capture =
+            worker.call(discard = { it.stopped = true; it.close(null) }) { Camera1Capture(pickCamera(), targetW, targetH) }
+
+        /**
+         * Waits until every Camera1 open and release queued so far has finished, an open whose caller
+         * gave up included. False after [timeoutMs].
+         */
+        suspend fun awaitReleased(timeoutMs: Long): Boolean = worker.awaitIdle(timeoutMs)
+
+        /**
+         * True while a Camera1 open, start or release runs, or for [withinMs] after a release slower
+         * than [SLOW_RELEASE_MS]. cameraserver may then still hold the device or be coming back from an
+         * abort (about 6 s seen), so a CameraX start without frames meanwhile says nothing about Camera2.
+         */
+        fun unsettled(withinMs: Long): Boolean {
+            if (worker.busy) return true
+            val endedAt = slowReleaseEndedAt
+            return endedAt > 0L && SystemClock.elapsedRealtime() - endedAt < withinMs
+        }
 
         private fun openWithRetry(id: Int): Camera {
             var last: Exception? = null
