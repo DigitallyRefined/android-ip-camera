@@ -1,7 +1,7 @@
 services:
   android-ip-camera-server:
     # https://github.com/DigitallyRefined/android-ip-camera/releases
-    image: ghcr.io/digitallyrefined/android-ip-camera-server:0.16.1
+    image: ghcr.io/digitallyrefined/android-ip-camera-server:0.17.0
     container_name: android-ip-camera-server
     restart: unless-stopped
     volumes:
