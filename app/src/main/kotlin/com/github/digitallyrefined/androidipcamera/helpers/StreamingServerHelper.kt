@@ -1485,6 +1485,11 @@ class StreamingServerHelper(
         val motionSensitivity: String,
         val motionRecordStopDelay: String,
         val onvifEnabled: Boolean,
+        val rtspEnabled: Boolean,
+        val rtspAudio: Boolean,
+        val rtspSubSize: String,
+        val rtspSubFps: String,
+        val rtspSubBitrate: String,
     )
 
     private data class DeviceInfo(
@@ -1554,6 +1559,11 @@ class StreamingServerHelper(
                 put("motionRecordStopDelay", settings.motionRecordStopDelay)
                 // Whether RTSP/ONVIF is enabled. Motion detection is always available in the web UI.
                 put("onvifEnabled", settings.onvifEnabled)
+                put("rtspEnabled", settings.rtspEnabled)
+                put("rtspAudio", settings.rtspAudio)
+                put("rtspSubSize", settings.rtspSubSize)
+                put("rtspSubFps", settings.rtspSubFps)
+                put("rtspSubBitrate", settings.rtspSubBitrate)
             })
             put("appVersion", context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty())
         }.toString()
@@ -1705,7 +1715,15 @@ class StreamingServerHelper(
                 ?: MotionMonitor.DEFAULT_SENSITIVITY.toString(),
             motionRecordStopDelay = prefs.getString(MotionMonitor.PREF_STOP_DELAY, MotionMonitor.DEFAULT_STOP_DELAY.toString())
                 ?: MotionMonitor.DEFAULT_STOP_DELAY.toString(),
-            onvifEnabled = prefs.getBoolean("rtsp_enabled", false),
+            onvifEnabled = prefs.getBoolean(RtspServer.PREF_ENABLED, false),
+            rtspEnabled = prefs.getBoolean(RtspServer.PREF_ENABLED, false),
+            rtspAudio = prefs.getBoolean(RtspServer.PREF_AUDIO, true),
+            rtspSubSize = prefs.getString(RtspServer.PREF_SUB_SIZE, null)
+                ?: RtspServer.DEFAULT_SUB_SIZE.toString(),
+            rtspSubFps = prefs.getString(RtspServer.PREF_SUB_FPS, null)
+                ?: RtspServer.DEFAULT_SUB_FPS.toString(),
+            rtspSubBitrate = prefs.getString(RtspServer.PREF_SUB_BITRATE, null)
+                ?: RtspServer.DEFAULT_SUB_BITRATE_KBPS.toString(),
         )
     }
 
@@ -1765,6 +1783,20 @@ class StreamingServerHelper(
                     group.mapNotNull { focalLengthsOf(it)?.maxOrNull() }.maxOrNull()
                 }
 
+            // Keep the user's saved stream size in the reported list even when the camera is busy
+            // and does not enumerate it right now (Camera1 preview sizes below are only available
+            // while idle). Without this, /info.json can omit the selected size and the web UI would
+            // treat it as unsupported and fall back to Auto.
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val storedCamId = prefs.getString("camera_id", null)
+            val savedStreamSize = Regex("^(\\d+)x(\\d+)$")
+                .find(prefs.getString("stream_res", "auto") ?: "auto")
+                ?.let { m ->
+                    val w = m.groupValues[1].toIntOrNull()
+                    val h = m.groupValues[2].toIntOrNull()
+                    if (w != null && h != null && w > 0 && h > 0) w to h else null
+                }
+
             sources.map { source ->
                 val ch = source.sizesCharacteristics
                 val label = cameraLabel(source)
@@ -1780,6 +1812,14 @@ class StreamingServerHelper(
                         @Suppress("DEPRECATION") c1.parameters.supportedPreviewSizes?.forEach { set.add(it.width to it.height) }
                         @Suppress("DEPRECATION") c1.release()
                     } catch (_: Exception) {}
+                }
+                if (savedStreamSize != null) {
+                    val savedApplies = storedCamId == null ||
+                        storedCamId == source.id ||
+                        storedCamId == source.logicalId ||
+                        storedCamId == source.physicalId ||
+                        storedCamId == source.facing
+                    if (savedApplies) set.add(savedStreamSize)
                 }
                 val sizes = set
                     .filter { it.first <= encCaps.maxW && it.second <= encCaps.maxH }

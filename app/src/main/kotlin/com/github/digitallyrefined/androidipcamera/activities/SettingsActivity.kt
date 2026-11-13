@@ -244,18 +244,6 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
-            // Sub stream (/live/sub): applied the next time a viewer connects to it
-            findPreference<androidx.preference.ListPreference>(RtspServer.PREF_SUB_SIZE)?.summaryProvider =
-                Preference.SummaryProvider<androidx.preference.ListPreference> {
-                    "${it.entry}. Smaller stream at ${if (TlsHelper.isEnabled(requireContext())) "rtsps" else "rtsp"}://[ip_address]:[port]${RtspServer.SUB_PATH} for slow connections such as 4G"
-                }
-            findPreference<androidx.preference.ListPreference>(RtspServer.PREF_SUB_FPS)?.summaryProvider =
-                androidx.preference.ListPreference.SimpleSummaryProvider.getInstance()
-            findPreference<androidx.preference.ListPreference>(RtspServer.PREF_SUB_BITRATE)?.summaryProvider =
-                Preference.SummaryProvider<androidx.preference.ListPreference> {
-                    "${it.entry} video. Keep it to about half the viewer's connection speed so dips don't stall it"
-                }
-
             // Optional RTSP/ONVIF server: shares the camera, encoder and credentials with the HTTP
             // server. ONVIF is part of this switch.
             findPreference<androidx.preference.CheckBoxPreference>(RtspServer.PREF_ENABLED)?.apply {
@@ -693,8 +681,7 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         private fun setRtspOptionsVisible(visible: Boolean) {
-            listOf(RtspServer.PREF_PORT, RtspServer.PREF_AUDIO, RtspServer.PREF_SUB_SIZE, RtspServer.PREF_SUB_FPS,
-                RtspServer.PREF_SUB_BITRATE)
+            listOf(RtspServer.PREF_PORT)
                 .forEach { findPreference<Preference>(it)?.isVisible = visible }
         }
 
