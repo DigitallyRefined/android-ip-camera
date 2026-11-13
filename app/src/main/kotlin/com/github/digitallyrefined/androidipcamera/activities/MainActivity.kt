@@ -80,6 +80,11 @@ class MainActivity : AppCompatActivity() {
                 Log.i(TAG, "Service: $message")
             }
 
+            // The service may have been restarted in the background (where Android does not
+            // allow camera/microphone foreground service types). The activity is now in the
+            // foreground, so retry the types before starting the server and camera.
+            streamingService?.ensureForegroundTypes()
+
             // Initialize Server
             streamingService?.startStreamingServer()
 
