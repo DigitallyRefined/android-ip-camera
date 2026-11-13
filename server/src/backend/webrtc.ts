@@ -2,12 +2,12 @@ import { lookup, resolve4 } from "node:dns/promises";
 import { isIP } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  BufferSource,
   EncodedPacketSink,
   Input,
   MP4,
   type EncodedPacket,
   type InputVideoTrack,
+  type Source,
 } from "mediabunny";
 import {
   H264Packetizer,
@@ -22,8 +22,8 @@ import type { DeviceConnection } from "./relay";
 /**
  * The relay is only a packetizer: H.264 access units arrive from the camera
  * over the outbound WebSocket and are wrapped in RTP for each browser viewer.
- * Recorded MP4s are demuxed in memory and packetized the same way. No media is
- * written to disk.
+ * Recorded MP4s are read from the camera with byte ranges, demuxed as they
+ * play, and packetized the same way. No media is written to disk.
  */
 
 interface IceServerConfig {
@@ -384,9 +384,10 @@ export class WebRtcBridge {
 }
 
 /**
- * Plays an MP4 recording from the camera over WebRTC. The relay downloads the
- * file through the existing camera HTTP proxy, demuxes its H.264 track in
- * memory, and paces the packets to the viewer in real time. No transcoding is
+ * Plays an MP4 recording from the camera over WebRTC. The relay reads the file
+ * from the camera through a byte-range source; mediabunny demuxes its H.264
+ * track and paces the packets to the viewer in real time. Only a small
+ * read-ahead window is buffered, never the whole recording. No transcoding is
  * involved, so the recording must already be H.264 (which the app writes).
  */
 export class WebRtcRecordingBridge {
@@ -428,7 +429,7 @@ export class WebRtcRecordingBridge {
 
   static async answer(
     offer: { type: string; sdp: string },
-    data: Buffer,
+    source: Source,
     requestedStartTime = 0,
   ): Promise<WebRtcRecordingAnswer> {
     if (
@@ -440,7 +441,7 @@ export class WebRtcRecordingBridge {
     }
 
     const input = new Input({
-      source: new BufferSource(data),
+      source,
       formats: [MP4],
     });
     let bridge: WebRtcRecordingBridge | undefined;

@@ -66,7 +66,7 @@
       }
 
       a {
-        color: #007AFF;
+        color: #459eff;
         text-decoration: none;
         word-break: break-all;
       }
@@ -82,6 +82,20 @@
 
       a.dir:hover {
         color: #007AFF;
+      }
+
+      button.download {
+        margin-right: 8px;
+      }
+
+      button.download:hover {
+        background: #007AFF;
+        border-color: #007AFF;
+      }
+
+      td.actions {
+        white-space: nowrap;
+        text-align: right;
       }
 
       button {
@@ -184,6 +198,17 @@
         return '/files/' + path.split('/').map(encodeURIComponent).join('/');
       }
 
+      function downloadFile(path, name) {
+        // Same-origin download attribute forces a save even though the server
+        // serves MP4s inline for playback.
+        const link = document.createElement('a');
+        link.href = fileUrl(path);
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+
       function dirUrl(path) {
         return '?dir=' + encodeURIComponent(path);
       }
@@ -251,8 +276,8 @@
               link.textContent = '📁 ' + entry.name;
             } else {
               link.href = fileUrl(joinPath(currentDir, entry.name));
-              link.setAttribute('download', '');
               link.textContent = entry.name;
+              link.setAttribute('target', '_blank');
             }
             nameTd.appendChild(link);
 
@@ -264,11 +289,27 @@
             dateTd.textContent = formatDate(entry.lastModifiedMs);
 
             const delTd = document.createElement('td');
+            delTd.className = 'actions';
+            if (!entry.isDirectory) {
+              // The file link plays inline; this button saves it explicitly.
+              const downloadBtn = document.createElement('button');
+              downloadBtn.type = 'button';
+              downloadBtn.className = 'download';
+              downloadBtn.title = 'Download';
+              downloadBtn.setAttribute('aria-label', 'Download ' + entry.name);
+              downloadBtn.textContent = '💾';
+              downloadBtn.onclick = () =>
+                downloadFile(joinPath(currentDir, entry.name), entry.name);
+              delTd.appendChild(downloadBtn);
+            }
             const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.title = 'Delete';
+            btn.setAttribute('aria-label', 'Delete ' + entry.name);
             btn.dataset.path = joinPath(currentDir, entry.name);
             btn.dataset.isDirectory = entry.isDirectory ? '1' : '';
             btn.onclick = () => deleteEntry(btn);
-            btn.textContent = 'Delete';
+            btn.textContent = '🗑️';
             delTd.appendChild(btn);
 
             tr.append(nameTd, sizeTd, dateTd, delTd);
@@ -290,7 +331,7 @@
         if (!confirm(message))
           return;
         btn.disabled = true;
-        btn.textContent = 'Deleting...';
+        btn.textContent = '⏳';
         try {
           const res = await fetch(fileUrl(path), {method: 'DELETE'});
           if (res.ok) {
@@ -302,7 +343,7 @@
           alert('Delete failed: ' + e);
         }
         btn.disabled = false;
-        btn.textContent = 'Delete';
+        btn.textContent = '🗑️';
       }
 
       const initialDir = new URLSearchParams(location.search).get('dir') || '';

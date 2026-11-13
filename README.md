@@ -182,13 +182,13 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Format:** `application/json` — `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>}` (or `{"recording":false}` when idle).
 * **Recordings Index (`/files`)**
   * **Usage:** Open `https://[ip_address]:[port]/files` in a web browser for a folder browser of the recordings stored on the device (`Movies/AndroidIPCamera`). Folders can be opened from the list or via the breadcrumb.
-  * **Format:** `text/html` — static page shell that loads the current folder listing from `/files.json?dir=<relative path>`, renders folders as navigation links, and renders every entry with a Delete button (with a browser confirmation prompt) that issues a `DELETE /files/<relative path>` request. Deleting a folder removes the folder and all of its contents.
+  * **Format:** `text/html` — static page shell that loads the current folder listing from `/files.json?dir=<relative path>`, renders folders as navigation links, and renders every entry with emoji-only 💾 **Download** and 🗑️ **Delete** buttons (the Delete button asks for confirmation and issues a `DELETE /files/<relative path>` request). File names open the recording in the browser's video player. Deleting a folder removes the folder and all of its contents.
 * **Recordings List JSON (`/files.json`)**
   * **Usage:** Query a recordings folder listing programmatically or feed custom front-ends. Use `?dir=2026/11/09` to list a subfolder; omit `dir` for the recordings root.
   * **Format:** `application/json` — `{"folder":<string>, "path":<string>, "entries":[{"name":<string>, "isDirectory":<bool>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
-* **Download Recording (`/files/<relative path>`, GET)**
-  * **Usage:** Download a recorded MP4 from the device. Browsers save the file instead of playing it (`Content-Disposition: attachment`). Path segments include recording folders, e.g. `/files/2026/11/09/2026-11-09-093000-manual.mp4`.
-  * **Responses:** `200 OK` with the file bytes, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid paths.
+* **Play or Download Recording (`/files/<relative path>`, GET or HEAD)**
+  * **Usage:** Open a recorded MP4 in the browser's native video player, which starts streaming immediately and keeps working while the file is being read (MP4s are served as `video/mp4` with `Content-Disposition: inline`). Other files download as before. Use the 💾 **Download** button in the recordings list to save a copy; the player's own save/download control also works. Path segments include recording folders, e.g. `/files/2026/11/09/2026-11-09-093000-manual.mp4`. Supports a single `Range: bytes=...` request (including open-ended and suffix forms) so browsers and the relay can seek and stream progressively; the response advertises `Accept-Ranges: bytes`.
+  * **Responses:** `200 OK` with the file bytes (or headers only for `HEAD`), `206 Partial Content` with `Content-Range` for a range request, `416 Range Not Satisfiable` for a range outside the file, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid paths.
 * **Delete Recording (`/files/<relative path>`, DELETE)**
   * **Usage:** Permanently delete a recorded MP4, or delete a folder and everything below it. The recordings root itself cannot be deleted.
   * **Responses:**
