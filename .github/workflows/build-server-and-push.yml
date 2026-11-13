@@ -2,21 +2,29 @@ name: Build server and push
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
+  # Run once the metadata workflow finishes, so the image is built after the
+  # release tag has been moved to the metadata commit.
+  workflow_run:
+    workflows: ["Generate Fastlane Metadata"]
+    types: [completed]
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Get latest release tag
         id: get-latest-tag
         run: |
-          git fetch --tags
+          # The metadata workflow force-updates tags, so refetch them.
+          git fetch --tags --force
           latest_tag=$(git describe --tags `git rev-list --tags --max-count=1` 2>/dev/null || echo "v0.0.0")
           echo "tag=$latest_tag" >> $GITHUB_ENV
 
