@@ -151,6 +151,8 @@ class StreamingService : LifecycleService() {
     @Volatile private var cameraCloseStartTime: Long = 0L
     /** What the running session was built for, so a viewer change restarts it only when needed. Null while stopped. */
     private var runningSession: CameraSession? = null
+    /** Bumped by every settings restart request, so a start that read older settings is never reused. */
+    private var settingsGeneration = 0
     @Volatile private var runningStartedAtMs = 0L
 
     var onClientConnected: (() -> Unit)? = null
@@ -1099,8 +1101,10 @@ class StreamingService : LifecycleService() {
             return
         }
         // The running session no longer matches what was asked for. A viewer change before this start
-        // runs, or after it is bypassed or replaced by the shed, rebuilds it instead of keeping it.
+        // runs, or after it is bypassed or replaced by the shed, rebuilds it instead of keeping it. A start
+        // already running read the old settings, so it does not publish its session either.
         runningSession = null
+        settingsGeneration++
         pendingViewerCheck?.cancel()
         pendingViewerCheck = null
         if (force) {
@@ -1166,6 +1170,7 @@ class StreamingService : LifecycleService() {
             Log.w(TAG, "Camera1 still closing after ${CAMERA1_RELEASE_WAIT_MS}ms, starting the camera anyway")
         }
         try {
+            val generation = settingsGeneration
             val want = desiredSize()
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
             // If no camera id has been resolved yet (fresh process / the UI never sent a camera
@@ -1217,7 +1222,12 @@ class StreamingService : LifecycleService() {
                 prefs.edit().putString(PREF_CAMERA_ID, camId()).apply()
             } catch (_: Exception) {}
 
-            runningSession = CameraSession(demand, camera1 = backend is Camera1Capture, surfaceEncoder = surfaceEncoder, fps = fps, camera = camera)
+            // Settings changed while this start ran (a Camera1 open can take seconds): it is not reusable.
+            runningSession = if (generation == settingsGeneration) {
+                CameraSession(demand, camera1 = backend is Camera1Capture, surfaceEncoder = surfaceEncoder, fps = fps, camera = camera)
+            } else {
+                null
+            }
             runningStartedAtMs = SystemClock.elapsedRealtime()
             captureRunning = true
             encoders.forEach { it.start() }
