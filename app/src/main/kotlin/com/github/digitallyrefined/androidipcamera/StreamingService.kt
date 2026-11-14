@@ -1311,10 +1311,12 @@ class StreamingService : LifecycleService() {
             val pipe = newPipe(Size(cap.chosenW, cap.chosenH))
             cap.start(pipe.surfaceTexture, onFrame = onFrame)
         } catch (e: Exception) {
-            // Not the backend yet, so stopCamera() cannot release it. Its pipe goes once the preview stops.
+            // Not the backend yet, so stopCamera() cannot release it. Its pipe and encoder go once the
+            // preview stops.
             val pipe = glPipe
             glPipe = null
-            cap.stop(afterPreview = { pipe?.stop() })
+            val enc = h264StreamingEncoder?.detachEncoder()
+            cap.stop(afterPreview = { pipe?.stop(); enc?.stop() })
             throw e
         }
         backend = cap
@@ -1433,10 +1435,12 @@ class StreamingService : LifecycleService() {
         backend = null
         if (old is Camera1Capture) {
             // Camera1 closes on its own thread (over 20 s on some HALs) and draws into this pipe until its
-            // preview stops there, so the pipe is stopped there too. The next start waits for the release.
+            // preview stops there, so the pipe and then the encoder it feeds are stopped there too. The
+            // next start waits for the release.
             val pipe = glPipe
             glPipe = null
-            old.stop(afterPreview = { pipe?.stop() })
+            val enc = h264StreamingEncoder?.detachEncoder()
+            old.stop(afterPreview = { pipe?.stop(); enc?.stop() })
         } else {
             cameraCloseStartTime = System.currentTimeMillis()
             old?.stop()
