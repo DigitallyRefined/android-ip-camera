@@ -1489,10 +1489,10 @@ class StreamingService : LifecycleService() {
         val fps = (prefs.getString(RtspServer.PREF_SUB_FPS, null)?.toIntOrNull() ?: RtspServer.DEFAULT_SUB_FPS).coerceIn(1, 60)
         val kbps = prefs.getString(RtspServer.PREF_SUB_BITRATE, null)?.toIntOrNull() ?: RtspServer.DEFAULT_SUB_BITRATE_KBPS
         // A viewer joining no longer restarts the camera, so rebuild the sub encoder here when its
-        // settings changed since it started.
+        // settings changed since it started, or its output thread died.
         val settings = listOf(shortSide, fps, kbps)
         if (subEncoder != null) {
-            if (settings == subEncoderSettings) return
+            if (settings == subEncoderSettings && subEncoder?.drainFailed != true) return
             stopSubStream()
         }
         val bitrate = H264HardwareEncoder.clampBitrate(kbps * 1000L)
