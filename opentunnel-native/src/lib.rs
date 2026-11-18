@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use jni::objects::{JObject, JString};
 use jni::sys::{jboolean, jstring, JNI_FALSE, JNI_TRUE};
-use jni::JNIEnv;
+use jni::{Env, EnvUnowned, Outcome};
 use opentunnel::protocol::names::is_valid_profile;
 use opentunnel::{
     Client, ClientOptions, ProvisionStage, Route, Routes, State as TunnelState, Storage, Tunnel,
@@ -506,9 +506,9 @@ fn spawn_forget(config: Config, generation: u64) {
     });
 }
 
-fn read_string(env: &mut JNIEnv, value: &JString, name: &str) -> Result<String, String> {
-    env.get_string(value)
-        .map(|value| value.into())
+fn read_string(env: &Env<'_>, value: &JString<'_>, name: &str) -> Result<String, String> {
+    value
+        .try_to_string(env)
         .map_err(|error| format!("reading {name}: {error}"))
 }
 
@@ -565,7 +565,7 @@ fn status_json(files_dir: &str, profile: &str) -> String {
         .unwrap_or_else(|_| "{\"registered\":false,\"state\":\"idle\"}".to_owned())
 }
 
-fn to_jstring(env: &mut JNIEnv, value: String) -> jstring {
+fn to_jstring(env: &mut Env<'_>, value: String) -> jstring {
     match env.new_string(value) {
         Ok(value) => value.into_raw(),
         Err(_) => std::ptr::null_mut(),
@@ -574,43 +574,57 @@ fn to_jstring(env: &mut JNIEnv, value: String) -> jstring {
 
 #[no_mangle]
 pub extern "system" fn Java_com_github_digitallyrefined_androidipcamera_opentunnel_OpenTunnelNative_nativeStart(
-    mut env: JNIEnv<'_>,
-    _this: JObject,
-    files_dir: JString,
-    api_url: JString,
-    target: JString,
-    profile: JString,
+    mut unowned_env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    files_dir: JString<'_>,
+    api_url: JString<'_>,
+    target: JString<'_>,
+    profile: JString<'_>,
 ) -> jboolean {
-    let result = (|| -> Result<(), String> {
-        let files_dir = read_string(&mut env, &files_dir, "files directory")?;
-        let api_url = read_string(&mut env, &api_url, "server URL")?;
-        let target = read_string(&mut env, &target, "target")?;
-        let profile = read_string(&mut env, &profile, "profile")?;
-        let config = Config::new(files_dir, &api_url, &target, &profile)?;
+    let outcome = unowned_env.with_env(|env| -> Result<jboolean, jni::errors::Error> {
+        let result = (|| -> Result<(), String> {
+            let files_dir = read_string(env, &files_dir, "files directory")?;
+            let api_url = read_string(env, &api_url, "server URL")?;
+            let target = read_string(env, &target, "target")?;
+            let profile = read_string(env, &profile, "profile")?;
+            let config = Config::new(files_dir, &api_url, &target, &profile)?;
 
-        let generation = {
-            let mut state = lock_state();
-            state.generation = state.generation.wrapping_add(1);
-            let generation = state.generation;
-            let tunnel = state.tunnel.take();
-            drop(tunnel);
-            state.status = Status {
-                profile: config.profile.clone(),
-                state: "provisioning".to_owned(),
-                stage: Some("starting".to_owned()),
-                ..Status::default()
+            let generation = {
+                let mut state = lock_state();
+                state.generation = state.generation.wrapping_add(1);
+                let generation = state.generation;
+                let tunnel = state.tunnel.take();
+                drop(tunnel);
+                state.status = Status {
+                    profile: config.profile.clone(),
+                    state: "provisioning".to_owned(),
+                    stage: Some("starting".to_owned()),
+                    ..Status::default()
+                };
+                state.config = Some(config.clone());
+                generation
             };
-            state.config = Some(config.clone());
-            generation
-        };
-        spawn_start(config, generation);
-        Ok(())
-    })();
+            spawn_start(config, generation);
+            Ok(())
+        })();
 
-    match result {
-        Ok(()) => JNI_TRUE,
-        Err(error) => {
-            fail_status(error);
+        match result {
+            Ok(()) => Ok(JNI_TRUE),
+            Err(error) => {
+                fail_status(error);
+                Ok(JNI_FALSE)
+            }
+        }
+    });
+
+    match outcome.into_outcome() {
+        Outcome::Ok(value) => value,
+        Outcome::Err(error) => {
+            fail_status(error.to_string());
+            JNI_FALSE
+        }
+        Outcome::Panic(_) => {
+            fail_status("starting the tunnel panicked");
             JNI_FALSE
         }
     }
@@ -618,37 +632,44 @@ pub extern "system" fn Java_com_github_digitallyrefined_androidipcamera_opentunn
 
 #[no_mangle]
 pub extern "system" fn Java_com_github_digitallyrefined_androidipcamera_opentunnel_OpenTunnelNative_nativeStatus(
-    mut env: JNIEnv<'_>,
-    _this: JObject,
-    files_dir: JString,
-    profile: JString,
+    mut unowned_env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    files_dir: JString<'_>,
+    profile: JString<'_>,
 ) -> jstring {
-    let result = (|| -> Result<String, String> {
-        let files_dir = read_string(&mut env, &files_dir, "files directory")?;
-        let profile = read_string(&mut env, &profile, "profile")?;
-        let profile = if profile.trim().is_empty() {
-            DEFAULT_PROFILE.to_owned()
-        } else {
-            profile
-        };
-        Ok(status_json(&files_dir, &profile))
-    })();
+    let outcome = unowned_env.with_env(|env| -> Result<jstring, jni::errors::Error> {
+        let result = (|| -> Result<String, String> {
+            let files_dir = read_string(env, &files_dir, "files directory")?;
+            let profile = read_string(env, &profile, "profile")?;
+            let profile = if profile.trim().is_empty() {
+                DEFAULT_PROFILE.to_owned()
+            } else {
+                profile
+            };
+            Ok(status_json(&files_dir, &profile))
+        })();
 
-    let json = result.unwrap_or_else(|error| {
-        serde_json::json!({
-            "registered": false,
-            "state": "stopped",
-            "error": error,
-        })
-        .to_string()
+        let json = result.unwrap_or_else(|error| {
+            serde_json::json!({
+                "registered": false,
+                "state": "stopped",
+                "error": error,
+            })
+            .to_string()
+        });
+        Ok(to_jstring(env, json))
     });
-    to_jstring(&mut env, json)
+
+    match outcome.into_outcome() {
+        Outcome::Ok(value) => value,
+        Outcome::Err(_) | Outcome::Panic(_) => std::ptr::null_mut(),
+    }
 }
 
 #[no_mangle]
 pub extern "system" fn Java_com_github_digitallyrefined_androidipcamera_opentunnel_OpenTunnelNative_nativeDisconnect(
-    _env: JNIEnv<'_>,
-    _this: JObject,
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
 ) {
     let mut state = lock_state();
     state.generation = state.generation.wrapping_add(1);
@@ -657,38 +678,47 @@ pub extern "system" fn Java_com_github_digitallyrefined_androidipcamera_opentunn
 
 #[no_mangle]
 pub extern "system" fn Java_com_github_digitallyrefined_androidipcamera_opentunnel_OpenTunnelNative_nativeForget(
-    mut env: JNIEnv<'_>,
-    _this: JObject,
-    files_dir: JString,
-    api_url: JString,
-    profile: JString,
+    mut unowned_env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    files_dir: JString<'_>,
+    api_url: JString<'_>,
+    profile: JString<'_>,
 ) {
-    let result = (|| -> Result<(), String> {
-        let files_dir = read_string(&mut env, &files_dir, "files directory")?;
-        let api_url = read_string(&mut env, &api_url, "server URL")?;
-        let profile = read_string(&mut env, &profile, "profile")?;
-        let config = Config::paths_only(files_dir, &api_url, &profile)?;
+    let outcome = unowned_env.with_env(|env| -> Result<(), jni::errors::Error> {
+        let result = (|| -> Result<(), String> {
+            let files_dir = read_string(env, &files_dir, "files directory")?;
+            let api_url = read_string(env, &api_url, "server URL")?;
+            let profile = read_string(env, &profile, "profile")?;
+            let config = Config::paths_only(files_dir, &api_url, &profile)?;
 
-        let generation = {
-            let mut state = lock_state();
-            state.generation = state.generation.wrapping_add(1);
-            let generation = state.generation;
-            let tunnel = state.tunnel.take();
-            drop(tunnel);
-            state.status = Status {
-                profile: config.profile.clone(),
-                state: "forgetting".to_owned(),
-                stage: None,
-                ..Status::default()
+            let generation = {
+                let mut state = lock_state();
+                state.generation = state.generation.wrapping_add(1);
+                let generation = state.generation;
+                let tunnel = state.tunnel.take();
+                drop(tunnel);
+                state.status = Status {
+                    profile: config.profile.clone(),
+                    state: "forgetting".to_owned(),
+                    stage: None,
+                    ..Status::default()
+                };
+                state.config = Some(config.clone());
+                generation
             };
-            state.config = Some(config.clone());
-            generation
-        };
-        spawn_forget(config, generation);
-        Ok(())
-    })();
+            spawn_forget(config, generation);
+            Ok(())
+        })();
 
-    if let Err(error) = result {
-        fail_status(error);
+        if let Err(error) = result {
+            fail_status(error);
+        }
+        Ok(())
+    });
+
+    match outcome.into_outcome() {
+        Outcome::Ok(()) => {}
+        Outcome::Err(error) => fail_status(error.to_string()),
+        Outcome::Panic(_) => fail_status("forgetting the tunnel panicked"),
     }
 }
