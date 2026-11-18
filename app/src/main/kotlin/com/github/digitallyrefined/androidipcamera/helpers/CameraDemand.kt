@@ -6,7 +6,7 @@ package com.github.digitallyrefined.androidipcamera.helpers
  * only when the running session cannot serve the new set of consumers.
  */
 data class CameraDemand(
-    /** H.264 viewers over HTTP, RTSP (either stream) or the relay. */
+    /** H.264 viewers over HTTP or RTSP (either stream). */
     val h264Viewers: Boolean = false,
     val mjpegViewers: Boolean = false,
     /** A recording runs or is being started, so the H.264 encoder is needed. */

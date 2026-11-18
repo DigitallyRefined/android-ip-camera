@@ -31,7 +31,6 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🛰️ Optional ONVIF camera mode with WS-Discovery, snapshots and motion events for UniFi Protect, Home Assistant and other NVRs
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
-* ☁️ Optionally connect your device to a hosted or [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/server) cloud relay server for remote access for when your not on your home/work network
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
 * 🛂 Username and password protection
 * 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS/RTSPS
@@ -43,7 +42,7 @@ Other similar IP camera apps exist, but most are closed source. You cannot verif
 
 This app is open source so you do not have to take its privacy claims on trust. The code that controls the camera, encodes video and handles logins is in this repository. You can read it, build it and compare it with the APK you install.
 
-By default, video stays on your local network. The phone serves the stream and the recordings directly to the clients you point at it. Nothing leaves your network unless you explicitly pair the camera with a relay server for remote access. Recordings are written to the phone, not uploaded anywhere.
+By default, video stays on your local network. The phone serves the stream and the recordings directly to the clients you point at it. Nothing leaves your network. Recordings are written to the phone, not uploaded anywhere.
 
 Logins and streams are protected by username and password authentication across the web, RTSP and ONVIF endpoints. When TLS is enabled, the same certificate encrypts all three. You can check how credentials and certificates are handled in the source instead of trusting a privacy policy.
 
@@ -200,7 +199,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query a recordings folder listing programmatically or feed custom front-ends. Use `?dir=2026/11/09` to list a subfolder; omit `dir` for the recordings root.
   * **Format:** `application/json` — `{"folder":<string>, "path":<string>, "entries":[{"name":<string>, "isDirectory":<bool>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
 * **Play or Download Recording (`/files/<relative path>`, GET or HEAD)**
-  * **Usage:** Open a recorded MP4 in the browser's native video player, which starts streaming immediately and keeps working while the file is being read (MP4s are served as `video/mp4` with `Content-Disposition: inline`). Other files download as before. Use the 💾 **Download** button in the recordings list to save a copy; the player's own save/download control also works. Path segments include recording folders, e.g. `/files/2026/11/09/2026-11-09-093000-manual.mp4`. Supports a single `Range: bytes=...` request (including open-ended and suffix forms) so browsers and the relay can seek and stream progressively; the response advertises `Accept-Ranges: bytes`.
+  * **Usage:** Open a recorded MP4 in the browser's native video player, which starts streaming immediately and keeps working while the file is being read (MP4s are served as `video/mp4` with `Content-Disposition: inline`). Other files download as before. Use the 💾 **Download** button in the recordings list to save a copy; the player's own save/download control also works. Path segments include recording folders, e.g. `/files/2026/11/09/2026-11-09-093000-manual.mp4`. Supports a single `Range: bytes=...` request (including open-ended and suffix forms) so browsers can seek and stream progressively; the response advertises `Accept-Ranges: bytes`.
   * **Responses:** `200 OK` with the file bytes (or headers only for `HEAD`), `206 Partial Content` with `Content-Range` for a range request, `416 Range Not Satisfiable` for a range outside the file, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid paths.
 * **Delete Recording (`/files/<relative path>`, DELETE)**
   * **Usage:** Permanently delete a recorded MP4, or delete a folder and everything below it. The recordings root itself cannot be deleted.
@@ -250,7 +249,7 @@ ONVIF lets NVRs and home automation systems discover and control the camera as a
 * **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled
 * **Snapshot:** `https://[ip_address]:8000/onvif/snapshot.jpg` (or `http://` without TLS)
 * **RTSP:** `rtsps://[username]:[password]@[ip_address]:8554/live`, or `rtsps://` on the same port when TLS is enabled
-* **Motion events and recording:** turn on **Record on Motion** in the web interface. The app compares luma frames in the background, publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`), and records a `-motion.mp4` clip while motion is present. If the camera is associated with the relay server, it also reports motion starts there so the relay can send a notification per camera. The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
+* **Motion events and recording:** turn on **Record on Motion** in the web interface. The app compares luma frames in the background, publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`), and records a `-motion.mp4` clip while motion is present. The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
 * **Stop Recording After Motion** (under Sensitivity, default 10 seconds) controls how long a motion recording keeps running after motion has cleared. Set it to `0` to stop as soon as motion ends.
 * While **Record on Motion** is on, the camera runs continuously so it can see motion with no viewer connected. With it off, ONVIF and RTSP are still available on demand: the camera opens when a client connects and is released when the last one leaves.
 

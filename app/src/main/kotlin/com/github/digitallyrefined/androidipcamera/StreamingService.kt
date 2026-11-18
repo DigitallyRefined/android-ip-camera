@@ -76,8 +76,6 @@ class StreamingService : LifecycleService() {
     // Streaming encoders (initialized when server is created)
     private var h264StreamingEncoder: H264StreamingEncoder? = null
     private var mjpegStreamingEncoder: MjpegStreamingEncoder? = null
-    /** Outbound relay connection to the public server, when this camera is associated. */
-    @Volatile private var relayClient: RelayClient? = null
     private val encoders: List<StreamingEncoder>
         get() = listOfNotNull(h264StreamingEncoder, mjpegStreamingEncoder)
 
@@ -110,8 +108,7 @@ class StreamingService : LifecycleService() {
 
     /**
      * Keeps the CPU awake while a viewer is connected. Without it the device enters deep sleep
-     * shortly after the screen turns off, the camera stops delivering frames, and WebRTC viewers
-     * freeze until the phone is unlocked again.
+     * shortly after the screen turns off and the camera stops delivering frames.
      */
     private var streamingWakeLock: PowerManager.WakeLock? = null
 
@@ -202,7 +199,6 @@ class StreamingService : LifecycleService() {
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
         const val ACTION_START_SERVER = "com.github.digitallyrefined.androidipcamera.START_SERVER"
-        const val ACTION_DISCONNECT_RELAY = "com.github.digitallyrefined.androidipcamera.DISCONNECT_RELAY"
     }
 
     inner class LocalBinder : Binder() { fun getService(): StreamingService = this@StreamingService }
@@ -222,7 +218,6 @@ class StreamingService : LifecycleService() {
             ACTION_RESTART_NOTIFICATION ->
                 if (!startForegroundService()) { stopSelf(); return START_NOT_STICKY }
             ACTION_RESTART_SERVER -> if (ensureForegroundTypes()) restartServer()
-            ACTION_DISCONNECT_RELAY -> { disconnectRelay(); return START_STICKY }
             // Cold start with no activity bound (e.g. from BootReceiver): the activity normally
             // calls startStreamingServer() after binding, so start it here instead.
             ACTION_START_SERVER -> if (whileInUseForegroundAllowed) startStreamingServer()
@@ -315,8 +310,6 @@ class StreamingService : LifecycleService() {
         rtspServer?.let { server -> Thread { server.stop() }.start() }
         motionMonitor?.detector?.reset()
         stopOnvif()
-        relayClient?.stop()
-        relayClient = null
         releaseStreamingWakeLock()
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
@@ -481,95 +474,6 @@ class StreamingService : LifecycleService() {
         } catch (e: Exception) { Log.e(TAG, "start server: ${e.message}") }
     }
 
-    // ---------------- relay association ----------------
-
-    val isRelayAssociated: Boolean get() = RelayAssociation.load(this) != null
-    val isRelayConnected: Boolean get() = relayClient?.isConnected == true
-
-    /**
-     * Exchange a one-time pairing code for a device token, then bring the outbound
-     * connection up. Called from the activity when an androidipcamera://associate
-     * intent is opened.
-     */
-    fun associateRelay(serverUrl: String, code: String, onResult: (success: Boolean, message: String) -> Unit) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val credentials = RelayAssociation.associate(this@StreamingService, serverUrl, code)
-                val relay = relayClient
-                if (relay != null) {
-                    relay.restartAfterAssociation()
-                } else {
-                    // The HTTP server has not been initialized yet; starting it also creates
-                    // the relay client, which reads the credentials we just stored.
-                    kotlinx.coroutines.withContext(Dispatchers.Main) { startStreamingServer() }
-                }
-                Log.i(TAG, "Associated relay: ${credentials.deviceId} @ ${credentials.serverUrl}")
-                kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    onResult(true, "Associated with ${credentials.serverUrl}")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "relay associate failed: ${e.message}")
-                kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    onResult(false, e.message ?: "Association failed")
-                }
-            }
-        }
-    }
-
-    /**
-     * Forget the relay association, stop the outbound connection, and remove
-     * this camera from the relay's database. Everything that can block (secure
-     * storage, socket shutdown, HTTP delete) runs on the IO dispatcher so the
-     * Settings UI stays responsive. The relay section is disabled through the
-     * relay_deleting preference until the remote delete finishes.
-     */
-    fun disconnectRelay() {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        prefs.edit()
-            .putBoolean("relay_deleting", true)
-            .putLong("relay_deleting_since", System.currentTimeMillis())
-            .apply()
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val credentials = RelayAssociation.load(this@StreamingService)
-                val relay = relayClient
-                if (relay != null) {
-                    relay.disconnect()
-                } else {
-                    RelayAssociation.clear(this@StreamingService)
-                    prefs.edit()
-                        .putBoolean("relay_connected", false)
-                        .putString("relay_status", "Not associated")
-                        .putLong("relay_status_updated_at", System.currentTimeMillis())
-                        .apply()
-                }
-                if (credentials != null) {
-                    val removed = RelayAssociation.deleteRemote(credentials)
-                    if (removed) {
-                        Log.i(TAG, "Removed relay device ${credentials.deviceId}")
-                    } else {
-                        Log.w(TAG, "Could not remove relay device ${credentials.deviceId}")
-                    }
-                }
-            } catch (error: Exception) {
-                Log.w(TAG, "Relay disconnect failed: ${error.message}")
-            } finally {
-                // Whether the remote delete succeeded or exhausted its retries,
-                // the user asked to disconnect: always forget the association.
-                runCatching { RelayAssociation.clear(this@StreamingService) }
-                    .onFailure { Log.w(TAG, "Could not clear relay association: ${it.message}") }
-                prefs.edit()
-                    .putBoolean("relay_connected", false)
-                    .putString("relay_status", "Not associated")
-                    .putLong("relay_status_updated_at", System.currentTimeMillis())
-                    .putBoolean("relay_deleting", false)
-                    .remove("relay_deleting_since")
-                    .apply()
-            }
-        }
-    }
-
     private fun generateCertificateAndStart() {
         val pw = generateRandomPassword()
         lifecycleScope.launch(Dispatchers.IO) {
@@ -606,8 +510,6 @@ class StreamingService : LifecycleService() {
             motionMonitor = MotionMonitor(this) { active ->
                 Log.i(TAG, "Motion ${if (active) "started" else "ended"}")
                 onvifServer?.setMotion(active)
-                // Report the start to the relay too, when the camera is associated.
-                if (active) relayClient?.sendMotion()
                 handleMotionRecording(active)
             }
             rtspServer = RtspServer(
@@ -628,25 +530,6 @@ class StreamingService : LifecycleService() {
                 tls = { TlsHelper.serverConfig(this) }
             )
             h264StreamingEncoder?.rtspServer = rtspServer
-
-            val relay = RelayClient(
-                this,
-                onLog = { Log.i(TAG, "Relay: $it"); onLog?.invoke("Relay: $it") },
-                onStatusChanged = { connected, status ->
-                    Log.i(TAG, "Relay status: ${if (connected) "connected" else "disconnected"} - $status")
-                },
-                // A browser WebRTC viewer starts or stops the camera through the relay. The
-                // encoder taps the same frames, so the normal connected/disconnected paths apply.
-                onMediaActiveChanged = { active ->
-                    if (active) handleClientConnected() else handleClientDisconnected()
-                },
-                onKeyFrameRequest = {
-                    h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
-                }
-            )
-            relayClient = relay
-            h264StreamingEncoder?.relayClient = relay
-            relay.start()
         }
         streamingServerHelper?.startStreamingServer()
         startRtspServerIfEnabled()

@@ -50,21 +50,6 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
-    <PreferenceCategory
-        android:key="relay_category"
-        android:title="Remote Access (Relay)"
-        android:persistent="false">
-        <Preference
-            android:key="relay_server"
-            android:title="Relay Server"
-            android:persistent="false" />
-        <Preference
-            android:key="relay_disconnect"
-            android:title="Disconnect from Relay"
-            android:summary="Forget this relay association and stop the outbound connection"
-            android:persistent="false" />
-    </PreferenceCategory>
-
     <PreferenceCategory android:title="Recording">
         <Preference
             android:key="recording_storage_uri"
