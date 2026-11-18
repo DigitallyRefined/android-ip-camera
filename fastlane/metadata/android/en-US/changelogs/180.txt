@@ -1,0 +1,11 @@
+## What's Changed
+* Add continuous recording & notification only modes in #149
+* Switch from custom public relay server to OpenTunnel in #143
+* Stop needless camera restarts and the sticky Camera1 fallback by @SirLouen in #139
+* Release the H.264 encoder when the camera stops by @SirLouen in #138
+* Bump dependencies by @dependabot[bot] in #144 #145 #146
+
+## New Contributors
+* @SirLouen made their first contribution in #139
+
+...
