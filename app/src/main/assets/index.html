@@ -3,6 +3,7 @@
 
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Android IP Camera</title>
   <style>
     body {
@@ -35,6 +36,16 @@
       z-index: 10;
     }
 
+    .header h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 8px;
+    }
+
     .main {
       display: flex;
       flex: 1;
@@ -49,6 +60,10 @@
       justify-content: center;
       overflow: auto;
       position: relative;
+    }
+
+    #streamCanvas {
+      display: block;
     }
 
     .status-overlay {
@@ -323,18 +338,95 @@
     .stream-container:-webkit-full-screen {
       width: 100vw;
       height: 100vh;
+      max-height: none;
     }
 
     @media (max-width: 900px) {
-      .main {
-        flex-direction: column;
+      body {
+        height: auto;
+        min-height: 100vh;
+        min-height: 100dvh;
+        overflow: visible;
       }
 
+      .header {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 12px;
+        padding-top: max(10px, env(safe-area-inset-top));
+      }
+
+      .header h2 {
+        font-size: 16px;
+      }
+
+      .header-actions {
+        gap: 6px;
+      }
+
+      .header-actions .btn {
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+
+      .main {
+        flex: none;
+        flex-direction: column;
+        overflow: visible;
+      }
+
+      /* Full-width video, sized to the usual camera aspect ratio. */
+      .stream-container {
+        flex: none;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        max-height: 60vh;
+      }
+
+      .status-overlay {
+        top: 8px;
+        right: 8px;
+        gap: 8px;
+        padding: 4px 10px;
+        font-size: 11px;
+      }
+
+      /* Controls stack below the video and scroll with the page. */
       .controls-panel {
-        width: auto;
-        height: 45%;
+        flex: none;
+        width: 100%;
+        height: auto;
+        box-sizing: border-box;
+        padding: 16px;
+        padding-bottom: max(16px, env(safe-area-inset-bottom));
         border-left: none;
         border-top: 1px solid #333;
+        overflow: visible;
+      }
+
+      .tabs {
+        top: 0;
+        margin: -16px -16px 10px;
+        padding: 16px 16px 10px;
+      }
+
+      .recordings-frame {
+        height: 60vh;
+        min-height: 300px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .header-actions {
+        width: 100%;
+      }
+
+      .header-actions .btn {
+        flex: 1 1 0;
+        min-width: 0;
+        padding: 8px 4px;
+        font-size: 12px;
+        white-space: nowrap;
       }
     }
   </style>
@@ -342,8 +434,8 @@
 
 <body>
   <div class='header'>
-    <h2 style='margin:0;font-size:18px;'>Android IP Camera</h2>
-    <div style="display:flex;gap:8px;">
+    <h2>Android IP Camera</h2>
+    <div class="header-actions">
       <button id='fitBtn' class='btn active' onclick='setView("fit")'>Fit Screen</button>
       <button id='origBtn' class='btn' onclick='setView("original")'>Original Size</button>
       <button id='fullscreenBtn' class='btn' onclick='toggleFullscreen()'>⛶ Fullscreen</button>
@@ -588,7 +680,14 @@
 
       // Start each tab at the top of the panel instead of keeping the previous scroll offset.
       const panel = getElById('controlsPanel');
-      if (panel) panel.scrollTop = 0;
+      if (panel) {
+        if (panel.scrollHeight > panel.clientHeight + 1) {
+          panel.scrollTop = 0;
+        } else if (panel.getBoundingClientRect().top < 0) {
+          // On small screens the panel scrolls with the page instead of internally.
+          window.scrollTo({ top: panel.getBoundingClientRect().top + window.scrollY, behavior: 'auto' });
+        }
+      }
     }
 
     let currentCamera = '';
@@ -610,8 +709,40 @@
     let deviceHasFlash = false;
     let cameraList = [];
 
+    // Mobile screens have no room to pan a full-resolution frame around, so start
+    // in Original Size, which fits the frame to the player width.
+    if (isMobileLayout()) setView('original');
+
     function isFullscreenActive() {
       return !!(document.fullscreenElement || document.webkitFullscreenElement);
+    }
+
+    function isMobileLayout() {
+      return window.matchMedia('(max-width: 900px)').matches;
+    }
+
+    // On mobile the player width is fixed by the screen, so size the player to the
+    // frame's aspect ratio instead of showing a bigger-than-screen original-size
+    // canvas that has to be dragged around.
+    function updateStreamAspect(size) {
+      if (!streamContainer) return;
+      const fitToWidth = isMobileLayout() && viewMode === 'original' && !isFullscreenActive();
+      if (fitToWidth && size && size.w > 0 && size.h > 0) {
+        const aspect = size.w + ' / ' + size.h;
+        if (streamContainer.style.aspectRatio !== aspect) {
+          streamContainer.style.aspectRatio = aspect;
+        }
+        if (streamContainer.style.maxHeight !== 'none') {
+          streamContainer.style.maxHeight = 'none';
+        }
+      } else {
+        if (streamContainer.style.aspectRatio) {
+          streamContainer.style.removeProperty('aspect-ratio');
+        }
+        if (streamContainer.style.maxHeight) {
+          streamContainer.style.removeProperty('max-height');
+        }
+      }
     }
 
     function targetCanvasSize(frame) {
@@ -628,11 +759,19 @@
           h = frame ? frame.height : (lastDrawn ? lastDrawn.height : streamCanvas.height);
         }
         return { w, h };
-      } else {
-        const w = frame ? frame.width : (lastDrawn ? lastDrawn.width : streamCanvas.width);
-        const h = frame ? frame.height : (lastDrawn ? lastDrawn.height : streamCanvas.height);
+      }
+      const iw = frame ? frame.width : (lastDrawn ? lastDrawn.width : streamCanvas.width);
+      const ih = frame ? frame.height : (lastDrawn ? lastDrawn.height : streamCanvas.height);
+      if (isMobileLayout() && streamContainer?.clientWidth) {
+        // Scale the full frame to the available width and let the player grow in height.
+        // Until the first frame arrives, keep the player's current height.
+        const w = streamContainer.clientWidth;
+        const h = (!frame && !lastDrawn)
+          ? streamContainer.clientHeight
+          : Math.max(1, Math.round(w * ih / iw));
         return { w, h };
       }
+      return { w: iw, h: ih };
     }
 
     function applyCanvasSize(size) {
@@ -641,6 +780,7 @@
         streamCanvas.width = size.w;
         streamCanvas.height = size.h;
       }
+      updateStreamAspect(size);
     }
 
     function updateMuteButton() {
@@ -1510,6 +1650,11 @@
         f.className = 'btn active';
         o.className = 'btn';
         viewMode = 'fit';
+        // Drop the frame-specific aspect before measuring the container for fit mode.
+        if (streamContainer) {
+          streamContainer.style.removeProperty('aspect-ratio');
+          streamContainer.style.removeProperty('max-height');
+        }
       } else {
         f.className = 'btn';
         o.className = 'btn active';

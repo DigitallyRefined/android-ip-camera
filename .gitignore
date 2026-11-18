@@ -17,5 +17,8 @@ certificates
 # Docker builder caches (see Dockerfile usage)
 .cache
 
+# Rust build output for the OpenTunnel JNI library
+opentunnel-native/target
+
 # local build helpers (machine-specific paths)
 _wsl_*.sh

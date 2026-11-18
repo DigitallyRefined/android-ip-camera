@@ -20,6 +20,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
@@ -35,6 +36,10 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.helpers.*
+import com.github.digitallyrefined.androidipcamera.opentunnel.LocalTlsBridge
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelConfig
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelController
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -76,13 +81,15 @@ class StreamingService : LifecycleService() {
     // Streaming encoders (initialized when server is created)
     private var h264StreamingEncoder: H264StreamingEncoder? = null
     private var mjpegStreamingEncoder: MjpegStreamingEncoder? = null
-    /** Outbound relay connection to the public server, when this camera is associated. */
-    @Volatile private var relayClient: RelayClient? = null
     private val encoders: List<StreamingEncoder>
         get() = listOfNotNull(h264StreamingEncoder, mjpegStreamingEncoder)
 
     /** Motion detection is on: the camera must keep delivering frames even with no viewer. */
     private fun motionEnabled(): Boolean = motionMonitor?.enabled == true
+
+    /** Loopback TLS bridge used when the local web server speaks HTTPS and OpenTunnel forwards plain HTTP. */
+    @Volatile private var openTunnelBridge: LocalTlsBridge? = null
+    private val openTunnelLock = Any()
 
     @Volatile private var glPipe: CameraGlPipe? = null          // Camera1 H.264 GL pipe
     @Volatile private var cameraXGlPipe: CameraGlPipe? = null   // CameraX H.264 GL pipe
@@ -110,8 +117,7 @@ class StreamingService : LifecycleService() {
 
     /**
      * Keeps the CPU awake while a viewer is connected. Without it the device enters deep sleep
-     * shortly after the screen turns off, the camera stops delivering frames, and WebRTC viewers
-     * freeze until the phone is unlocked again.
+     * shortly after the screen turns off and the camera stops delivering frames.
      */
     private var streamingWakeLock: PowerManager.WakeLock? = null
 
@@ -202,7 +208,9 @@ class StreamingService : LifecycleService() {
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
         const val ACTION_START_SERVER = "com.github.digitallyrefined.androidipcamera.START_SERVER"
-        const val ACTION_DISCONNECT_RELAY = "com.github.digitallyrefined.androidipcamera.DISCONNECT_RELAY"
+        const val ACTION_OPEN_TUNNEL_REGISTER = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_REGISTER"
+        const val ACTION_OPEN_TUNNEL_CONNECT = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_CONNECT"
+        const val ACTION_OPEN_TUNNEL_FORGET = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_FORGET"
     }
 
     inner class LocalBinder : Binder() { fun getService(): StreamingService = this@StreamingService }
@@ -222,7 +230,9 @@ class StreamingService : LifecycleService() {
             ACTION_RESTART_NOTIFICATION ->
                 if (!startForegroundService()) { stopSelf(); return START_NOT_STICKY }
             ACTION_RESTART_SERVER -> if (ensureForegroundTypes()) restartServer()
-            ACTION_DISCONNECT_RELAY -> { disconnectRelay(); return START_STICKY }
+            ACTION_OPEN_TUNNEL_REGISTER -> { registerOpenTunnel(); return START_STICKY }
+            ACTION_OPEN_TUNNEL_CONNECT -> { connectOpenTunnel(); return START_STICKY }
+            ACTION_OPEN_TUNNEL_FORGET -> { forgetOpenTunnel(); return START_STICKY }
             // Cold start with no activity bound (e.g. from BootReceiver): the activity normally
             // calls startStreamingServer() after binding, so start it here instead.
             ACTION_START_SERVER -> if (whileInUseForegroundAllowed) startStreamingServer()
@@ -245,6 +255,7 @@ class StreamingService : LifecycleService() {
 
     private fun restartServer() {
         lifecycleScope.launch(Dispatchers.IO) {
+            stopOpenTunnel()
             streamingServerHelper?.stopServer()
             rtspServer?.stop()
             stopOnvif()
@@ -252,6 +263,7 @@ class StreamingService : LifecycleService() {
             streamingServerHelper?.startStreamingServer()
             startRtspServerIfEnabled()
             startOnvifIfEnabled()
+            autoConnectOpenTunnel()
         }
     }
 
@@ -315,8 +327,7 @@ class StreamingService : LifecycleService() {
         rtspServer?.let { server -> Thread { server.stop() }.start() }
         motionMonitor?.detector?.reset()
         stopOnvif()
-        relayClient?.stop()
-        relayClient = null
+        stopOpenTunnel()
         releaseStreamingWakeLock()
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
@@ -481,95 +492,6 @@ class StreamingService : LifecycleService() {
         } catch (e: Exception) { Log.e(TAG, "start server: ${e.message}") }
     }
 
-    // ---------------- relay association ----------------
-
-    val isRelayAssociated: Boolean get() = RelayAssociation.load(this) != null
-    val isRelayConnected: Boolean get() = relayClient?.isConnected == true
-
-    /**
-     * Exchange a one-time pairing code for a device token, then bring the outbound
-     * connection up. Called from the activity when an androidipcamera://associate
-     * intent is opened.
-     */
-    fun associateRelay(serverUrl: String, code: String, onResult: (success: Boolean, message: String) -> Unit) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val credentials = RelayAssociation.associate(this@StreamingService, serverUrl, code)
-                val relay = relayClient
-                if (relay != null) {
-                    relay.restartAfterAssociation()
-                } else {
-                    // The HTTP server has not been initialized yet; starting it also creates
-                    // the relay client, which reads the credentials we just stored.
-                    kotlinx.coroutines.withContext(Dispatchers.Main) { startStreamingServer() }
-                }
-                Log.i(TAG, "Associated relay: ${credentials.deviceId} @ ${credentials.serverUrl}")
-                kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    onResult(true, "Associated with ${credentials.serverUrl}")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "relay associate failed: ${e.message}")
-                kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    onResult(false, e.message ?: "Association failed")
-                }
-            }
-        }
-    }
-
-    /**
-     * Forget the relay association, stop the outbound connection, and remove
-     * this camera from the relay's database. Everything that can block (secure
-     * storage, socket shutdown, HTTP delete) runs on the IO dispatcher so the
-     * Settings UI stays responsive. The relay section is disabled through the
-     * relay_deleting preference until the remote delete finishes.
-     */
-    fun disconnectRelay() {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        prefs.edit()
-            .putBoolean("relay_deleting", true)
-            .putLong("relay_deleting_since", System.currentTimeMillis())
-            .apply()
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val credentials = RelayAssociation.load(this@StreamingService)
-                val relay = relayClient
-                if (relay != null) {
-                    relay.disconnect()
-                } else {
-                    RelayAssociation.clear(this@StreamingService)
-                    prefs.edit()
-                        .putBoolean("relay_connected", false)
-                        .putString("relay_status", "Not associated")
-                        .putLong("relay_status_updated_at", System.currentTimeMillis())
-                        .apply()
-                }
-                if (credentials != null) {
-                    val removed = RelayAssociation.deleteRemote(credentials)
-                    if (removed) {
-                        Log.i(TAG, "Removed relay device ${credentials.deviceId}")
-                    } else {
-                        Log.w(TAG, "Could not remove relay device ${credentials.deviceId}")
-                    }
-                }
-            } catch (error: Exception) {
-                Log.w(TAG, "Relay disconnect failed: ${error.message}")
-            } finally {
-                // Whether the remote delete succeeded or exhausted its retries,
-                // the user asked to disconnect: always forget the association.
-                runCatching { RelayAssociation.clear(this@StreamingService) }
-                    .onFailure { Log.w(TAG, "Could not clear relay association: ${it.message}") }
-                prefs.edit()
-                    .putBoolean("relay_connected", false)
-                    .putString("relay_status", "Not associated")
-                    .putLong("relay_status_updated_at", System.currentTimeMillis())
-                    .putBoolean("relay_deleting", false)
-                    .remove("relay_deleting_since")
-                    .apply()
-            }
-        }
-    }
-
     private fun generateCertificateAndStart() {
         val pw = generateRandomPassword()
         lifecycleScope.launch(Dispatchers.IO) {
@@ -582,6 +504,125 @@ class StreamingService : LifecycleService() {
             } else launch(Dispatchers.Main) {
                 Toast.makeText(this@StreamingService, "Failed to generate certificate", Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    // ---------------- OpenTunnel (public HTTPS URL) ----------------
+
+    fun openTunnelStatus(): OpenTunnelStatus = OpenTunnelController.status(this)
+
+    /** Create the tunnel identity if needed, then connect. */
+    fun registerOpenTunnel() {
+        lifecycleScope.launch(Dispatchers.IO) { startOpenTunnel(createIfNeeded = true) }
+    }
+
+    /** Connect an already registered identity. */
+    fun connectOpenTunnel() {
+        lifecycleScope.launch(Dispatchers.IO) { startOpenTunnel(createIfNeeded = false) }
+    }
+
+    /** Disconnect and delete every saved OpenTunnel file (and the tunnel on the server). */
+    fun forgetOpenTunnel() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            synchronized(openTunnelLock) {
+                openTunnelBridge?.stop()
+                openTunnelBridge = null
+            }
+            OpenTunnelController.forget(this@StreamingService)
+            toastOnMain("Disconnecting OpenTunnel and deleting its files…")
+        }
+    }
+
+    private fun startOpenTunnel(createIfNeeded: Boolean) {
+        val problem = OpenTunnelConfig.credentialsProblem(this)
+        if (problem != null) {
+            toastOnMain(problem)
+            return
+        }
+        if (!OpenTunnelController.isAvailable) {
+            toastOnMain(OpenTunnelController.unavailableReason ?: "OpenTunnel is unavailable on this build")
+            return
+        }
+
+        val status = OpenTunnelController.status(this)
+        if (!createIfNeeded && !status.registered) {
+            toastOnMain("Register OpenTunnel first")
+            return
+        }
+        // Already connected, or a registration/connection is already in progress.
+        if (status.connected || status.busy) return
+
+        val target = openTunnelTarget() ?: return
+        if (!OpenTunnelController.start(this, target)) {
+            synchronized(openTunnelLock) {
+                openTunnelBridge?.stop()
+                openTunnelBridge = null
+            }
+            val failure = OpenTunnelController.status(this).error
+            toastOnMain(failure ?: "Could not start OpenTunnel")
+        }
+    }
+
+    /** Runs on a background dispatcher. Reconnects only when already registered. */
+    private fun autoConnectOpenTunnel() {
+        if (!OpenTunnelController.isAvailable) return
+        if (OpenTunnelConfig.credentialsProblem(this) != null) return
+        val status = OpenTunnelController.status(this)
+        if (!status.registered || status.connected || status.busy) return
+        startOpenTunnel(createIfNeeded = false)
+    }
+
+    /**
+     * Builds the route target for the local web server. OpenTunnel terminates
+     * the public TLS connection and forwards plain TCP, so an HTTPS local
+     * server needs the loopback TLS bridge.
+     */
+    private fun openTunnelTarget(): String? {
+        synchronized(openTunnelLock) {
+            openTunnelBridge?.stop()
+            openTunnelBridge = null
+
+            val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+            val port = prefs.getString("server_port", null)?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 4444
+            val host = ListenInterface.specificIpv4(this) ?: "127.0.0.1"
+            if (!TlsHelper.isEnabled(this)) return formatHostPort(host, port)
+
+            val configuredVersion = TlsHelper.tlsVersion(this)
+            val actualVersion = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && configuredVersion != "1.2") {
+                // TlsHelper falls back to TLS 1.2 on Android 9 and older.
+                "1.2"
+            } else {
+                configuredVersion
+            }
+            return try {
+                val bridge = LocalTlsBridge(host, port, actualVersion) { message ->
+                    Log.i(TAG, "OpenTunnel: $message")
+                }
+                bridge.start()
+                openTunnelBridge = bridge
+                "127.0.0.1:${bridge.port}"
+            } catch (e: Exception) {
+                Log.e(TAG, "OpenTunnel local TLS bridge failed", e)
+                toastOnMain("OpenTunnel could not reach the local HTTPS server: ${e.message}")
+                null
+            }
+        }
+    }
+
+    private fun formatHostPort(host: String, port: Int): String =
+        if (host.contains(':')) "[$host]:$port" else "$host:$port"
+
+    private fun stopOpenTunnel() {
+        OpenTunnelController.disconnect()
+        synchronized(openTunnelLock) {
+            openTunnelBridge?.stop()
+            openTunnelBridge = null
+        }
+    }
+
+    private fun toastOnMain(message: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -606,8 +647,6 @@ class StreamingService : LifecycleService() {
             motionMonitor = MotionMonitor(this) { active ->
                 Log.i(TAG, "Motion ${if (active) "started" else "ended"}")
                 onvifServer?.setMotion(active)
-                // Report the start to the relay too, when the camera is associated.
-                if (active) relayClient?.sendMotion()
                 handleMotionRecording(active)
             }
             rtspServer = RtspServer(
@@ -628,31 +667,14 @@ class StreamingService : LifecycleService() {
                 tls = { TlsHelper.serverConfig(this) }
             )
             h264StreamingEncoder?.rtspServer = rtspServer
-
-            val relay = RelayClient(
-                this,
-                onLog = { Log.i(TAG, "Relay: $it"); onLog?.invoke("Relay: $it") },
-                onStatusChanged = { connected, status ->
-                    Log.i(TAG, "Relay status: ${if (connected) "connected" else "disconnected"} - $status")
-                },
-                // A browser WebRTC viewer starts or stops the camera through the relay. The
-                // encoder taps the same frames, so the normal connected/disconnected paths apply.
-                onMediaActiveChanged = { active ->
-                    if (active) handleClientConnected() else handleClientDisconnected()
-                },
-                onKeyFrameRequest = {
-                    h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
-                }
-            )
-            relayClient = relay
-            h264StreamingEncoder?.relayClient = relay
-            relay.start()
         }
         streamingServerHelper?.startStreamingServer()
         startRtspServerIfEnabled()
         startOnvifIfEnabled()
         // Motion detection persisted as on keeps the camera running with no viewer.
         if (motionEnabled()) launchMain { startCameraIfNeeded() }
+        // Reconnect a registered tunnel whenever the app/server starts again.
+        lifecycleScope.launch(Dispatchers.IO) { autoConnectOpenTunnel() }
     }
 
     /** Starts (or stops) the RTSP server to match the RTSP/ONVIF setting. ONVIF is enabled by the

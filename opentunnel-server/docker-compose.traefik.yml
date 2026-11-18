@@ -1,0 +1,76 @@
+# A self-hosted OpenTunnel server, behind an existing Traefik.
+#
+# This is NOT a standalone stack: it is an override for docker-compose.yml and
+# only holds what differs when Traefik is in front. Always pass both files, base
+# first, and in this order:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
+#
+# The same flags work for every other command (`logs`, `run account-key`, ...).
+# Swap the stack by adding or dropping `-f docker-compose.traefik.yml`; both use
+# the same project name, `.env` and `./mysql-data`, so switching keeps every
+# tunnel. Run one stack at a time, since only this one gives up the public port.
+#
+# What this file changes:
+#
+#   listeners
+#     8443  raw TLS; Traefik passes the tunnel wildcard (*.<domain>) through
+#           untouched, because the client terminates TLS and the server never
+#           sees plaintext
+#     8080  plain HTTP for the API, the bridge WebSocket, and the website; Traefik
+#           terminates TLS for <domain> itself and forwards here
+#   network  joins the external `traefik` network and publishes no ports
+#   limits   raises the create limit, because every request arrives from
+#            Traefik's single address instead of from each client
+#
+# `ports: !reset` needs Docker Compose v2.24 or newer.
+
+services:
+  opentunnel:
+    environment:
+      # Traefik already terminated TLS for the apex, so run the whole app on
+      # plain HTTP here instead of redirecting to HTTPS.
+      HTTP_MODE: serve
+
+      # Every API request reaches the server from Traefik's address, so the
+      # server's per-IP create limit counts all users together. These are a
+      # global ceiling (tunnels per hour) for the whole server; raise them if
+      # you really need more than that at once.
+      CREATE_RATE_PER_HOUR: ${CREATE_RATE_PER_HOUR:-300}
+      CREATE_RATE_BURST: ${CREATE_RATE_BURST:-30}
+
+    # The base file publishes 443 and 80; Traefik owns them here.
+    ports: !reset []
+    networks:
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik
+
+      # The API, the bridge WebSocket and the website on the apex. Traefik
+      # terminates TLS with a certificate for the domain from its store (a
+      # *.example.com wildcard covers it). Add a certresolver if it has none.
+      traefik.http.routers.tunnel-api.entrypoints: websecure
+      traefik.http.routers.tunnel-api.rule: "Host(`${OPENTUNNEL_DOMAIN}`)"
+      traefik.http.routers.tunnel-api.tls: "true"
+      # traefik.http.routers.tunnel-api.tls.certresolver: ${TRAEFIK_CERT_RESOLVER}
+      traefik.http.routers.tunnel-api.service: tunnel-api
+      traefik.http.services.tunnel-api.loadbalancer.server.port: "8080"
+
+      # Tunnel traffic must reach the server still encrypted: the certificate's
+      # private key lives on the client, so decrypting here would break the
+      # tunnel. Traefik evaluates TCP routers before HTTP ones.
+      traefik.tcp.routers.tunnel.entrypoints: websecure
+      traefik.tcp.routers.tunnel.rule: 'HostSNIRegexp(`^.+\.${OPENTUNNEL_DOMAIN}$`)'
+      traefik.tcp.routers.tunnel.tls: "true"
+      traefik.tcp.routers.tunnel.tls.passthrough: "true"
+      traefik.tcp.routers.tunnel.service: tunnel
+      traefik.tcp.services.tunnel.loadbalancer.server.port: "8443"
+
+networks:
+  # Internal link between the server and its database; the server reaches the
+  # Internet (ACME, the DNS API) through the traefik network instead.
+  tunnel-server:
+    internal: true
+  traefik:
+    external: true

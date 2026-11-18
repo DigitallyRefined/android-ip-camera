@@ -27,7 +27,12 @@ jobs:
 
       - name: Install SDK components
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018"
+
+      - name: Install Rust and the Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
 
       - name: Build release APK (first)
         run: |

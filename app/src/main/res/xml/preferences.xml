@@ -23,6 +23,34 @@
             android:singleLine="true" />
     </PreferenceCategory>
 
+    <PreferenceCategory
+        android:key="opentunnel_category"
+        android:title="Remote Access (OpenTunnel)"
+        android:persistent="false">
+        <com.github.digitallyrefined.androidipcamera.activities.ReadOnlyEditTextPreference
+            android:key="opentunnel_api_url"
+            android:title="OpenTunnel Server"
+            android:summary="Tunnel server URL (default: https://opentunnel.xyz)"
+            android:defaultValue="https://opentunnel.xyz"
+            android:inputType="textUri"
+            android:singleLine="true" />
+        <Preference
+            android:key="opentunnel_status"
+            android:title="Tunnel Status"
+            android:summary="Not registered"
+            android:persistent="false" />
+        <Preference
+            android:key="opentunnel_action"
+            android:title="Register"
+            android:summary="Create a public tunnel and connect"
+            android:persistent="false" />
+        <Preference
+            android:key="opentunnel_disconnect"
+            android:title="Disconnect &amp; disassociate"
+            android:summary="Disconnect and delete public URL"
+            android:persistent="false" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="RTSP / ONVIF">
         <CheckBoxPreference
             android:key="rtsp_enabled"
@@ -48,21 +76,6 @@
             android:defaultValue="8000"
             android:inputType="number"
             android:singleLine="true" />
-    </PreferenceCategory>
-
-    <PreferenceCategory
-        android:key="relay_category"
-        android:title="Remote Access (Relay)"
-        android:persistent="false">
-        <Preference
-            android:key="relay_server"
-            android:title="Relay Server"
-            android:persistent="false" />
-        <Preference
-            android:key="relay_disconnect"
-            android:title="Disconnect from Relay"
-            android:summary="Forget this relay association and stop the outbound connection"
-            android:persistent="false" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Recording">

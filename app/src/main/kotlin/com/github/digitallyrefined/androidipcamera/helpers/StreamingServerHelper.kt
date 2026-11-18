@@ -540,6 +540,7 @@ class StreamingServerHelper(
                         writer.print("HTTP/1.1 429 Too Many Requests\r\n")
                         writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
                         writer.print("Connection: close\r\n\r\n")
+                        writer.print("Too Many Requests. Retry after 30 seconds or restart the app.\r\n")
                         writer.flush()
                         socket.close()
                         onLog("SECURITY: Rate limited unauthenticated request from $clientIp")

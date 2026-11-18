@@ -29,7 +29,6 @@
         android:label="Android IP Camera"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
         <activity
             android:name=".activities.MainActivity"
@@ -37,20 +36,6 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-            <!-- androidipcamera://associate?server=...&code=... from the relay pairing page -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="androidipcamera" android:host="associate" />
-            </intent-filter>
-            <!-- Some QR scanners (e.g. LineageOS) can only share the scanned text
-                 instead of opening the androidipcamera:// link directly. -->
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
         <activity

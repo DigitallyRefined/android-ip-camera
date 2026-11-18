@@ -35,7 +35,7 @@ internal fun parseRangeHeader(header: String?, size: Long): RangeRequest {
         return RangeRequest.Full
     }
     val spec = value.substring("bytes=".length).trim()
-    // Multiple ranges are legal but the relay only ever asks for one.
+    // Multiple ranges are legal, but the browser only ever asks for one.
     if (spec.isEmpty() || spec.contains(',')) return RangeRequest.Full
     val dash = spec.indexOf('-')
     if (dash < 0) return RangeRequest.Full
@@ -71,9 +71,9 @@ internal fun parseRangeHeader(header: String?, size: Long): RangeRequest {
  *  - `GET|HEAD /files/<relative path>`     play MP4 inline, download other files
  *  - `DELETE /files/<relative path>`       delete a file, or a folder recursively
  *
- * File downloads honour a single `Range: bytes=...` header so the relay and
- * the browser's native video player can read an MP4 progressively instead of
- * downloading it in full.
+ * File downloads honour a single `Range: bytes=...` header so the browser's
+ * native video player can read an MP4 progressively instead of downloading it
+ * in full.
  *
  * Paths are relative to the configured recordings root. Folder names appear as extra
  * slash-separated segments, e.g. `/files/2026/11/09/2026-11-09-093000.mp4`.

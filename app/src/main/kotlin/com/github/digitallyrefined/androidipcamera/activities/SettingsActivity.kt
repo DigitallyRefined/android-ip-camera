@@ -2,7 +2,6 @@ package com.github.digitallyrefined.androidipcamera.activities
 
 import android.app.Activity
 import android.content.Intent
-import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -10,9 +9,9 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
+import androidx.lifecycle.lifecycleScope
 import androidx.preference.EditTextPreference
 import androidx.preference.Preference
-import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
@@ -20,10 +19,16 @@ import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.helpers.InputValidator
 import com.github.digitallyrefined.androidipcamera.helpers.ListenInterface
 import com.github.digitallyrefined.androidipcamera.helpers.RecordingsHelper
-import com.github.digitallyrefined.androidipcamera.helpers.RelayAssociation
 import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 import com.github.digitallyrefined.androidipcamera.helpers.TlsHelper
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelConfig
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelController
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelStatus
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.io.File
 
 class SettingsActivity : AppCompatActivity() {
@@ -36,28 +41,14 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     class SettingsFragment : PreferenceFragmentCompat() {
+        private var openTunnelPollJob: Job? = null
+
         companion object {
             private const val PICK_CERTIFICATE_FILE = 1
             private const val PICK_RECORDING_FOLDER = 2
             private const val PREF_ONVIF_NAME = "onvif_name"
             private const val PREF_ONVIF_PORT = "onvif_port"
-            // Longer than the service's worst-case delete retry window, so a
-            // crashed service cannot leave the relay section disabled forever.
-            private const val RELAY_DELETING_TIMEOUT_MS = 120_000L
         }
-
-        // The relay client clears the association from the service when the
-        // relay rejects the camera. Refresh this screen immediately so the
-        // pairing row and disconnect button reflect that change.
-        private val relayPreferenceListener =
-            SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-                if (key == "relay_connected" ||
-                    key == "relay_status" ||
-                    key == "relay_deleting"
-                ) {
-                    refreshRelayPreferences()
-                }
-            }
 
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
@@ -479,107 +470,191 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
-            // Relay association is created from the relay web page (custom intent link).
-            // Disconnecting forgets the token and stops the outbound WebSocket.
-            findPreference<Preference>("relay_disconnect")?.setOnPreferenceClickListener {
-                AlertDialog.Builder(requireContext())
-                    .setTitle("Disconnect from relay?")
-                    .setMessage("The camera will stop reconnecting and will be removed from the relay. You can pair it again from the relay web page.")
-                    .setPositiveButton("Disconnect") { _, _ ->
-                        requireContext().startService(
-                            Intent(requireContext(), StreamingService::class.java).apply {
-                                action = StreamingService.ACTION_DISCONNECT_RELAY
-                            }
-                        )
-                        Toast.makeText(
-                            requireContext(),
-                            "Removing camera from relay…",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-                true
-            }
-            refreshRelayPreferences()
+            setupOpenTunnelPreferences()
         }
 
         override fun onResume() {
             super.onResume()
-            refreshRelayPreferences()
-            PreferenceManager.getDefaultSharedPreferences(requireContext())
-                .registerOnSharedPreferenceChangeListener(relayPreferenceListener)
+            startOpenTunnelPolling()
         }
 
         override fun onPause() {
-            PreferenceManager.getDefaultSharedPreferences(requireContext())
-                .unregisterOnSharedPreferenceChangeListener(relayPreferenceListener)
+            openTunnelPollJob?.cancel()
+            openTunnelPollJob = null
             super.onPause()
         }
 
-        private fun isRelayDeleting(prefs: SharedPreferences): Boolean {
-            if (!prefs.getBoolean("relay_deleting", false)) return false
-            val since = prefs.getLong("relay_deleting_since", 0L)
-            val active = since > 0L &&
-                System.currentTimeMillis() - since < RELAY_DELETING_TIMEOUT_MS
-            if (!active) {
-                // The service died or was killed before it could clear the flag.
-                prefs.edit()
-                    .putBoolean("relay_deleting", false)
-                    .remove("relay_deleting_since")
-                    .apply()
-            }
-            return active
-        }
-
-        private fun refreshRelayPreferences() {
-            val context = context ?: return
-            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-            val deleting = isRelayDeleting(prefs)
-            val credentials = if (deleting) null else RelayAssociation.load(context)
-            val connected = prefs.getBoolean("relay_connected", false)
-            val status = prefs.getString("relay_status", null)
-
-            val relayPreference = findPreference<Preference>("relay_server")
-            val disconnectPreference = findPreference<Preference>("relay_disconnect")
-            val relayCategory = findPreference<PreferenceCategory>("relay_category")
-
-            // Disable the whole relay section while the remote delete is in
-            // flight so the user cannot start another operation.
-            relayCategory?.isEnabled = !deleting
-            relayPreference?.isEnabled = !deleting
-            disconnectPreference?.isEnabled = !deleting
-
-            if (deleting) {
-                relayPreference?.summary = "Removing this camera from the relay…"
-                relayPreference?.setOnPreferenceClickListener(null)
-                relayPreference?.isSelectable = false
-                disconnectPreference?.isVisible = true
-                return
-            }
-
-            // Show the relay URL and connection status in a single preference,
-            // with the status on its own line beneath the URL. Without an
-            // association, the row links to the relay page to start pairing.
-            if (credentials == null) {
-                relayPreference?.summary =
-                    "Not set. Tap to setup or scan the QR code on the relay page"
-                relayPreference?.isSelectable = true
-                relayPreference?.setOnPreferenceClickListener {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(RelayAssociation.FALLBACK_SERVER_URL)))
+        private fun setupOpenTunnelPreferences() {
+            findPreference<ReadOnlyEditTextPreference>(OpenTunnelConfig.PREF_API_URL)?.apply {
+                summary = OpenTunnelConfig.apiUrl(requireContext())
+                onReadOnlyClick = {
+                    Toast.makeText(requireContext(), registeredServerMessage(), Toast.LENGTH_LONG).show()
+                }
+                setOnPreferenceChangeListener { _, newValue ->
+                    val raw = newValue?.toString().orEmpty().trim()
+                    val normalized = OpenTunnelConfig.normalizeApiUrl(raw)
+                    val status = OpenTunnelController.status(requireContext())
+                    if ((status.registered || status.hasFiles) &&
+                        normalized != OpenTunnelConfig.apiUrl(requireContext())) {
+                        Toast.makeText(
+                            requireContext(),
+                            registeredServerMessage(),
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (raw.isEmpty()) {
+                        // An empty field means "use the default", not an invalid URL.
+                        text = OpenTunnelConfig.DEFAULT_API_URL
+                        summary = OpenTunnelConfig.DEFAULT_API_URL
+                        return@setOnPreferenceChangeListener false
+                    }
+                    if (normalized == null) {
+                        Toast.makeText(
+                            requireContext(),
+                            "Enter an http(s) server URL such as https://opentunnel.xyz",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@setOnPreferenceChangeListener false
+                    }
+                    summary = normalized
                     true
                 }
-            } else {
-                val connectionStatus = if (connected) {
-                    status ?: "Connected"
-                } else {
-                    status ?: "Connecting…"
-                }
-                relayPreference?.summary = "${credentials.serverUrl}\n$connectionStatus"
-                relayPreference?.setOnPreferenceClickListener(null)
-                relayPreference?.isSelectable = false
             }
-            disconnectPreference?.isVisible = credentials != null
+
+            findPreference<Preference>("opentunnel_status")?.apply {
+                isSelectable = false
+                setOnPreferenceClickListener {
+                    val url = OpenTunnelController.status(requireContext()).url
+                    if (url.isNullOrBlank()) return@setOnPreferenceClickListener false
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, url)
+                    }
+                    startActivity(Intent.createChooser(send, "Share tunnel URL"))
+                    true
+                }
+            }
+
+            findPreference<Preference>("opentunnel_action")?.apply {
+                setOnPreferenceClickListener {
+                    val problem = OpenTunnelConfig.credentialsProblem(requireContext())
+                    if (problem != null) {
+                        Toast.makeText(requireContext(), problem, Toast.LENGTH_LONG).show()
+                        return@setOnPreferenceClickListener true
+                    }
+                    if (!OpenTunnelController.isAvailable) {
+                        Toast.makeText(
+                            requireContext(),
+                            OpenTunnelController.unavailableReason ?: "OpenTunnel is unavailable on this build",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@setOnPreferenceClickListener true
+                    }
+                    val registered = OpenTunnelController.status(requireContext()).registered
+                    val action = if (registered) {
+                        StreamingService.ACTION_OPEN_TUNNEL_CONNECT
+                    } else {
+                        StreamingService.ACTION_OPEN_TUNNEL_REGISTER
+                    }
+                    requireContext().startService(
+                        Intent(requireContext(), StreamingService::class.java).setAction(action)
+                    )
+                    Toast.makeText(
+                        requireContext(),
+                        if (registered) "Connecting OpenTunnel…" else "Registering OpenTunnel…",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    true
+                }
+            }
+
+            findPreference<Preference>("opentunnel_disconnect")?.apply {
+                setOnPreferenceClickListener {
+                    AlertDialog.Builder(requireContext())
+                        .setTitle("Disconnect & disassociate?")
+                        .setMessage(
+                            "Once the tunnel is removed its public URL cannot be recovered."
+                        )
+                        .setPositiveButton("Disconnect & disassociate") { _, _ ->
+                            requireContext().startService(
+                                Intent(requireContext(), StreamingService::class.java).setAction(
+                                    StreamingService.ACTION_OPEN_TUNNEL_FORGET
+                                )
+                            )
+                            Toast.makeText(
+                                requireContext(),
+                                "Disconnecting and deleting OpenTunnel files…",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                    true
+                }
+            }
+
+            refreshOpenTunnelPreferences()
+        }
+
+        private fun registeredServerMessage(): String =
+            "Use Disconnect & disassociate before switching servers."
+
+        private fun startOpenTunnelPolling() {
+            openTunnelPollJob?.cancel()
+            openTunnelPollJob = lifecycleScope.launch {
+                while (isActive) {
+                    refreshOpenTunnelPreferences()
+                    delay(1_000)
+                }
+            }
+        }
+
+        private fun refreshOpenTunnelPreferences() {
+            val context = context ?: return
+            val status = OpenTunnelController.status(context)
+            val registered = status.registered
+            val connected = status.connected
+            val unavailable = !OpenTunnelController.isAvailable
+
+            findPreference<ReadOnlyEditTextPreference>(OpenTunnelConfig.PREF_API_URL)?.apply {
+                summary = OpenTunnelConfig.apiUrl(context)
+                readOnly = registered || status.hasFiles
+            }
+
+            findPreference<Preference>("opentunnel_status")?.apply {
+                summary = when {
+                    unavailable -> OpenTunnelController.unavailableReason ?: "Unavailable"
+                    status.busy -> status.progressText()
+                    connected -> status.url ?: status.hostname ?: "Connected"
+                    status.state == OpenTunnelStatus.STATE_STOPPED -> status.progressText()
+                    !registered && status.hasFiles -> "Registration incomplete · not connected"
+                    !registered -> "Not registered"
+                    else -> "Registered · not connected"
+                }
+                // A live public URL can be shared; every other state is informational only.
+                isSelectable = connected && !status.url.isNullOrBlank()
+            }
+
+            findPreference<Preference>("opentunnel_action")?.apply {
+                // Progress lives in the status row, so only offer the action when it can run.
+                isVisible = !connected && !status.busy
+                isEnabled = !unavailable
+                if (registered) {
+                    title = "Connect"
+                    summary = "Connect this camera's registered tunnel"
+                } else {
+                    title = "Register"
+                    summary = "Create a public tunnel and connect"
+                }
+            }
+
+            findPreference<Preference>("opentunnel_disconnect")?.apply {
+                // Registered identities can be removed whether connected or not. Incomplete
+                // provisioning (e.g. a failed certificate request) can be cleared too.
+                isVisible = registered || status.hasFiles
+                isEnabled = !unavailable && status.state != OpenTunnelStatus.STATE_FORGETTING
+            }
         }
 
         override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

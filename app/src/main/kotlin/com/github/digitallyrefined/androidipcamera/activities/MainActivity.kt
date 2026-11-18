@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -25,13 +24,20 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
 import com.github.digitallyrefined.androidipcamera.StreamingService
 import com.github.digitallyrefined.androidipcamera.databinding.ActivityMainBinding
 import com.github.digitallyrefined.androidipcamera.helpers.ListenInterface
-import com.github.digitallyrefined.androidipcamera.helpers.RelayAssociation
 import com.github.digitallyrefined.androidipcamera.helpers.RtspServer
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelConfig
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelController
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelStatus
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -42,21 +48,9 @@ class MainActivity : AppCompatActivity() {
     private var hasRequestedPermissions = false
     private var userHiddenPreview = false
     private lateinit var noClientMessage: TextView
+    private lateinit var openTunnelText: TextView
+    private var openTunnelPollJob: Job? = null
     private lateinit var backGestureCallback: OnBackPressedCallback
-    /** Pairing details from an androidipcamera://associate intent, waiting for the service. */
-    private var pendingAssociation: RelayAssociation.PairingIntent? = null
-    private var associationInFlight = false
-
-    // The relay URL shown under the local URLs depends on whether this camera
-    // is still associated. The relay client clears the association from a
-    // background thread when the relay rejects the device, so refresh the
-    // preview when that flag changes.
-    private val relayPreferenceListener =
-        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == "relay_connected") {
-                runOnUiThread { updateIpAddressText() }
-            }
-        }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
@@ -101,9 +95,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             showNoClientMessage(!hasClients)
-
-            // An association intent may have arrived before the service was bound.
-            processPendingAssociation()
+            updateOpenTunnelText()
         }
 
         override fun onServiceDisconnected(arg0: ComponentName) {
@@ -147,8 +139,7 @@ class MainActivity : AppCompatActivity() {
         viewBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(viewBinding.root)
         noClientMessage = findViewById(R.id.noClientMessage)
-
-        captureAssociationIntent(intent)
+        openTunnelText = findViewById(R.id.openTunnelText)
 
         backGestureCallback = object : OnBackPressedCallback(false) {
             override fun handleOnBackPressed() {
@@ -226,8 +217,8 @@ class MainActivity : AppCompatActivity() {
         }
         // Refresh the IP address text in case the port was changed in settings
         updateIpAddressText()
-        PreferenceManager.getDefaultSharedPreferences(this)
-            .registerOnSharedPreferenceChangeListener(relayPreferenceListener)
+        updateOpenTunnelText()
+        startOpenTunnelPolling()
         checkNotificationChannelEnabled()
     }
 
@@ -248,23 +239,130 @@ class MainActivity : AppCompatActivity() {
         } else {
             ""
         }
-        val relayUrl = RelayAssociation.load(this)?.serverUrl
-        val tapToSetupRelayPressed = prefs.getBoolean(PREF_TAP_TO_SETUP_RELAY_PRESSED, false)
-        val showRelaySetupHint = relayUrl == null && !tapToSetupRelayPressed
-        if (showRelaySetupHint) {
-            ipAddressText.isClickable = true
-            ipAddressText.setOnClickListener {
-                prefs.edit().putBoolean(PREF_TAP_TO_SETUP_RELAY_PRESSED, true).apply()
-                updateIpAddressText()
-                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(RelayAssociation.FALLBACK_SERVER_URL)))
+        ipAddressText.text = "$protocol://$ipAddress:$port$rtspUrls"
+    }
+
+    private fun startOpenTunnelPolling() {
+        openTunnelPollJob?.cancel()
+        openTunnelPollJob = lifecycleScope.launch {
+            while (isActive) {
+                updateOpenTunnelText()
+                delay(1_000)
             }
-        } else {
-            ipAddressText.setOnClickListener(null)
-            ipAddressText.isClickable = false
         }
-        val baseText = "$protocol://$ipAddress:$port$rtspUrls"
-        val displayedRelayUrl = relayUrl ?: if (showRelaySetupHint) "Tap to setup optional cloud relay" else null
-        ipAddressText.text = if (displayedRelayUrl == null) baseText else "$baseText\n$displayedRelayUrl"
+    }
+
+    /**
+     * The OpenTunnel line under the local URLs:
+     *  - no identity yet: the setup hint, replaced by live progress after the first tap
+     *  - registered and connected: the public HTTPS URL, tap to share
+     *  - registered and connecting/reconnecting/failed: one line of status
+     */
+    private fun updateOpenTunnelText() {
+        if (!::openTunnelText.isInitialized) return
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val tapped = prefs.getBoolean(OpenTunnelConfig.PREF_TAPPED, false)
+        val status = if (isBound) {
+            streamingService?.openTunnelStatus() ?: OpenTunnelController.status(this)
+        } else {
+            OpenTunnelController.status(this)
+        }
+
+        val text: String?
+        var openUrl: String? = null
+        var connect = false
+        var setup = false
+        when {
+            status.connected && !status.url.isNullOrBlank() -> {
+                text = status.url
+                openUrl = status.url
+            }
+            status.registered && (status.busy || status.state == OpenTunnelStatus.STATE_STOPPED) -> {
+                text = status.progressText()
+                connect = !status.busy
+            }
+            !status.registered && tapped -> {
+                text = status.progressText()
+                // A failed or interrupted registration can be retried by tapping.
+                setup = !status.busy
+            }
+            !status.registered -> {
+                text = "Tap to setup optional remote access"
+                setup = true
+            }
+            else -> {
+                // Registered but idle: nothing useful to show until it is connected.
+                text = null
+            }
+        }
+
+        if (text.isNullOrBlank()) {
+            openTunnelText.visibility = View.GONE
+            openTunnelText.setOnClickListener(null)
+            openTunnelText.isClickable = false
+            return
+        }
+
+        openTunnelText.text = text
+        openTunnelText.visibility = if (userHiddenPreview) View.GONE else View.VISIBLE
+        val urlToOpen = openUrl
+        if (urlToOpen != null || connect || setup) {
+            openTunnelText.setOnClickListener(
+                if (urlToOpen != null) View.OnClickListener {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, urlToOpen)
+                    }
+                    try {
+                        startActivity(Intent.createChooser(send, "Share tunnel URL"))
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "Could not share $urlToOpen", Toast.LENGTH_SHORT).show()
+                    }
+                } else View.OnClickListener { onOpenTunnelTapped() }
+            )
+        } else {
+            openTunnelText.setOnClickListener(null)
+            openTunnelText.isClickable = false
+        }
+    }
+
+    private fun onOpenTunnelTapped() {
+        val problem = OpenTunnelConfig.credentialsProblem(this)
+        if (problem != null) {
+            Toast.makeText(this, problem, Toast.LENGTH_LONG).show()
+            startActivity(Intent(this, SettingsActivity::class.java))
+            return
+        }
+        if (!OpenTunnelController.isAvailable) {
+            Toast.makeText(
+                this,
+                OpenTunnelController.unavailableReason ?: "OpenTunnel is unavailable on this build",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        PreferenceManager.getDefaultSharedPreferences(this).edit()
+            .putBoolean(OpenTunnelConfig.PREF_TAPPED, true)
+            .apply()
+
+        val status = if (isBound) {
+            streamingService?.openTunnelStatus() ?: OpenTunnelController.status(this)
+        } else {
+            OpenTunnelController.status(this)
+        }
+        val action = if (status.registered) {
+            StreamingService.ACTION_OPEN_TUNNEL_CONNECT
+        } else {
+            StreamingService.ACTION_OPEN_TUNNEL_REGISTER
+        }
+        if (isBound && streamingService != null) {
+            if (status.registered) streamingService?.connectOpenTunnel()
+            else streamingService?.registerOpenTunnel()
+        } else {
+            startService(Intent(this, StreamingService::class.java).setAction(action))
+        }
+        updateOpenTunnelText()
     }
 
     private fun checkNotificationChannelEnabled() {
@@ -280,61 +378,17 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        PreferenceManager.getDefaultSharedPreferences(this)
-            .unregisterOnSharedPreferenceChangeListener(relayPreferenceListener)
+        openTunnelPollJob?.cancel()
+        openTunnelPollJob = null
         if (isBound) {
             streamingService?.setPreviewSurface(null)
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        captureAssociationIntent(intent)
-    }
-
-    private fun captureAssociationIntent(intent: Intent?) {
-        if (intent == null) return
-        // Some QR scanners (e.g. LineageOS) cannot open custom-scheme links and
-        // only offer to share the scanned text, so accept the link via
-        // ACTION_SEND as well as the normal VIEW deep link.
-        val sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
-            ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
-        val pairing = RelayAssociation.parseIntent(intent.data)
-            ?: RelayAssociation.parseSharedText(sharedText)
-            ?: return
-        // Consume the deep link/shared text so a configuration change does not
-        // replay the one-time pairing code.
-        intent.data = null
-        intent.removeExtra(Intent.EXTRA_TEXT)
-        intent.clipData = null
-        pendingAssociation = pairing
-        Log.i(TAG, "Association intent for ${pairing.serverUrl}")
-        processPendingAssociation()
-    }
-
-    /** Runs once the service is bound. */
-    private fun processPendingAssociation() {
-        val pairing = pendingAssociation ?: return
-        val service = streamingService
-        if (!isBound || service == null || associationInFlight) return
-        pendingAssociation = null
-        associationInFlight = true
-        Toast.makeText(this, "Connecting to relay…", Toast.LENGTH_SHORT).show()
-        service.associateRelay(pairing.serverUrl, pairing.code) { success, message ->
-            associationInFlight = false
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-            if (success) {
-                // The relay connection starts outbound; the local preview can go back to idle.
-                updateIpAddressText()
-            }
-            // An intent that arrived while this association was running.
-            processPendingAssociation()
-        }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
+        openTunnelPollJob?.cancel()
+        openTunnelPollJob = null
         if (isBound) {
             unbindService(connection)
             isBound = false
@@ -412,6 +466,7 @@ class MainActivity : AppCompatActivity() {
         val viewFinder = viewBinding.viewFinder
         val rootView = viewBinding.root
         val ipAddressText = findViewById<TextView>(R.id.ipAddressText)
+        val urlBar = findViewById<View>(R.id.urlBar)
         val settingsButton = findViewById<ImageButton>(R.id.settingsButton)
         val hidePreviewButton = findViewById<ImageButton>(R.id.hidePreviewButton)
         val exitButton = findViewById<ImageButton>(R.id.exitButton)
@@ -421,6 +476,7 @@ class MainActivity : AppCompatActivity() {
 
             viewFinder.visibility = View.INVISIBLE
             ipAddressText.visibility = View.GONE
+            urlBar.visibility = View.GONE
             settingsButton.visibility = View.GONE
             noClientMessage.visibility = View.GONE
             hidePreviewButton.visibility = View.GONE
@@ -440,9 +496,11 @@ class MainActivity : AppCompatActivity() {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
             ipAddressText.visibility = View.VISIBLE
+            urlBar.visibility = View.VISIBLE
             settingsButton.visibility = View.VISIBLE
             hidePreviewButton.visibility = View.VISIBLE
             exitButton.visibility = View.VISIBLE
+            updateOpenTunnelText()
 
             val hasClients = streamingService?.hasActiveClients() == true
 
@@ -492,7 +550,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val REQUEST_CODE_PERMISSIONS = 10
-        private const val PREF_TAP_TO_SETUP_RELAY_PRESSED = "tap_to_setup_relay_pressed"
         private val REQUIRED_PERMISSIONS = when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
                 Manifest.permission.CAMERA,

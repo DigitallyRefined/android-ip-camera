@@ -15,6 +15,7 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace 'com.github.digitallyrefined.androidipcamera'
     compileSdk 34
+    ndkVersion "27.2.12479018"
 
     defaultConfig {
         applicationId "com.github.digitallyrefined.androidipcamera"
@@ -79,6 +80,13 @@ android {
         }
     }
 
+    sourceSets {
+        main {
+            // Filled by buildOpenTunnelNative before the APK's JNI folders are merged.
+            jniLibs.srcDirs += ["${project.layout.buildDirectory.get().asFile}/rustJniLibs"]
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
@@ -122,6 +130,111 @@ tasks.whenTaskAdded { task ->
     }
 }
 
+// ---------------------------------------------------------------------------
+// Rust OpenTunnel client (JNI, arm64-v8a + armeabi-v7a)
+// ---------------------------------------------------------------------------
+def rustApiLevel = 24
+def rustCrateDir = rootProject.file("opentunnel-native")
+def rustJniDir = project.layout.buildDirectory.dir("rustJniLibs")
+def rustTargetDir = project.layout.buildDirectory.dir("rust-target")
+
+def rustAbis = [
+    [
+        taskSuffix: "Arm64",
+        abi: "arm64-v8a",
+        rustTarget: "aarch64-linux-android",
+        clang: "aarch64-linux-android${rustApiLevel}-clang",
+    ],
+    [
+        taskSuffix: "Armv7",
+        abi: "armeabi-v7a",
+        rustTarget: "armv7-linux-androideabi",
+        clang: "armv7a-linux-androideabi${rustApiLevel}-clang",
+    ],
+]
+
+def rustTaskNames = []
+rustAbis.each { abi ->
+    def taskName = "buildOpenTunnelNative${abi.taskSuffix}"
+    def rustTarget = abi.rustTarget
+    def abiName = abi.abi
+    def clangName = abi.clang
+    rustTaskNames << taskName
+
+    tasks.register(taskName, Exec) {
+        group = "build"
+        description = "Builds the Rust OpenTunnel JNI library for Android ${abiName}"
+        workingDir rustCrateDir
+
+        def ndk = android.ndkDirectory
+        // The NDK ships one prebuilt LLVM toolchain per host (darwin-x86_64,
+        // linux-x86_64, windows-x86_64). Pick whichever one this machine has.
+        def prebuiltParent = new File(ndk, "toolchains/llvm/prebuilt")
+        def prebuilt = prebuiltParent.listFiles()?.find { it.directory }
+        if (prebuilt == null) {
+            throw new GradleException("No NDK LLVM toolchain found under ${prebuiltParent}")
+        }
+        def clang = new File(prebuilt, "bin/${clangName}")
+        def ar = new File(prebuilt, "bin/llvm-ar")
+        def ranlib = new File(prebuilt, "bin/llvm-ranlib")
+
+        environment "CARGO_TARGET_DIR", rustTargetDir.get().asFile.absolutePath
+        environment "CARGO_TARGET_${rustTarget.replace('-', '_').toUpperCase()}_LINKER", clang.absolutePath
+        environment "CC_${rustTarget}", clang.absolutePath
+        environment "CC_${rustTarget.replace('-', '_')}", clang.absolutePath
+        environment "AR_${rustTarget}", ar.absolutePath
+        environment "AR_${rustTarget.replace('-', '_')}", ar.absolutePath
+        environment "RANLIB_${rustTarget}", ranlib.absolutePath
+        environment "RANLIB_${rustTarget.replace('-', '_')}", ranlib.absolutePath
+
+        commandLine "cargo", "build", "--release", "--target", rustTarget
+
+        doFirst {
+            [clang, ar, ranlib].each {
+                if (!it.exists()) {
+                    throw new GradleException("Missing NDK tool: ${it}")
+                }
+            }
+        }
+
+        inputs.files(fileTree(rustCrateDir) {
+            include "Cargo.toml", "Cargo.lock", "src/**"
+        })
+        inputs.property "rustTarget", rustTarget
+        inputs.property "rustApiLevel", rustApiLevel
+        outputs.dir(new File(rustJniDir.get().asFile, abiName))
+
+        doLast {
+            def source = new File(
+                new File(new File(rustTargetDir.get().asFile, rustTarget), "release"),
+                "libopentunnel_native.so"
+            ).toPath()
+            def destinationDir = new File(rustJniDir.get().asFile, abiName).toPath()
+            java.nio.file.Files.createDirectories(destinationDir)
+            java.nio.file.Files.copy(
+                source,
+                destinationDir.resolve("libopentunnel_native.so"),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING
+            )
+        }
+    }
+}
+
+tasks.register("buildOpenTunnelNative") {
+    group = "build"
+    description = "Builds the Rust OpenTunnel JNI library for all supported ABIs"
+    dependsOn rustTaskNames
+}
+
+// Cargo serializes access to its shared target directory; keep the builds ordered.
+tasks.named("buildOpenTunnelNativeArmv7").configure {
+    mustRunAfter "buildOpenTunnelNativeArm64"
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn "buildOpenTunnelNative"
+}
+
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
@@ -150,4 +263,6 @@ dependencies {
     implementation 'org.bouncycastle:bcpkix-jdk15on:1.70'
 
     testImplementation 'junit:junit:4.13.2'
+    // Real org.json implementation for JVM unit tests (Android only provides stubs).
+    testImplementation 'org.json:json:20240303'
 }
