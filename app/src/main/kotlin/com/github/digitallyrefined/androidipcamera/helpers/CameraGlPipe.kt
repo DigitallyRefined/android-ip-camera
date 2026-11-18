@@ -9,6 +9,7 @@ import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
@@ -64,6 +65,9 @@ class CameraGlPipe(
     @Volatile var rotation: Int = 0
     @Volatile var frameWidth: Int = 0
     @Volatile var frameHeight: Int = 0
+    /** Elapsed realtime of the last camera frame, see CameraXCapture.lastFrameAtMs. */
+    @Volatile var lastFrameAtMs = 0L
+        private set
     lateinit var surfaceTexture: SurfaceTexture
         private set
     lateinit var inputSurface: Surface
@@ -101,6 +105,7 @@ class CameraGlPipe(
                 applySecondaryRequest()
                 if (frameAvailable.compareAndSet(true, false)) {
                     surfaceTexture.updateTexImage()
+                    lastFrameAtMs = SystemClock.elapsedRealtime()
                     val timestamp = surfaceTexture.timestamp.takeIf { it > 0L } ?: System.nanoTime()
                     val sec = secondary
                     val mainDue = frameRateLimiter.shouldEmit(timestamp)

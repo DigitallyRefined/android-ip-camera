@@ -271,6 +271,17 @@ class H264StreamingEncoder(
         h264HardwareEncoder = encoder
     }
 
+    /**
+     * Hands the current encoder over without stopping it, for a caller that must stop it later: a
+     * Camera1 GL pipe keeps drawing into the encoder's surface until its preview stops.
+     */
+    fun detachEncoder(): H264HardwareEncoder? {
+        invalidatePendingWrites()
+        val enc = h264HardwareEncoder
+        h264HardwareEncoder = null
+        return enc
+    }
+
     private fun invalidatePendingWrites() {
         writerGeneration.incrementAndGet()
         networkWriter.queue.clear()

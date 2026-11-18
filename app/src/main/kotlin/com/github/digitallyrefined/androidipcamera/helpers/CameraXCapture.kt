@@ -7,6 +7,7 @@ import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -76,6 +77,9 @@ class CameraXCapture(
     /** True once the analysis stream has delivered at least one frame. The service uses this to spot
      *  a session that bound but never configured (no frames ever arrive) and fall back to Camera1. */
     @Volatile var hasProducedFrame = false
+        private set
+    /** Elapsed realtime of the last analysis frame, so the service can tell a stalled session from a live one. */
+    @Volatile var lastFrameAtMs = 0L
         private set
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var torchEnabled = false
@@ -151,6 +155,7 @@ class CameraXCapture(
                     .also { a -> a.setAnalyzer(analysisExec) { img ->
                         width = img.width; height = img.height
                         hasProducedFrame = true
+                        lastFrameAtMs = SystemClock.elapsedRealtime()
                         try {
                             val crop = img.cropRect
                             val nv21 = synchronized(nv21Lock) {

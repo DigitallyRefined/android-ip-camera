@@ -8,6 +8,7 @@ import android.media.MediaFormat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import androidx.camera.core.ImageProxy
@@ -47,6 +48,13 @@ class H264HardwareEncoder(
 
     /** Optional recording callback. Called with (annexBBytes, isKeyframe, presentationTimeUs). */
     @Volatile var onRecordFrame: ((ByteArray, Boolean, Long) -> Unit)? = null
+
+    /** Elapsed realtime of the last encoded output, so the service can tell a stalled encoder from a live one. */
+    @Volatile var lastOutputAtMs = 0L
+        private set
+    /** The drain loop ended on an error while the encoder still ran, so nothing comes out any more. */
+    @Volatile var drainFailed = false
+        private set
 
     @Volatile var hasSurfaceBeenProvided = false
     @Volatile private var isStopped = false
@@ -567,6 +575,7 @@ class H264HardwareEncoder(
                     val format = synchronized(codecLock) { codec.outputFormat }
                     cacheCodecSpecificData(format)
                 } else if (idx >= 0) {
+                    lastOutputAtMs = SystemClock.elapsedRealtime()
                     var prepared: H264ParameterSetCache.AccessUnit? = null
                     try {
                         val buf = synchronized(codecLock) { codec.getOutputBuffer(idx) }
@@ -600,7 +609,10 @@ class H264HardwareEncoder(
                 }
             }
         } catch (e: Exception) {
-            if (running) Log.e(TAG, "drain: ${e.message}")
+            if (running) {
+                Log.e(TAG, "drain: ${e.message}")
+                drainFailed = true
+            }
         }
     }
 
