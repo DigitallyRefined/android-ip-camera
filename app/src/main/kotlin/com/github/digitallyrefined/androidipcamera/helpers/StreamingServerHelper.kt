@@ -615,12 +615,8 @@ class StreamingServerHelper(
                     "<html><body>Error loading interface.</body></html>"
                 }
 
-                writer.print("HTTP/1.1 200 OK\r\n")
-                writer.print("Content-Type: text/html\r\n")
-                writer.print("Connection: close\r\n\r\n")
-                writer.print(htmlResponse)
-                writer.flush()
-                socket.close()
+                writeFixedResponse(writer, outputStream, "200 OK", "text/html; charset=utf-8", htmlResponse)
+                try { socket.close() } catch (_: Exception) {}
                 return
             }
 
@@ -640,9 +636,10 @@ class StreamingServerHelper(
                         return
                     }
                 }
-                writer.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
-                writer.print("{\"streaming\":${isStreamingEnabled()}}")
-                writer.flush()
+                writeFixedResponse(
+                    writer, outputStream, "200 OK", "application/json",
+                    "{\"streaming\":${isStreamingEnabled()}}"
+                )
                 try { socket.close() } catch (_: Exception) {}
                 return
             }
@@ -650,9 +647,10 @@ class StreamingServerHelper(
             if (!isStreamingEnabled() &&
                 (path.startsWith("/video") || path == "/audio" || path == "/audio/raw" || path == "/audio/upload")
             ) {
-                writer.print("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")
-                writer.print("Streaming is disabled. POST /control/start to re-enable.\r\n")
-                writer.flush()
+                writeFixedResponse(
+                    writer, outputStream, "503 Service Unavailable", "text/plain",
+                    "Streaming is disabled. POST /control/start to re-enable.\r\n"
+                )
                 try { socket.close() } catch (_: Exception) {}
                 return
             }
@@ -698,33 +696,21 @@ class StreamingServerHelper(
             // ---- Recording endpoints ----
             if (path == "/record/start" && requestParts[0] == "POST") {
                 val (_, status, json) = onRecordStart()
-                writer.print("HTTP/1.1 $status\r\n")
-                writer.print("Content-Type: application/json\r\n")
-                writer.print("Connection: close\r\n\r\n")
-                writer.print(json)
-                writer.flush()
+                writeFixedResponse(writer, outputStream, status, "application/json", json)
                 try { socket.close() } catch (_: Exception) {}
                 return
             }
 
             if (path == "/record/stop" && requestParts[0] == "POST") {
                 val (_, status, json) = onRecordStop()
-                writer.print("HTTP/1.1 $status\r\n")
-                writer.print("Content-Type: application/json\r\n")
-                writer.print("Connection: close\r\n\r\n")
-                writer.print(json)
-                writer.flush()
+                writeFixedResponse(writer, outputStream, status, "application/json", json)
                 try { socket.close() } catch (_: Exception) {}
                 return
             }
 
             if (path == "/record/status") {
                 val json = onRecordStatus()
-                writer.print("HTTP/1.1 200 OK\r\n")
-                writer.print("Content-Type: application/json\r\n")
-                writer.print("Connection: close\r\n\r\n")
-                writer.print(json)
-                writer.flush()
+                writeFixedResponse(writer, outputStream, "200 OK", "application/json", json)
                 try { socket.close() } catch (_: Exception) {}
                 return
             }
@@ -747,9 +733,8 @@ class StreamingServerHelper(
                     } catch (e: Exception) {
                         onLog("Error resetting camera prefs for $resetId: ${e.message}")
                     }
-                    writer.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK")
-                    writer.flush()
-                    socket.close()
+                    writeFixedResponse(writer, outputStream, "200 OK", "text/plain", "OK")
+                    try { socket.close() } catch (_: Exception) {}
                     return
                 }
 
@@ -757,19 +742,17 @@ class StreamingServerHelper(
                     if (key == "ts") return@forEach
                     onControlCommand(key, value, ts)
                 }
-                writer.print("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK")
-                writer.flush()
-                socket.close()
+                writeFixedResponse(writer, outputStream, "200 OK", "text/plain", "OK")
+                try { socket.close() } catch (_: Exception) {}
                 return
             }
 
             if (path == "/audio" || path == "/audio/raw") {
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    writer.print("HTTP/1.1 403 Forbidden\r\n")
-                    writer.print("Content-Type: text/plain\r\n")
-                    writer.print("Connection: close\r\n\r\n")
-                    writer.print("Microphone permission not granted.\r\n")
-                    writer.flush()
+                    writeFixedResponse(
+                        writer, outputStream, "403 Forbidden", "text/plain",
+                        "Microphone permission not granted.\r\n"
+                    )
                     try { socket.close() } catch (_: Exception) {}
                     return
                 }
@@ -886,20 +869,18 @@ class StreamingServerHelper(
                         }
                     }
                 } catch (sec: SecurityException) {
-                    writer.print("HTTP/1.1 403 Forbidden\r\n")
-                    writer.print("Content-Type: text/plain\r\n")
-                    writer.print("Connection: close\r\n\r\n")
-                    writer.print("Microphone permission not granted.\r\n")
-                    writer.flush()
+                    writeFixedResponse(
+                        writer, outputStream, "403 Forbidden", "text/plain",
+                        "Microphone permission not granted.\r\n"
+                    )
                     try { socket.close() } catch (_: Exception) {}
                 } catch (e: Exception) {
                     onLog("Audio stream error: ${e.message}")
                     try {
-                        writer.print("HTTP/1.1 500 Internal Server Error\r\n")
-                        writer.print("Content-Type: text/plain\r\n")
-                        writer.print("Connection: close\r\n\r\n")
-                        writer.print("Audio streaming failed.\r\n")
-                        writer.flush()
+                        writeFixedResponse(
+                            writer, outputStream, "500 Internal Server Error", "text/plain",
+                            "Audio streaming failed.\r\n"
+                        )
                     } catch (_: Exception) {
                     } finally {
                         try { socket.close() } catch (_: Exception) {}
@@ -930,14 +911,14 @@ class StreamingServerHelper(
 
             if (path == "/info.json") {
                 val info = buildDeviceInfo()
-                writer.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
-                writer.print(info.toJsonString()); writer.flush()
+                writeFixedResponse(writer, outputStream, "200 OK", "application/json", info.toJsonString())
                 try { socket.close() } catch (_: Exception) {}
                 return
             }
 
             if (path == "/video/h264") {
-                // Raw Annex-B H.264 elementary stream (hardware-encoded). Browser plays via jMuxer.
+                // Raw Annex-B H.264 elementary stream (hardware-encoded). The web UI decodes it
+                // with WebCodecs when TLS is enabled; media players can consume it directly.
                 if (handleMaxH264Clients(socket, isAuthenticated = enableAuth)) return
                 writer.print("HTTP/1.1 200 OK\r\n")
                 writer.print("Connection: keep-alive\r\n")
@@ -1091,6 +1072,7 @@ class StreamingServerHelper(
         contentLength: Int?,
         chunked: Boolean
     ) {
+        val outputStream = socket.getOutputStream()
         var headersSent = false
         try {
             ensureTalkWatchdog()
@@ -1116,11 +1098,7 @@ class StreamingServerHelper(
                 completed = clean && remaining <= 0
             }
             if (completed) {
-                writer.print("HTTP/1.1 200 OK\r\n")
-                writer.print("Connection: close\r\n")
-                writer.print("Content-Type: text/plain\r\n\r\n")
-                writer.print("OK\r\n")
-                writer.flush()
+                writeFixedResponse(writer, outputStream, "200 OK", "text/plain", "OK\r\n")
                 headersSent = true
             } else {
                 onLog("Talk: packet dropped (incomplete body)")
