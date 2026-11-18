@@ -42,6 +42,7 @@ class LocalRecorder(
     enum class Trigger(val suffix: String) {
         MANUAL("manual"),
         MOTION("motion"),
+        CONTINUOUS("continuous"),
     }
 
     companion object {
@@ -68,6 +69,8 @@ class LocalRecorder(
     private var outputUri: Uri? = null
     private var outputFile: File? = null
     private var pfd: ParcelFileDescriptor? = null
+    /** Path inside the recordings root while a clip is being written (YYYY/MM/DD/name.mp4). */
+    @Volatile private var relativePath: String = ""
 
     // --- Timestamp tracking ---
     /** First presentation timestamp from the encoder, used to normalize PTS to start at 0. */
@@ -88,6 +91,7 @@ class LocalRecorder(
             val now = Date()
             val folder = generateFolder(now)
             val filename = generateFilename(now)
+            relativePath = "$folder/$filename"
 
             try {
                 if (RecordingsHelper.customRoot(context) != null) {
@@ -206,6 +210,9 @@ class LocalRecorder(
         outputFile != null -> outputFile!!.absolutePath
         else -> ""
     }
+
+    /** Path relative to the recordings root while a clip is being written (null when idle). */
+    fun currentRelativePath(): String? = relativePath.takeIf { isRecording }
 
     /** JSON representation of the current recording status. */
     fun statusJson(): String = JSONObject().apply {
@@ -396,7 +403,7 @@ class LocalRecorder(
     private fun generateFolder(date: Date): String =
         SimpleDateFormat("yyyy/MM/dd", Locale.US).format(date)
 
-    /** File name inside the folder: YYYY-MM-DD-HHMMSS-<manual|motion>.mp4. */
+    /** File name inside the folder: YYYY-MM-DD-HHMMSS-<manual|motion|continuous>.mp4. */
     private fun generateFilename(date: Date): String =
         SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(date) + "-${trigger.suffix}.mp4"
 }
