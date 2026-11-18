@@ -58,17 +58,36 @@
             android:contentDescription="Exit App" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/ipAddressText"
+    <LinearLayout
+        android:id="@+id/urlBar"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginBottom="16dp"
         android:layout_marginStart="16dp"
-        android:textSize="16sp"
-        android:textColor="#FFFFFF"
-        android:background="#80000000"
-        android:padding="8dp"
+        android:orientation="vertical"
+        android:gravity="start"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
+        app:layout_constraintStart_toStartOf="parent">
+
+        <TextView
+            android:id="@+id/ipAddressText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="16sp"
+            android:textColor="#FFFFFF"
+            android:background="#80000000"
+            android:padding="8dp" />
+
+        <TextView
+            android:id="@+id/openTunnelText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="16sp"
+            android:textColor="#FFFFFF"
+            android:background="#80000000"
+            android:padding="8dp"
+            android:visibility="gone" />
+    </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

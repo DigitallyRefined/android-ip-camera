@@ -20,6 +20,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
@@ -35,6 +36,10 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.helpers.*
+import com.github.digitallyrefined.androidipcamera.opentunnel.LocalTlsBridge
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelConfig
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelController
+import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -81,6 +86,10 @@ class StreamingService : LifecycleService() {
 
     /** Motion detection is on: the camera must keep delivering frames even with no viewer. */
     private fun motionEnabled(): Boolean = motionMonitor?.enabled == true
+
+    /** Loopback TLS bridge used when the local web server speaks HTTPS and OpenTunnel forwards plain HTTP. */
+    @Volatile private var openTunnelBridge: LocalTlsBridge? = null
+    private val openTunnelLock = Any()
 
     @Volatile private var glPipe: CameraGlPipe? = null          // Camera1 H.264 GL pipe
     @Volatile private var cameraXGlPipe: CameraGlPipe? = null   // CameraX H.264 GL pipe
@@ -199,6 +208,9 @@ class StreamingService : LifecycleService() {
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
         const val ACTION_START_SERVER = "com.github.digitallyrefined.androidipcamera.START_SERVER"
+        const val ACTION_OPEN_TUNNEL_REGISTER = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_REGISTER"
+        const val ACTION_OPEN_TUNNEL_CONNECT = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_CONNECT"
+        const val ACTION_OPEN_TUNNEL_FORGET = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_FORGET"
     }
 
     inner class LocalBinder : Binder() { fun getService(): StreamingService = this@StreamingService }
@@ -218,6 +230,9 @@ class StreamingService : LifecycleService() {
             ACTION_RESTART_NOTIFICATION ->
                 if (!startForegroundService()) { stopSelf(); return START_NOT_STICKY }
             ACTION_RESTART_SERVER -> if (ensureForegroundTypes()) restartServer()
+            ACTION_OPEN_TUNNEL_REGISTER -> { registerOpenTunnel(); return START_STICKY }
+            ACTION_OPEN_TUNNEL_CONNECT -> { connectOpenTunnel(); return START_STICKY }
+            ACTION_OPEN_TUNNEL_FORGET -> { forgetOpenTunnel(); return START_STICKY }
             // Cold start with no activity bound (e.g. from BootReceiver): the activity normally
             // calls startStreamingServer() after binding, so start it here instead.
             ACTION_START_SERVER -> if (whileInUseForegroundAllowed) startStreamingServer()
@@ -240,6 +255,7 @@ class StreamingService : LifecycleService() {
 
     private fun restartServer() {
         lifecycleScope.launch(Dispatchers.IO) {
+            stopOpenTunnel()
             streamingServerHelper?.stopServer()
             rtspServer?.stop()
             stopOnvif()
@@ -247,6 +263,7 @@ class StreamingService : LifecycleService() {
             streamingServerHelper?.startStreamingServer()
             startRtspServerIfEnabled()
             startOnvifIfEnabled()
+            autoConnectOpenTunnel()
         }
     }
 
@@ -310,6 +327,7 @@ class StreamingService : LifecycleService() {
         rtspServer?.let { server -> Thread { server.stop() }.start() }
         motionMonitor?.detector?.reset()
         stopOnvif()
+        stopOpenTunnel()
         releaseStreamingWakeLock()
         lifecycleScope.launch(Dispatchers.IO) { streamingServerHelper?.stopStreamingServer() }
     }
@@ -489,6 +507,125 @@ class StreamingService : LifecycleService() {
         }
     }
 
+    // ---------------- OpenTunnel (public HTTPS URL) ----------------
+
+    fun openTunnelStatus(): OpenTunnelStatus = OpenTunnelController.status(this)
+
+    /** Create the tunnel identity if needed, then connect. */
+    fun registerOpenTunnel() {
+        lifecycleScope.launch(Dispatchers.IO) { startOpenTunnel(createIfNeeded = true) }
+    }
+
+    /** Connect an already registered identity. */
+    fun connectOpenTunnel() {
+        lifecycleScope.launch(Dispatchers.IO) { startOpenTunnel(createIfNeeded = false) }
+    }
+
+    /** Disconnect and delete every saved OpenTunnel file (and the tunnel on the server). */
+    fun forgetOpenTunnel() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            synchronized(openTunnelLock) {
+                openTunnelBridge?.stop()
+                openTunnelBridge = null
+            }
+            OpenTunnelController.forget(this@StreamingService)
+            toastOnMain("Disconnecting OpenTunnel and deleting its files…")
+        }
+    }
+
+    private fun startOpenTunnel(createIfNeeded: Boolean) {
+        val problem = OpenTunnelConfig.credentialsProblem(this)
+        if (problem != null) {
+            toastOnMain(problem)
+            return
+        }
+        if (!OpenTunnelController.isAvailable) {
+            toastOnMain(OpenTunnelController.unavailableReason ?: "OpenTunnel is unavailable on this build")
+            return
+        }
+
+        val status = OpenTunnelController.status(this)
+        if (!createIfNeeded && !status.registered) {
+            toastOnMain("Register OpenTunnel first")
+            return
+        }
+        // Already connected, or a registration/connection is already in progress.
+        if (status.connected || status.busy) return
+
+        val target = openTunnelTarget() ?: return
+        if (!OpenTunnelController.start(this, target)) {
+            synchronized(openTunnelLock) {
+                openTunnelBridge?.stop()
+                openTunnelBridge = null
+            }
+            val failure = OpenTunnelController.status(this).error
+            toastOnMain(failure ?: "Could not start OpenTunnel")
+        }
+    }
+
+    /** Runs on a background dispatcher. Reconnects only when already registered. */
+    private fun autoConnectOpenTunnel() {
+        if (!OpenTunnelController.isAvailable) return
+        if (OpenTunnelConfig.credentialsProblem(this) != null) return
+        val status = OpenTunnelController.status(this)
+        if (!status.registered || status.connected || status.busy) return
+        startOpenTunnel(createIfNeeded = false)
+    }
+
+    /**
+     * Builds the route target for the local web server. OpenTunnel terminates
+     * the public TLS connection and forwards plain TCP, so an HTTPS local
+     * server needs the loopback TLS bridge.
+     */
+    private fun openTunnelTarget(): String? {
+        synchronized(openTunnelLock) {
+            openTunnelBridge?.stop()
+            openTunnelBridge = null
+
+            val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+            val port = prefs.getString("server_port", null)?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 4444
+            val host = ListenInterface.specificIpv4(this) ?: "127.0.0.1"
+            if (!TlsHelper.isEnabled(this)) return formatHostPort(host, port)
+
+            val configuredVersion = TlsHelper.tlsVersion(this)
+            val actualVersion = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && configuredVersion != "1.2") {
+                // TlsHelper falls back to TLS 1.2 on Android 9 and older.
+                "1.2"
+            } else {
+                configuredVersion
+            }
+            return try {
+                val bridge = LocalTlsBridge(host, port, actualVersion) { message ->
+                    Log.i(TAG, "OpenTunnel: $message")
+                }
+                bridge.start()
+                openTunnelBridge = bridge
+                "127.0.0.1:${bridge.port}"
+            } catch (e: Exception) {
+                Log.e(TAG, "OpenTunnel local TLS bridge failed", e)
+                toastOnMain("OpenTunnel could not reach the local HTTPS server: ${e.message}")
+                null
+            }
+        }
+    }
+
+    private fun formatHostPort(host: String, port: Int): String =
+        if (host.contains(':')) "[$host]:$port" else "$host:$port"
+
+    private fun stopOpenTunnel() {
+        OpenTunnelController.disconnect()
+        synchronized(openTunnelLock) {
+            openTunnelBridge?.stop()
+            openTunnelBridge = null
+        }
+    }
+
+    private fun toastOnMain(message: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun initServer() {
         if (streamingServerHelper == null) {
             streamingServerHelper = StreamingServerHelper(
@@ -536,6 +673,8 @@ class StreamingService : LifecycleService() {
         startOnvifIfEnabled()
         // Motion detection persisted as on keeps the camera running with no viewer.
         if (motionEnabled()) launchMain { startCameraIfNeeded() }
+        // Reconnect a registered tunnel whenever the app/server starts again.
+        lifecycleScope.launch(Dispatchers.IO) { autoConnectOpenTunnel() }
     }
 
     /** Starts (or stops) the RTSP server to match the RTSP/ONVIF setting. ONVIF is enabled by the

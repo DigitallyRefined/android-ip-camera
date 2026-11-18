@@ -44,6 +44,9 @@
     native <methods>;
 }
 
+# JNI resolves this class and its methods by their exact names.
+-keep class com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelNative { *; }
+
 # Keep custom view constructors
 -keepclasseswithmembers class * {
     public <init>(android.content.Context, android.util.AttributeSet);

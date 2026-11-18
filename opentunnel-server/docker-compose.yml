@@ -1,0 +1,92 @@
+name: tunnel-server
+
+# A self-hosted OpenTunnel server, exposed directly (no reverse proxy).
+#
+# It replaces opentunnel.xyz: anyone may point the CLI or an SDK at
+# https://<domain> and gets a random <id>.<domain> hostname that tunnels to their
+# machine. No accounts, public by design.
+#
+# The server does the routing itself: it terminates TLS for the API domain, reads
+# the hostname out of every other TLS connection, and hands that connection to the
+# client that claimed it.
+#
+#   443 -> 8443  the API, the bridge WebSocket, the website, and every tunnel
+#   80  -> 8080  /health, and a 301 to https://<domain> for everything else
+#
+# Using an existing Traefik instead? Add the override file, base first:
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
+# This file holds everything the two stacks share; the Traefik file only changes
+# what Traefik needs.
+
+services:
+  opentunnel:
+    # Upstream publishes CLI binaries only, so the server is built from its
+    # Dockerfile. Pin a release tag; a cold build takes a few minutes.
+    build:
+      context: https://github.com/anomalyco/opentunnel.git#v0.6.2
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    # Both containers read .env: the API domain, ACME and database settings live
+    # there and nowhere else. The Traefik override's labels read it too.
+    env_file:
+      - .env
+    environment:
+      # Static settings. Everything that varies per install is in .env.
+      TLS_LISTEN: 0.0.0.0:8443
+      HTTP_LISTEN: 0.0.0.0:8080
+      # Port 80 only redirects; the app itself is served over TLS.
+      # (The Traefik override changes this to `serve`: Traefik already has TLS.)
+      HTTP_MODE: redirect
+      # Nothing decrypts or rewrites the connections first.
+      PROXY_PROTOCOL: "false"
+      TRUSTED_PROXY_RANGES: off
+
+      # MySQL 8 (loopback exempt from TLS; this is a container, so require it).
+      DATABASE_URL: mysql://opentunnel:${MYSQL_PASSWORD}@mysql:3306/opentunnel?ssl-mode=REQUIRED
+
+      # Certificates for the tunnel hostnames and for the API domain itself.
+      # Every ACME CA used by this server needs external account binding, which
+      # is why it defaults to ZeroSSL.
+      ISSUER: acme
+      # DNS-01 challenges are the only way to get a wildcard certificate. For a
+      # provider other than Cloudflare, set DNS_PROVIDER=exec and DNS_HOOK to a
+      # script in this image; see the README.
+      DNS_PROVIDER: cloudflare
+
+      LOG_FORMAT: json
+
+    ports:
+      # Publicly reachable, including https://<API domain>.
+      # The Traefik override resets this: Traefik publishes the ports instead.
+      - "443:8443"
+      - "80:8080"
+    networks:
+      - tunnel-server
+
+  mysql:
+    # Tunnels, tokens (hashed), certificate state and issuance jobs.
+    image: mysql:8.4
+    restart: unless-stopped
+    command: --max-connections=200
+    env_file:
+      - .env
+    environment:
+      MYSQL_DATABASE: opentunnel
+      MYSQL_USER: opentunnel
+    volumes:
+      - ./mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks:
+      - tunnel-server
+
+networks:
+  # One ordinary network: the server needs outbound access for ACME and the DNS
+  # API, and MySQL publishes nothing. (Traefik override: made internal.)
+  tunnel-server: {}

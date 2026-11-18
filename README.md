@@ -31,22 +31,11 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🛰️ Optional ONVIF camera mode with WS-Discovery, snapshots and motion events for UniFi Protect, Home Assistant and other NVRs
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
+* ☁️ Optionally connect your device to a hosted or [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server) cloud [OpenTunnel](https://github.com/anomalyco/opentunnel) server for remote access when you're not on your home/work network
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
 * 🛂 Username and password protection
 * 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS/RTSPS
 * 🥾 Optional start on boot
-
-## 🔓 Why open source
-
-Other similar IP camera apps exist, but most are closed source. You cannot verify that they keep video on the device, that they never send recordings to someone else, or that security issues get fixed. With this app you can.
-
-This app is open source so you do not have to take its privacy claims on trust. The code that controls the camera, encodes video and handles logins is in this repository. You can read it, build it and compare it with the APK you install.
-
-By default, video stays on your local network. The phone serves the stream and the recordings directly to the clients you point at it. Nothing leaves your network. Recordings are written to the phone, not uploaded anywhere.
-
-Logins and streams are protected by username and password authentication across the web, RTSP and ONVIF endpoints. When TLS is enabled, the same certificate encrypts all three. You can check how credentials and certificates are handled in the source instead of trusting a privacy policy.
-
-The F-Droid release is built from this same source, and the [reproducible build workflow](https://github.com/DigitallyRefined/android-ip-camera/actions/workflows/reproducible-build.yml) checks a clean rebuild against it.
 
 ## ⚠️ Warning
 
@@ -141,7 +130,45 @@ cameras:
             - detect
 ```
 
-## Server URL Paths & Remote Control API
+## 🌐 Remote access with OpenTunnel
+
+The app can publish its local web server through [OpenTunnel](https://github.com/anomalyco/opentunnel) as a public HTTPS URL, without opening a port on your router. OpenTunnel is a blind TLS tunnel: the certificate's private key stays on the phone.
+
+1. Set a **Username** and **Password** in the app settings and keep **Enable Authentication** on. The tunnel refuses to start without both, because its URL is public.
+2. In **Settings > Remote Access (OpenTunnel)**, leave the server at `https://opentunnel.xyz` or enter a [self-hosted OpenTunnel server](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server).
+3. Tap **Register**. The first run creates the tunnel identity and waits for a certificate; this can take a minute or two. The main screen shows one line of progress while it happens.
+4. Once connected, the main screen shows the public `https://…` URL. Tap it to open the camera in a browser.
+
+The identity, generated certificate, route config and runtime log are stored in the app's private files under `files/opentunnel/{config,data,state}`. **Disconnect & disassociate** removes the tunnel from the server and deletes all of those files; the URL cannot be recovered afterwards. A registered tunnel reconnects automatically while the app is running. The OpenTunnel client is built into the APK for **arm64-v8a** and **armeabi-v7a**.
+
+## 🔐 HTTPS/TLS certificates
+
+To protect the stream and the password from being sent in plain-text, a certificate can be used to start the web stream over HTTPS.
+
+When TLS is enabled, the **same certificate** is also used by the RTSP (`rtsps://`) and ONVIF (`https://`) endpoints. If the certificate cannot be loaded, those servers refuse to start rather than falling back to plaintext.
+
+The app will automatically generate a self-signed certificate on first launch, but if you have your own domain you can use [Let's Encrypt](https://letsencrypt.org) to generate a trusted certificate and skip the self-signed security warning message, by changing the TLS certificate in the settings.
+
+To generate a new self-signed certificate, clear the app settings and restart or clone this repo and run `./scripts/generate-certificate.sh` then use the certificate `personal_certificate.p12` file it generates.
+
+## 🔓 Why open source
+
+Other similar IP camera apps exist, but most are closed source. You cannot verify that they keep video on the device, that they never send recordings to someone else, or that security issues get fixed. With this app you can.
+
+This app is open source so you do not have to take its privacy claims on trust. The code that controls the camera, encodes video and handles logins is in this repository. You can read it, build it and compare it with the APK you install.
+
+By default, video stays on your local network. The phone serves the stream and the recordings directly to the clients you point at it. Nothing leaves your network. Recordings are written to the phone, not uploaded anywhere.
+
+Logins and streams are protected by username and password authentication across the web, RTSP and ONVIF endpoints. When TLS is enabled, the same certificate encrypts all three. You can check how credentials and certificates are handled in the source instead of trusting a privacy policy.
+
+The F-Droid release is built from this same source, and the [reproducible build workflow](https://github.com/DigitallyRefined/android-ip-camera/actions/workflows/reproducible-build.yml) checks a clean rebuild against it.
+
+## 🤖 AI generated code disclaimer
+
+Some of the code in this repository may be generated with the assistance of AI tools. All changes are reviewed and tested on a real device with a human in the loop before being released.
+
+<details>
+<summary>Server URL Paths & Remote Control API</summary>
 
 When the streaming server is running (default port `4444`, via `https://` or `http://` depending on TLS configuration), you can access the following endpoints:
 
@@ -285,17 +312,10 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `api=<auto|camerax|camera1>`: Prefer capture API implementation.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
 
-## 🔐 HTTPS/TLS certificates
+</details>
 
-To protect the stream and the password from being sent in plain-text, a certificate can be used to start the web stream over HTTPS.
-
-When TLS is enabled, the **same certificate** is also used by the RTSP (`rtsps://`) and ONVIF (`https://`) endpoints. If the certificate cannot be loaded, those servers refuse to start rather than falling back to plaintext.
-
-The app will automatically generate a self-signed certificate on first launch, but if you have your own domain you can use [Let's Encrypt](https://letsencrypt.org) to generate a trusted certificate and skip the self-signed security warning message, by changing the TLS certificate in the settings.
-
-To generate a new self-signed certificate, clear the app settings and restart or clone this repo and run `./scripts/generate-certificate.sh` then use the certificate `personal_certificate.p12` file it generates.
-
-## 🛂 Permissions
+<details>
+<summary>Permissions</summary>
 
 The app uses the following permissions to function:
 
@@ -307,9 +327,7 @@ The app uses the following permissions to function:
 * **Wi-Fi & Location (`android.permission.ACCESS_WIFI_STATE`, `android.permission.ACCESS_FINE_LOCATION`, `android.permission.ACCESS_COARSE_LOCATION`, `android.permission.NEARBY_WIFI_DEVICES`):** Used optionally to read the current Wi-Fi network's connection signal strength so it can be displayed in the web control panel overlay. If not granted, the Wi-Fi icon will be hidden. (Location permissions only apply to Android 12L / API 32 and below.)
 * **Start on boot (`android.permission.RECEIVE_BOOT_COMPLETED`):** Allows the app to optionally offer to start streaming after the device boots. This feature is off by default and must be enabled in the app settings. On Android 14 and newer the app posts a notification after boot and streaming starts when it is tapped, because Android only allows the camera/microphone foreground service to start while the app is in the foreground.
 
-## 🤖 AI generated code disclaimer
-
-Some of the code in this repository may be generated with the assistance of AI tools. All changes are reviewed and tested on a real device with a human in the loop before being released.
+</details>
 
 <details>
 <summary>Reproducible builds</summary>
@@ -322,11 +340,13 @@ This project uses [reproducible builds](https://f-droid.org/docs/Reproducible_Bu
 
 The release variant will automatically sign the APK build. Build-tools 35+ is known to produce signatures that fail reproducibility verification.
 
+The OpenTunnel client is compiled from `opentunnel-native` by the Gradle build, so a local build also needs the Android NDK `27.2.12479018` and a Rust toolchain with the `aarch64-linux-android` and `armv7-linux-androideabi` targets. The Docker builder installs both.
+
 You can also build the debug or signed release APKs with Docker: `docker build -t android-ip-camera:builder .` then `docker run --rm -v "$PWD":/workspace -v "$PWD/.cache/gradle":/cache/gradle android-ip-camera:builder debug` (or `release` to build with a signing key). See the [Dockerfile](Dockerfile) for caching and advanced usage.
 
 ### Build Variants
 
-By default, release builds generate architecture-specific APK splits (armeabi-v7a, arm64-v8a) in addition to a universal APK. For F-Droid and other scenarios where a single universal APK is preferred, you can disable ABI splits:
+By default, release builds generate architecture-specific APK splits for `arm64-v8a` and `armeabi-v7a` (the Rust OpenTunnel client is built for both) in addition to a universal APK. For F-Droid and other scenarios where a single universal APK is preferred, you can disable ABI splits:
 
 **F-Droid builds (single universal APK):**
 ```bash
