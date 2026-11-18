@@ -5,6 +5,10 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.StatFs
+import android.os.storage.StorageManager
+import android.os.storage.StorageVolume
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
@@ -49,6 +53,63 @@ object RecordingsHelper {
     class OpenRecording(val stream: InputStream, val sizeBytes: Long)
 
     enum class DeleteResult { DELETED, NOT_FOUND, FAILED }
+
+    /** Space on the drive that holds the recordings folder. */
+    data class StorageUsage(val totalBytes: Long, val availableBytes: Long) {
+        val usedBytes: Long get() = (totalBytes - availableBytes).coerceAtLeast(0L)
+        val usedPercent: Double get() = if (totalBytes > 0) usedBytes * 100.0 / totalBytes else 0.0
+    }
+
+    /**
+     * Bytes that must be freed before [limitPercent] of the drive is in use. Returns 0 while the
+     * drive is below the limit. Pure so the policy is easy to test.
+     */
+    fun bytesToFree(totalBytes: Long, availableBytes: Long, limitPercent: Int): Long {
+        if (totalBytes <= 0) return 0
+        val limit = limitPercent.coerceIn(1, 99)
+        val keepFree = totalBytes * (100 - limit) / 100
+        return (keepFree - availableBytes).coerceAtLeast(0L)
+    }
+
+    fun shouldTrim(totalBytes: Long, availableBytes: Long, limitPercent: Int): Boolean =
+        bytesToFree(totalBytes, availableBytes, limitPercent) > 0
+
+    /** Total and free space of the drive holding the configured recordings folder, or null. */
+    fun storageUsage(context: Context): StorageUsage? {
+        val root = storageRoot(context) ?: return null
+        return try {
+            val stat = StatFs(root.absolutePath)
+            val total = stat.blockCountLong * stat.blockSizeLong
+            val available = stat.availableBlocksLong * stat.blockSizeLong
+            if (total > 0) StorageUsage(total, available) else null
+        } catch (e: Exception) {
+            Log.w(TAG, "storageUsage failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Deletes the oldest recordings until the drive is below [limitPercent] used, or until no
+     * recordings are left. [activePath] supplies the clip currently being written (if any), which
+     * is never deleted. Returns the number of files deleted.
+     */
+    fun trimOldest(context: Context, limitPercent: Int, activePath: () -> String? = { null }): Int {
+        val usage = storageUsage(context) ?: return 0
+        if (!shouldTrim(usage.totalBytes, usage.availableBytes, limitPercent)) return 0
+        var deleted = 0
+        for (file in oldestFiles(context)) {
+            if (file.path == activePath()) continue
+            // Re-read after every delete: the freed space is what decides when to stop, and it
+            // avoids relying on file sizes that some storage providers report as 0.
+            val now = storageUsage(context) ?: break
+            if (!shouldTrim(now.totalBytes, now.availableBytes, limitPercent)) break
+            if (delete(context, file.path) == DeleteResult.DELETED) deleted++
+        }
+        if (deleted > 0) {
+            Log.i(TAG, "Deleted $deleted oldest recording(s); drive was ${"%.1f".format(usage.usedPercent)}% full")
+        }
+        return deleted
+    }
 
     /** Returns the user-chosen folder tree URI, or null when the default location is used. */
     fun customStorageUri(context: Context): Uri? {
@@ -138,6 +199,135 @@ object RecordingsHelper {
                 ?: return null
         }
         return current
+    }
+
+    // ---- Storage housekeeping ----
+
+    private data class StoredFile(val path: String, val sizeBytes: Long, val modifiedMs: Long)
+
+    /** Root path of the volume that holds the recordings (default storage or the SAF volume). */
+    private fun storageRoot(context: Context): File? {
+        val uri = customStorageUri(context) ?: return Environment.getExternalStorageDirectory()
+        val docId = try {
+            DocumentsContract.getTreeDocumentId(uri)
+        } catch (e: Exception) {
+            Log.w(TAG, "Cannot resolve custom folder document id: ${e.message}")
+            return null
+        }
+        val volumeId = docId.substringBefore(':')
+        val manager = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager ?: return null
+        val volume = try {
+            manager.storageVolumes.firstOrNull { (it.uuid ?: "primary").equals(volumeId, ignoreCase = true) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Cannot enumerate storage volumes: ${e.message}")
+            null
+        }
+        return volumeRoot(volume)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun volumeRoot(volume: StorageVolume?): File? {
+        if (volume == null) return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) return volume.directory
+        // StorageVolume.getDirectory() only exists on API 30+; older releases expose getPathFile().
+        return try {
+            val method = StorageVolume::class.java.getMethod("getPathFile")
+            method.invoke(volume) as? File
+        } catch (e: Exception) {
+            Log.w(TAG, "Cannot resolve storage volume path: ${e.message}")
+            null
+        }
+    }
+
+    private fun oldestFiles(context: Context): List<StoredFile> = when {
+        customRoot(context) != null -> customFiles(context)
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> mediaStoreFiles(context)
+        else -> legacyFiles()
+    }.sortedBy { it.modifiedMs }
+
+    private fun customFiles(context: Context): List<StoredFile> {
+        val root = customRoot(context) ?: return emptyList()
+        val out = mutableListOf<StoredFile>()
+
+        fun walk(folder: DocumentFile, prefix: String) {
+            val children = try {
+                folder.listFiles()
+            } catch (_: Exception) {
+                return
+            }
+            for (child in children) {
+                val name = child.name?.takeIf { isValidFileName(it) } ?: continue
+                val path = if (prefix.isEmpty()) name else "$prefix/$name"
+                if (child.isDirectory) {
+                    walk(child, path)
+                } else if (child.isFile && name.endsWith(".mp4", ignoreCase = true)) {
+                    out.add(StoredFile(path, safeSize(child), safeLastModified(child)))
+                }
+            }
+        }
+
+        walk(root, "")
+        return out
+    }
+
+    private fun mediaStoreFiles(context: Context): List<StoredFile> {
+        val root = relativePath.trimEnd('/')
+        val out = mutableListOf<StoredFile>()
+        val selection = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Video.Media.IS_PENDING}=0"
+        try {
+            context.contentResolver.query(
+                mediaStoreCollection(),
+                arrayOf(
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    MediaStore.Video.Media.SIZE,
+                    MediaStore.Video.Media.DATE_MODIFIED,
+                    MediaStore.Video.Media.RELATIVE_PATH
+                ),
+                selection,
+                arrayOf("$root%"),
+                null
+            )?.use { c ->
+                val nameCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+                val sizeCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+                val modifiedCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
+                val pathCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
+                while (c.moveToNext()) {
+                    val rowPath = c.getString(pathCol)?.trimEnd('/') ?: continue
+                    if (rowPath != root && !rowPath.startsWith("$root/")) continue
+                    val name = c.getString(nameCol) ?: continue
+                    if (!isValidFileName(name) || !name.endsWith(".mp4", ignoreCase = true)) continue
+                    val relDir = rowPath.removePrefix(root).trim('/')
+                    val path = if (relDir.isEmpty()) name else "$relDir/$name"
+                    out.add(StoredFile(path, c.getLong(sizeCol), c.getLong(modifiedCol) * 1000L))
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "oldestFiles failed: ${e.message}")
+        }
+        return out
+    }
+
+    private fun legacyFiles(): List<StoredFile> {
+        val out = mutableListOf<StoredFile>()
+
+        fun walk(dir: File, prefix: String) {
+            val children = try {
+                dir.listFiles()
+            } catch (_: Exception) {
+                null
+            } ?: return
+            for (child in children) {
+                if (!isValidFileName(child.name)) continue
+                val path = if (prefix.isEmpty()) child.name else "$prefix/${child.name}"
+                if (child.isDirectory) walk(child, path)
+                else if (child.isFile && child.name.endsWith(".mp4", ignoreCase = true)) {
+                    out.add(StoredFile(path, child.length(), child.lastModified()))
+                }
+            }
+        }
+
+        walk(legacyRoot(), "")
+        return out
     }
 
     // ---- Custom folder (Storage Access Framework / SD card) ----

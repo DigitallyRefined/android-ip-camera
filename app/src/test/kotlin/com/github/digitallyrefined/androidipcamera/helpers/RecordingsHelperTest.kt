@@ -50,4 +50,31 @@ class RecordingsHelperTest {
         assertNull(RecordingsHelper.normalizeRelativePath("2026\\11\\09\\clip.mp4"))
         assertNull(RecordingsHelper.normalizeRelativePath("2026/11/09/bad\u0000name.mp4"))
     }
+
+    @Test
+    fun `storage cleanup leaves space below the limit alone`() {
+        // 100 GB drive, 20 GB free: 80% used, below the default 90% limit.
+        assertEquals(0L, RecordingsHelper.bytesToFree(100_000_000_000, 20_000_000_000, 90))
+        assertFalse(RecordingsHelper.shouldTrim(100_000_000_000, 20_000_000_000, 90))
+    }
+
+    @Test
+    fun `storage cleanup targets the free space needed at the limit`() {
+        // 100 GB drive, 5 GB free at 95% used: keep 10 GB free, so free 5 GB.
+        assertEquals(5_000_000_000L, RecordingsHelper.bytesToFree(100_000_000_000, 5_000_000_000, 90))
+        assertTrue(RecordingsHelper.shouldTrim(100_000_000_000, 5_000_000_000, 90))
+    }
+
+    @Test
+    fun `storage cleanup treats a full drive as needing all recordings gone`() {
+        assertEquals(10_000_000_000L, RecordingsHelper.bytesToFree(100_000_000_000, 0, 90))
+        assertEquals(0L, RecordingsHelper.bytesToFree(0, 0, 90))
+    }
+
+    @Test
+    fun `storage limit is clamped to a sane range`() {
+        // Below 1% clamps to 1 (keep 99% free); above 99 clamps to 99 (keep 1% free).
+        assertEquals(98L, RecordingsHelper.bytesToFree(100, 1, -5))
+        assertEquals(1L, RecordingsHelper.bytesToFree(100, 0, 200))
+    }
 }

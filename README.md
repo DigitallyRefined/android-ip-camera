@@ -141,6 +141,55 @@ The app can publish its local web server through [OpenTunnel](https://github.com
 
 The identity, generated certificate, route config and runtime log are stored in the app's private files under `files/opentunnel/{config,data,state}`. **Disconnect & disassociate** removes the tunnel from the server and deletes all of those files; the URL cannot be recovered afterwards. A registered tunnel reconnects automatically while the app is running. The OpenTunnel client is built into the APK for **arm64-v8a** and **armeabi-v7a**.
 
+### 📡 RTSP stream
+
+The app can also serve the camera over RTSP, the protocol most NVRs, home automation systems and video players expect from an IP camera. It is off by default: enable it in **Settings > RTSP / ONVIF > Enable RTSP**. The address is then shown on the main screen:
+
+```
+rtsps://[username]:[password]@[ip_address]:8554/live
+```
+
+> **Note:** VLC does not reliably handle self-signed TLS certificates for RTSPS streams. Use **mpv** or **ffplay** to play, or use a trusted certificate. Disabling TLS may work with VLC, at the risk of sending your username/password in plaintext.
+
+* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, rotation and mirror follow the web controls). Each client starts at a keyframe.
+* **Sub stream:** `rtsps://[username]:[password]@[ip_address]:8554/live/sub` is a smaller version of the same picture for slow links such as 4G, and can be watched alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled); changes apply the next time a viewer connects. The phone encodes it in addition to the main stream only while someone watches it. Where the picture does not go through the GPU path (front camera, devices whose camera is not FULL level), the sub stream carries the main stream instead.
+* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
+* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
+* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front).
+* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming and ONVIF ports).
+* The camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
+
+When **TLS** is enabled, RTSP is served over TLS (`rtsps://`) using the same certificate as the web server and ONVIF, so the control connection and credentials are encrypted. With TLS disabled it is plain `rtsp://`, so only use it on a trusted network (or through a VPN) in that case.
+
+Examples:
+
+* **mpv:** `mpv "rtsps://[username]:[password]@[ip_address]:8554/live"`
+* **ffplay:** `ffplay -rtsp_transport tcp "rtsps://[username]:[password]@[ip_address]:8554/live"`
+
+### 🛰️ ONVIF camera
+
+ONVIF lets NVRs and home automation systems discover and control the camera as a standard IP camera. It is enabled by **Settings > RTSP / ONVIF > Enable RTSP**, or automatically while an always-on recording mode (**Notify only**, **Motion clips** or **Continuous recording**) is selected.
+
+* **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled
+* **Snapshot:** `https://[ip_address]:8000/onvif/snapshot.jpg` (or `http://` without TLS)
+* **RTSP:** `rtsps://[username]:[password]@[ip_address]:8554/live`, or `rtsps://` on the same port when TLS is enabled
+* **Motion events and recording:** choose a recording mode in the web interface. Every mode except **On demand** keeps the camera running and sends a notification when motion is seen. **Motion clips** also records a `-motion.mp4` clip while motion is present, and **Continuous recording** records every moment in `-continuous.mp4` segments. In every mode except **On demand**, the app compares luma frames in the background and publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`). The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
+* **Stop Recording After Motion** (under Sensitivity, default 10 seconds) controls how long a motion recording keeps running after motion has cleared. Set it to `0` to stop as soon as motion ends.
+* **Continuous Clip Length** (Settings tab, default 5 minutes) controls how often continuous recording closes the current file and starts a new one. **Delete Oldest Clips at** (default 90%) deletes the oldest recordings once the drive holding the recordings reaches that usage, until there is room again.
+* While a mode other than **On demand** is selected, the camera runs continuously so it can see motion with no viewer connected. With **On demand** and RTSP disabled, the camera opens when an HTTP viewer connects and is released when the last one leaves. ONVIF follows the RTSP switch, or stays available automatically while an always-on recording mode is selected.
+
+ONVIF and RTSP use the username and password from the Authentication settings. ONVIF discovery uses UDP multicast, so the phone and the client must be on the same network (or reachable through a VPN that forwards multicast).
+
+#### UniFi Protect
+
+1. If the phone is on the same network as the console, it shows up under third-party cameras. Otherwise, use **UniFi Devices > ? > Try advanced adoption** and enter `[ip_address]:8000` with the app's username and password.
+2. In the camera's Protect settings, turn **off audio recording** if audio is disabled in the app.
+3. Protect needs a motion zone for third-party cameras before it creates motion events. If none exists, add a full-frame one through the Protect API (the settings UI doesn't offer zones for third-party cameras).
+
+#### Home Assistant
+
+Add the phone with the **ONVIF** integration (host `https://[phone-ip]`, port `8000`), or adopt it in UniFi Protect and use the Protect integration. Both expose the camera and a motion binary sensor.
+
 ## 🔐 HTTPS/TLS certificates
 
 To protect the stream and the password from being sent in plain-text, a certificate can be used to start the web stream over HTTPS.
@@ -204,7 +253,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, Wi-Fi signal strength and individual camera len settings.
   * **Format:** `application/json`
 * **Start Recording (`/record/start`, POST)**
-  * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Manual recordings are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS-manual.mp4` inside the recordings folder. Recordings started by **Record on Motion** use the same folder layout with a `-motion.mp4` suffix.
+  * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Manual recordings are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS-manual.mp4` inside the recordings folder. Recordings started by **Motion clips** use the same folder layout with a `-motion.mp4` suffix, and **Continuous recording** segments use `-continuous.mp4`.
   * **Responses:**
     * `201 Created`: Recording started; returns the recording status JSON.
     * `409 Conflict`: `{"error":"already_recording", ...}` — a recording is already in progress.
@@ -218,7 +267,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
     * `500 Internal Server Error`: `{"error":"stop_failed", ...}` — failed to finalize the recording.
 * **Recording Status (`/record/status`)**
   * **Usage:** Query whether a local MP4 recording is currently active.
-  * **Format:** `application/json` — `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>}` (or `{"recording":false}` when idle).
+  * **Format:** `application/json` — `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>, "mode":<string>}` (or `{"recording":false, "mode":<string>}` when idle). `mode` is `off`, `notify`, `motion` or `continuous`.
 * **Recordings Index (`/files`)**
   * **Usage:** Open `https://[ip_address]:[port]/files` in a web browser for a folder browser of the recordings stored on the device (`Movies/AndroidIPCamera`). Folders can be opened from the list or via the breadcrumb.
   * **Format:** `text/html` — static page shell that loads the current folder listing from `/files.json?dir=<relative path>`, renders folders as navigation links, and renders every entry with emoji-only 💾 **Download** and 🗑️ **Delete** buttons (the Delete button asks for confirmation and issues a `DELETE /files/<relative path>` request). File names open the recording in the browser's video player. Deleting a folder removes the folder and all of its contents.
@@ -244,54 +293,6 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query whether streaming is currently enabled.
   * **Format:** `application/json` — `{"streaming":<bool>}`
 
-### 📡 RTSP stream
-
-The app can also serve the camera over RTSP, the protocol most NVRs, home automation systems and video players expect from an IP camera. It is off by default: enable it in **Settings > RTSP / ONVIF > Enable RTSP**. The same switch also enables ONVIF. The address is then shown on the main screen:
-
-```
-rtsps://[username]:[password]@[ip_address]:8554/live
-```
-
-> **Note:** VLC does not reliably handle self-signed TLS certificates for RTSPS streams. Use **mpv** or **ffplay** to play, or use a trusted certificate. Disabling TLS may work with VLC, at the risk of sending your username/password in plaintext.
-
-* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, rotation and mirror follow the web controls). Each client starts at a keyframe.
-* **Sub stream:** `rtsps://[username]:[password]@[ip_address]:8554/live/sub` is a smaller version of the same picture for slow links such as 4G, and can be watched alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled); changes apply the next time a viewer connects. The phone encodes it in addition to the main stream only while someone watches it. Where the picture does not go through the GPU path (front camera, devices whose camera is not FULL level), the sub stream carries the main stream instead.
-* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
-* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
-* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front).
-* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming and ONVIF ports).
-* The camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
-
-When **TLS** is enabled, RTSP is served over TLS (`rtsps://`) using the same certificate as the web server and ONVIF, so the control connection and credentials are encrypted. With TLS disabled it is plain `rtsp://`, so only use it on a trusted network (or through a VPN) in that case.
-
-Examples:
-
-* **mpv:** `mpv "rtsps://[username]:[password]@[ip_address]:8554/live"`
-* **ffplay:** `ffplay -rtsp_transport tcp "rtsps://[username]:[password]@[ip_address]:8554/live"`
-
-### 🛰️ ONVIF camera
-
-ONVIF lets NVRs and home automation systems discover and control the camera as a standard IP camera. It is enabled together with RTSP by **Settings > RTSP / ONVIF > Enable RTSP** .
-
-* **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled
-* **Snapshot:** `https://[ip_address]:8000/onvif/snapshot.jpg` (or `http://` without TLS)
-* **RTSP:** `rtsps://[username]:[password]@[ip_address]:8554/live`, or `rtsps://` on the same port when TLS is enabled
-* **Motion events and recording:** turn on **Record on Motion** in the web interface. The app compares luma frames in the background, publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`), and records a `-motion.mp4` clip while motion is present. The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
-* **Stop Recording After Motion** (under Sensitivity, default 10 seconds) controls how long a motion recording keeps running after motion has cleared. Set it to `0` to stop as soon as motion ends.
-* While **Record on Motion** is on, the camera runs continuously so it can see motion with no viewer connected. With it off, ONVIF and RTSP are still available on demand: the camera opens when a client connects and is released when the last one leaves.
-
-ONVIF and RTSP use the username and password from the Authentication settings. ONVIF discovery uses UDP multicast, so the phone and the client must be on the same network (or reachable through a VPN that forwards multicast).
-
-#### UniFi Protect
-
-1. If the phone is on the same network as the console, it shows up under third-party cameras. Otherwise, use **UniFi Devices > ? > Try advanced adoption** and enter `[ip_address]:8000` with the app's username and password.
-2. In the camera's Protect settings, turn **off audio recording** if audio is disabled in the app.
-3. Protect needs a motion zone for third-party cameras before it creates motion events. If none exists, add a full-frame one through the Protect API (the settings UI doesn't offer zones for third-party cameras).
-
-#### Home Assistant
-
-Add the phone with the **ONVIF** integration (host `https://[phone-ip]`, port `8000`), or adopt it in UniFi Protect and use the Protect integration. Both expose the camera and a motion binary sensor.
-
 ### 🎛️ Remote Control Commands
 
 Settings can be changed dynamically by passing query parameters in HTTP GET requests (e.g., to the root path `/` or any control endpoint).
@@ -307,6 +308,11 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `audio_gain=<value>`: Changes microphone gain multiplier (e.g., `1.0`, `2.0`).
   * `focus_distance=<0..1|-1>`: Set manual focus distance (0..1). Use `-1` to restore autofocus.
   * `snapshot_res=<max|stream>`: Choose snapshot resolution for the selected camera (`max` for full sensor, `stream` to match current stream resolution).
+  * `recording_mode=<off|notify|motion|continuous>`: Camera/recording behaviour with no viewer connected: on demand (off), notify only (always on, no recording), motion clips, or continuous segmented recording.
+  * `recording_segment_minutes=<1..120>`: Length of each continuous-recording clip (default 5).
+  * `recording_storage_limit_percent=<50..99>`: Delete the oldest recordings once the drive reaches this usage (default 90).
+  * `motion_sensitivity=<1..10>`: Motion detector sensitivity.
+  * `motion_record_stop_delay=<0..300>`: Seconds to keep a motion clip after motion clears.
   * `rotate=<degrees>`: Rotate video stream/snapshot (persisted per-camera).
   * `mirror=<true|false>`: Mirror the video.
   * `api=<auto|camerax|camera1>`: Prefer capture API implementation.
@@ -321,7 +327,7 @@ The app uses the following permissions to function:
 
 * **Camera (`android.permission.CAMERA`):** Required to capture and stream the video feed.
 * **Microphone (`android.permission.RECORD_AUDIO`):** Required to record and stream audio. (Requested optionally at runtime; streaming works without audio if denied).
-* **Notifications (`android.permission.POST_NOTIFICATIONS`):** Required on Android 13+ to post a persistent foreground service notification, keeping the background streaming server running reliably.
+* **Notifications (`android.permission.POST_NOTIFICATIONS`):** Required on Android 13+ to post a persistent foreground service notification, keeping the background streaming server running reliably, and to send motion alerts while the camera is always on.
 * **Network (`android.permission.INTERNET`, `android.permission.ACCESS_NETWORK_STATE`):** Required to host the server and stream data to your browser/connected clients.
 * **Storage (`android.permission.READ_EXTERNAL_STORAGE`, `android.permission.WRITE_EXTERNAL_STORAGE`):** Required on older Android versions to load custom TLS/HTTPS certificates from file storage and to save locally recorded MP4 files (`WRITE_EXTERNAL_STORAGE` only applies to Android 9 / API 28 and below; on newer versions recordings are saved to app-specific storage without extra permissions).
 * **Wi-Fi & Location (`android.permission.ACCESS_WIFI_STATE`, `android.permission.ACCESS_FINE_LOCATION`, `android.permission.ACCESS_COARSE_LOCATION`, `android.permission.NEARBY_WIFI_DEVICES`):** Used optionally to read the current Wi-Fi network's connection signal strength so it can be displayed in the web control panel overlay. If not granted, the Wi-Fi icon will be hidden. (Location permissions only apply to Android 12L / API 32 and below.)

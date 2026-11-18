@@ -133,6 +133,27 @@ tasks.whenTaskAdded { task ->
 // ---------------------------------------------------------------------------
 // Rust OpenTunnel client (JNI, arm64-v8a + armeabi-v7a)
 // ---------------------------------------------------------------------------
+// Locate the Rust toolchain explicitly instead of trusting PATH. A Gradle daemon
+// keeps the environment of whichever process started it, so a daemon that
+// predates a rustup install (or was started by an IDE) has no ~/.cargo/bin and
+// the cargo task fails with "A problem occurred starting process 'command
+// 'cargo''". Resolved at execution time so the configuration cache cannot pin a
+// stale result.
+def resolveRustBinDir = {
+    def candidates = []
+    def cargoOverride = System.getenv("CARGO")
+    if (cargoOverride) {
+        candidates << new File(cargoOverride).absoluteFile.parentFile
+    }
+    candidates << new File(System.getProperty("user.home"), ".cargo/bin")
+    (System.getenv("PATH") ?: "").split(File.pathSeparator).each { entry ->
+        if (entry) {
+            candidates << new File(entry)
+        }
+    }
+    candidates.find { new File(it, "cargo").canExecute() }
+}
+
 def rustApiLevel = 24
 def rustCrateDir = rootProject.file("opentunnel-native")
 def rustJniDir = project.layout.buildDirectory.dir("rustJniLibs")
@@ -195,6 +216,19 @@ rustAbis.each { abi ->
                     throw new GradleException("Missing NDK tool: ${it}")
                 }
             }
+
+            def rustBin = resolveRustBinDir()
+            if (rustBin == null) {
+                throw new GradleException(
+                    "Rust toolchain not found. Install it from https://rustup.rs " +
+                    "(cargo and rustc must be available in ~/.cargo/bin or on PATH), " +
+                    "then re-run the build."
+                )
+            }
+            // cargo shells out to rustc, so the toolchain's bin dir has to come first.
+            def ambientPath = System.getenv("PATH") ?: ""
+            environment "PATH", "${rustBin}${File.pathSeparator}${ambientPath}"
+            executable new File(rustBin, "cargo").absolutePath
         }
 
         inputs.files(fileTree(rustCrateDir) {

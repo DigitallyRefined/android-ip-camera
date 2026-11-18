@@ -45,6 +45,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.Inet4Address
@@ -84,7 +85,7 @@ class StreamingService : LifecycleService() {
     private val encoders: List<StreamingEncoder>
         get() = listOfNotNull(h264StreamingEncoder, mjpegStreamingEncoder)
 
-    /** Motion detection is on: the camera must keep delivering frames even with no viewer. */
+    /** A recording mode other than "off": the camera must keep delivering frames with no viewer. */
     private fun motionEnabled(): Boolean = motionMonitor?.enabled == true
 
     /** Loopback TLS bridge used when the local web server speaks HTTPS and OpenTunnel forwards plain HTTP. */
@@ -110,6 +111,8 @@ class StreamingService : LifecycleService() {
     private val recordingLock = Any()
     /** Pending auto-stop for a motion-triggered recording (cancelled when motion resumes). */
     @Volatile private var motionStopJob: kotlinx.coroutines.Job? = null
+    /** Segmented continuous-recording loop (null unless the continuous mode is active). */
+    @Volatile private var continuousRecordingJob: kotlinx.coroutines.Job? = null
     /** Smaller encoder feeding the RTSP sub stream (/live/sub) while it has viewers. */
     @Volatile private var subEncoder: H264HardwareEncoder? = null
     /** Sub stream settings the running sub encoder was built with. */
@@ -182,6 +185,9 @@ class StreamingService : LifecycleService() {
         private const val TAG = "StreamingService"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "streaming_service_channel"
+        /** Alerts when motion is seen in the always-on and motion-clip modes. */
+        private const val MOTION_NOTIFICATION_ID = 2
+        private const val MOTION_CHANNEL_ID = "motion_events_channel"
         private const val PREF_CAMERA_ID = "camera_id"
         private const val PREF_ONVIF_NAME = "onvif_name"
         private const val PREF_ONVIF_PORT = "onvif_port"
@@ -435,6 +441,49 @@ class StreamingService : LifecycleService() {
             .build()
     }
 
+    /**
+     * Posts the motion alert used by the always-on and motion-clip modes. Uses its own channel so
+     * it can make a sound while the ongoing streaming notification stays quiet. Skipped when the
+     * user denied the notification permission.
+     */
+    private fun notifyMotion() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                getSystemService(NotificationManager::class.java).createNotificationChannel(
+                    NotificationChannel(
+                        MOTION_CHANNEL_ID,
+                        "Motion events",
+                        NotificationManager.IMPORTANCE_DEFAULT
+                    )
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Motion notification channel: ${e.message}")
+            }
+        }
+        val contentPI = PendingIntent.getActivity(this, 3,
+            Intent(this, com.github.digitallyrefined.androidipcamera.activities.MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val notification = NotificationCompat.Builder(this, MOTION_CHANNEL_ID)
+            .setContentTitle("Motion detected")
+            .setContentText("Android IP Camera saw movement")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
+            .setContentIntent(contentPI)
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        try {
+            getSystemService(NotificationManager::class.java).notify(MOTION_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.w(TAG, "Motion notification: ${e.message}")
+        }
+    }
+
     // MainActivity attaches PreviewView here; camera restarts when a surface is set while streaming.
     fun setPreviewSurface(surfaceProvider: Preview.SurfaceProvider?) {
         currentSurfaceProvider = surfaceProvider
@@ -671,14 +720,22 @@ class StreamingService : LifecycleService() {
         streamingServerHelper?.startStreamingServer()
         startRtspServerIfEnabled()
         startOnvifIfEnabled()
-        // Motion detection persisted as on keeps the camera running with no viewer.
-        if (motionEnabled()) launchMain { startCameraIfNeeded() }
+        // A recording mode other than "off" keeps the camera running with no viewer. Continuous
+        // mode also starts the segmented recorder; its first start brings the camera up itself.
+        if (motionEnabled()) {
+            acquireStreamingWakeLock()
+            if (motionMonitor?.continuousRecording == true) {
+                startContinuousRecording()
+            } else {
+                launchMain { startCameraIfNeeded() }
+            }
+        }
         // Reconnect a registered tunnel whenever the app/server starts again.
         lifecycleScope.launch(Dispatchers.IO) { autoConnectOpenTunnel() }
     }
 
-    /** Starts (or stops) the RTSP server to match the RTSP/ONVIF setting. ONVIF is enabled by the
-     *  same preference and advertises this stream. */
+    /** Starts (or stops) the RTSP server to match the RTSP setting. ONVIF is started separately:
+     *  it also runs while an always-on recording mode is selected. */
     private fun startRtspServerIfEnabled() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val enabled = prefs.getBoolean(RtspServer.PREF_ENABLED, false)
@@ -694,11 +751,18 @@ class StreamingService : LifecycleService() {
         multicastLock = null
     }
 
-    /** Starts the ONVIF service when RTSP/ONVIF is enabled. It never keeps the camera open by
-     *  itself: video viewers (RTSP/HTTP) and motion detection do that on demand. */
+    /** ONVIF runs when RTSP is enabled or any always-on recording mode is selected. */
+    private fun onvifEnabled(): Boolean =
+        MotionMonitor.isEnabled(this) ||
+            PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(RtspServer.PREF_ENABLED, false)
+
+    /** Starts the ONVIF service when RTSP is enabled or an always-on recording mode needs it.
+     *  It never keeps the camera open by itself: video viewers (RTSP/HTTP) and motion detection
+     *  do that on demand. */
     private fun startOnvifIfEnabled() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        if (!prefs.getBoolean(RtspServer.PREF_ENABLED, false)) {
+        if (!onvifEnabled()) {
             stopOnvif()
             return
         }
@@ -746,8 +810,7 @@ class StreamingService : LifecycleService() {
             try {
                 onvif.start()
                 // Settings may have changed while the service was binding.
-                if (!PreferenceManager.getDefaultSharedPreferences(this@StreamingService)
-                        .getBoolean(RtspServer.PREF_ENABLED, false)) {
+                if (!onvifEnabled()) {
                     onvif.stop()
                     return@launch
                 }
@@ -2203,33 +2266,29 @@ class StreamingService : LifecycleService() {
                 }
             }
             MotionMonitor.PREF_ENABLED -> {
+                // Backwards compatibility for clients that still send the old Record on Motion
+                // checkbox: on means motion clips, off means the camera sleeps until a viewer.
                 val enabled = when (value.lowercase()) {
                     "true", "on", "1" -> true
                     "false", "off", "0" -> false
                     else -> return
                 }
-                prefs.edit().putBoolean(MotionMonitor.PREF_ENABLED, enabled).apply()
+                val mode = if (enabled) MotionMonitor.MODE_MOTION else MotionMonitor.MODE_OFF
+                prefs.edit()
+                    .putBoolean(MotionMonitor.PREF_ENABLED, enabled)
+                    .putString(MotionMonitor.PREF_MODE, mode)
+                    .apply()
                 motionMonitor?.onSettingsChanged()
-                if (!enabled) {
-                    // Turning Record on Motion off also ends any motion clip immediately.
-                    motionStopJob?.cancel()
-                    motionStopJob = null
-                    val recorder = localRecorder
-                    if (recorder?.isRecording == true && recorder.trigger == LocalRecorder.Trigger.MOTION) {
-                        lifecycleScope.launch(Dispatchers.IO) { stopRecording() }
-                    }
-                }
-                launchMain {
-                    if (enabled) {
-                        awaitCameraSettled()
-                        if (captureRunning) debouncedStartCamera() else startCameraIfNeeded()
-                    } else if (localRecorder?.isRecording != true &&
-                        !encoders.any { it.hasClients() } && currentSurfaceProvider == null) {
-                        // Motion was the only frame consumer: release the camera again.
-                        stopCameraWhenIdle()
-                        bridgeTorchAcrossIdle()
-                    }
-                }
+                applyRecordingMode(mode)
+            }
+            MotionMonitor.PREF_MODE -> {
+                val mode = MotionMonitor.normalizeMode(value) ?: return
+                prefs.edit()
+                    .putString(MotionMonitor.PREF_MODE, mode)
+                    .putBoolean(MotionMonitor.PREF_ENABLED, mode != MotionMonitor.MODE_OFF)
+                    .apply()
+                motionMonitor?.onSettingsChanged()
+                applyRecordingMode(mode)
             }
             MotionMonitor.PREF_SENSITIVITY -> {
                 val sensitivity = value.toIntOrNull()?.coerceIn(1, 10) ?: return
@@ -2238,6 +2297,28 @@ class StreamingService : LifecycleService() {
             MotionMonitor.PREF_STOP_DELAY -> {
                 val delay = value.toIntOrNull()?.coerceIn(0, MotionMonitor.MAX_STOP_DELAY) ?: return
                 prefs.edit().putString(MotionMonitor.PREF_STOP_DELAY, delay.toString()).apply()
+            }
+            MotionMonitor.PREF_SEGMENT_MINUTES -> {
+                val minutes = value.toIntOrNull()
+                    ?.coerceIn(MotionMonitor.MIN_SEGMENT_MINUTES, MotionMonitor.MAX_SEGMENT_MINUTES)
+                    ?: return
+                prefs.edit().putString(MotionMonitor.PREF_SEGMENT_MINUTES, minutes.toString()).apply()
+            }
+            MotionMonitor.PREF_STORAGE_LIMIT_PERCENT -> {
+                val percent = value.toIntOrNull()
+                    ?.coerceIn(MotionMonitor.MIN_STORAGE_LIMIT_PERCENT, MotionMonitor.MAX_STORAGE_LIMIT_PERCENT)
+                    ?: return
+                prefs.edit().putString(MotionMonitor.PREF_STORAGE_LIMIT_PERCENT, percent.toString()).apply()
+                // Apply the new limit immediately instead of waiting for the next clip to finish.
+                lifecycleScope.launch(Dispatchers.IO) {
+                    try {
+                        RecordingsHelper.trimOldest(this@StreamingService, percent) {
+                            localRecorder?.currentRelativePath()
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Storage cleanup failed: ${e.message}")
+                    }
+                }
             }
         }
 
@@ -2309,7 +2390,13 @@ class StreamingService : LifecycleService() {
         }
     }
 
+    /** Stops the current clip. In continuous mode this also ends the segmented-recording loop. */
     fun stopRecording(): RecordingResponse {
+        if (localRecorder?.trigger == LocalRecorder.Trigger.CONTINUOUS) stopContinuousRecording()
+        return stopRecordingInternal()
+    }
+
+    private fun stopRecordingInternal(): RecordingResponse {
         synchronized(recordingLock) {
             val recorder = localRecorder ?: return Triple(false, "409 Conflict",
                 """{"error":"not_recording","message":"No recording is in progress"}"""
@@ -2328,6 +2415,7 @@ class StreamingService : LifecycleService() {
                 if (!encoders.any { it.hasClients() }) {
                     restoreNoViewerCameraState()
                 }
+                trimRecordingsIfNeeded()
                 Triple(true, "200 OK", finalStatus)
             } catch (e: Exception) {
                 Log.e(TAG, "stopRecording failed", e)
@@ -2340,23 +2428,152 @@ class StreamingService : LifecycleService() {
     }
 
     fun getRecordingStatus(): String {
-        return localRecorder?.statusJson()
-            ?: """{"recording":false}"""
+        val status = localRecorder?.statusJson() ?: """{"recording":false}"""
+        return try {
+            JSONObject(status)
+                .put("mode", motionMonitor?.mode ?: MotionMonitor.modeFor(this))
+                .toString()
+        } catch (_: Exception) {
+            status
+        }
+    }
+
+    /** Deletes the oldest clips when the recordings drive has reached the configured limit. */
+    private fun trimRecordingsIfNeeded() {
+        val percent = motionMonitor?.storageLimitPercent
+            ?: MotionMonitor.DEFAULT_STORAGE_LIMIT_PERCENT
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val deleted = RecordingsHelper.trimOldest(this@StreamingService, percent) {
+                    localRecorder?.currentRelativePath()
+                }
+                if (deleted > 0) onLog?.invoke("Storage cleanup deleted $deleted old recording(s)")
+            } catch (e: Exception) {
+                Log.w(TAG, "Storage cleanup failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Applies a recording-mode change live: starts or stops the always-on camera, motion clips and
+     * the segmented continuous recorder. Manual recordings are left alone.
+     */
+    private fun applyRecordingMode(mode: String) {
+        val recorder = localRecorder
+        when (mode) {
+            MotionMonitor.MODE_OFF -> {
+                stopContinuousRecording()
+                motionStopJob?.cancel()
+                motionStopJob = null
+                if (recorder?.isRecording == true && recorder.trigger != LocalRecorder.Trigger.MANUAL) {
+                    stopRecording()
+                }
+                launchMain {
+                    if (localRecorder?.isRecording != true &&
+                        !encoders.any { it.hasClients() } && currentSurfaceProvider == null) {
+                        stopCameraWhenIdle()
+                        bridgeTorchAcrossIdle()
+                    }
+                }
+                if (!hasActiveClients()) releaseStreamingWakeLock()
+            }
+
+            MotionMonitor.MODE_CONTINUOUS -> {
+                motionStopJob?.cancel()
+                motionStopJob = null
+                if (recorder?.isRecording == true && recorder.trigger == LocalRecorder.Trigger.MOTION) {
+                    stopRecording()
+                }
+                acquireStreamingWakeLock()
+                startContinuousRecording()
+            }
+
+            else -> { // MODE_NOTIFY or MODE_MOTION
+                stopContinuousRecording()
+                if (recorder?.isRecording == true &&
+                    (recorder.trigger == LocalRecorder.Trigger.CONTINUOUS ||
+                        (mode == MotionMonitor.MODE_NOTIFY && recorder.trigger == LocalRecorder.Trigger.MOTION))
+                ) {
+                    stopRecording()
+                }
+                acquireStreamingWakeLock()
+                launchMain { startCameraIfNeeded() }
+            }
+        }
+        // ONVIF is also available while an always-on mode is selected, even with RTSP disabled.
+        startOnvifIfEnabled()
+    }
+
+    /** Runs the camera continuously, closing and reopening a new file every segment. */
+    private fun startContinuousRecording() {
+        if (continuousRecordingJob?.isActive == true) return
+        continuousRecordingJob = lifecycleScope.launch(Dispatchers.IO) {
+            val self = coroutineContext[kotlinx.coroutines.Job]
+            while (isActive && continuousRecordingJob === self &&
+                motionMonitor?.continuousRecording == true
+            ) {
+                if (localRecorder?.isRecording == true) {
+                    // A manual clip owns the encoder; wait for it instead of failing every second.
+                    kotlinx.coroutines.delay(1_000)
+                    continue
+                }
+                val (ok, status, body) = startRecording(LocalRecorder.Trigger.CONTINUOUS)
+                if (!ok) {
+                    Log.w(TAG, "Continuous recording failed to start: $status $body")
+                    // The failure may be a full drive; free space before retrying.
+                    trimRecordingsIfNeeded()
+                    kotlinx.coroutines.delay(5_000)
+                    continue
+                }
+                // The mode may have changed while the camera was starting. Only this job's own
+                // recorder is stopped: a newer continuous job may already own a fresh one.
+                val recorder = localRecorder
+                if (!isActive || continuousRecordingJob !== self ||
+                    motionMonitor?.continuousRecording != true
+                ) {
+                    if (localRecorder === recorder) stopRecordingInternal()
+                    break
+                }
+                val startedAt = recorder?.recordingStartTimeMs ?: System.currentTimeMillis()
+                val segmentMinutes = motionMonitor?.segmentMinutes
+                    ?: MotionMonitor.DEFAULT_SEGMENT_MINUTES
+                val remaining = segmentMinutes * 60_000L - (System.currentTimeMillis() - startedAt)
+                if (remaining > 0) kotlinx.coroutines.delay(remaining)
+                if (!isActive || continuousRecordingJob !== self) {
+                    if (localRecorder === recorder) stopRecordingInternal()
+                    break
+                }
+                if (motionMonitor?.continuousRecording != true) {
+                    if (localRecorder === recorder) stopRecordingInternal()
+                    break
+                }
+                stopRecordingInternal()
+            }
+        }
+    }
+
+    private fun stopContinuousRecording() {
+        continuousRecordingJob?.cancel()
+        continuousRecordingJob = null
     }
 
     /** Motion true starts a motion clip; motion false schedules the auto-stop after the set delay. */
     private fun handleMotionRecording(active: Boolean) {
+        val monitor = motionMonitor ?: return
         if (active) {
             motionStopJob?.cancel()
             motionStopJob = null
-            lifecycleScope.launch(Dispatchers.IO) { startMotionRecordingIfNeeded() }
-        } else {
+            if (monitor.notifyOnMotion) notifyMotion()
+            if (monitor.recordingOnMotion) {
+                lifecycleScope.launch(Dispatchers.IO) { startMotionRecordingIfNeeded() }
+            }
+        } else if (monitor.recordingOnMotion) {
             scheduleMotionRecordingStop()
         }
     }
 
     private fun startMotionRecordingIfNeeded() {
-        if (!motionEnabled() || localRecorder?.isRecording == true) return
+        if (motionMonitor?.recordingOnMotion != true || localRecorder?.isRecording == true) return
         val (ok, status, body) = startRecording(LocalRecorder.Trigger.MOTION)
         if (!ok) {
             Log.w(TAG, "Motion recording failed to start: $status $body")
@@ -2364,7 +2581,7 @@ class StreamingService : LifecycleService() {
         }
         // Record on Motion may have been turned off, or motion cleared, while the camera/encoder
         // was starting. In both cases the clip should not linger.
-        if (!motionEnabled()) {
+        if (motionMonitor?.recordingOnMotion != true) {
             stopRecording()
         } else if (motionMonitor?.detector?.active != true) {
             scheduleMotionRecordingStop()
@@ -2372,6 +2589,7 @@ class StreamingService : LifecycleService() {
     }
 
     private fun scheduleMotionRecordingStop() {
+        if (motionMonitor?.recordingOnMotion != true) return
         val recorder = localRecorder
         if (recorder?.isRecording != true || recorder.trigger != LocalRecorder.Trigger.MOTION) return
         motionStopJob?.cancel()
@@ -2409,6 +2627,7 @@ class StreamingService : LifecycleService() {
 
     /** Safely stops any active recording (used in stopCamera/onDestroy safety nets). */
     private fun safeStopRecording() {
+        stopContinuousRecording()
         try {
             h264StreamingEncoder?.h264HardwareEncoder?.onRecordFrame = null
             localRecorder?.stop()

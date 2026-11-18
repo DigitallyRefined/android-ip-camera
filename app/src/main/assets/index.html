@@ -327,6 +327,60 @@
       font-weight: bold;
     }
 
+    .mode-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .mode-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      background: #2c2c2c;
+      border: 1px solid #3a3a3a;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 0;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .mode-option:hover {
+      background: #333;
+    }
+
+    .mode-option:has(input:checked) {
+      border-color: #007AFF;
+      background: #263449;
+    }
+
+    .mode-option input[type=radio] {
+      margin: 2px 0 0;
+      flex: none;
+      accent-color: #007AFF;
+    }
+
+    .mode-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .mode-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .mode-desc {
+      font-size: 12px;
+      color: #aaa;
+      line-height: 1.35;
+    }
+
     .notice,
     .version {
       color: #555;
@@ -512,14 +566,6 @@
               <button id="snapBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="takeSnapshot()">📸 Take Snapshot</button>
             </div>
 
-            <label style="margin:12px 0 4px;">
-              <input type="checkbox" id="motionCheckbox" onchange="sendControl('motion_detection_enabled', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
-              <span style="vertical-align:middle;">Record on Motion</span>
-            </label>
-            <div class="hint" style="margin:0 0 4px; font-size:12px; color:#ccc">
-              Keeps the camera running with no viewer connected. Motion is also reported to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (Home Assistant, UniFi Protect) when ONVIF is enabled.
-            </div>
-
             <div id="recordingsSection">
               <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
                 <span class="group-title" style="margin:0;">Recordings</span>
@@ -580,6 +626,43 @@
               <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
             </div>
 
+            <p class="group-title">Recording Mode</p>
+
+            <div class="mode-list" role="radiogroup" aria-label="Recording mode">
+              <label class="mode-option">
+                <input type="radio" name="recordingMode" value="off" onchange="setRecordingMode(this.value)">
+                <span class="mode-copy">
+                  <span class="mode-name">On demand</span>
+                  <span class="mode-desc">Camera stays off until a viewer connects</span>
+                </span>
+              </label>
+              <label class="mode-option">
+                <input type="radio" name="recordingMode" value="notify" onchange="setRecordingMode(this.value)">
+                <span class="mode-copy">
+                  <span class="mode-name">Notify only</span>
+                  <span class="mode-desc">Camera stays on but does not automatically record</span>
+                </span>
+              </label>
+              <label class="mode-option">
+                <input type="radio" name="recordingMode" value="motion" onchange="setRecordingMode(this.value)">
+                <span class="mode-copy">
+                  <span class="mode-name">Motion clips</span>
+                  <span class="mode-desc">Camera stays on and records a clip when motion starts</span>
+                </span>
+              </label>
+              <label class="mode-option">
+                <input type="radio" name="recordingMode" value="continuous" onchange="setRecordingMode(this.value)">
+                <span class="mode-copy">
+                  <span class="mode-name">Continuous recording</span>
+                  <span class="mode-desc">Camera stays on and records continuously in segments</span>
+                </span>
+              </label>
+            </div>
+
+            <div class="hint" style="margin:0 0 4px; font-size:12px; color:#ccc">
+              Every mode except On demand sends a notification when motion is detected to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (like Home Assistant &amp; UniFi Protect)
+            </div>
+
             <div id="motionSettings">
               <p class="group-title">Motion Detection</p>
 
@@ -591,6 +674,22 @@
               <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
                 How long to keep a motion recording after motion stops.
               </div>
+            </div>
+
+            <p class="group-title">Recording Storage</p>
+
+            <label for="segmentMinutes">Continuous Clip Length (minutes)</label>
+            <input id="segmentMinutes" type="number" min="1" max="120" step="1" value="5" data-control="recording_segment_minutes">
+            <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+              Continuous recording saves a new video each time this many minutes pass. Files use the
+              <code>-continuous.mp4</code> suffix.
+            </div>
+
+            <label for="storageLimit" style="margin-top:14px;">Delete Oldest Clips at (% storage used)</label>
+            <input id="storageLimit" type="number" min="50" max="99" step="1" value="90" data-control="recording_storage_limit_percent">
+            <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+              When the drive that holds the recordings reaches this usage, the oldest recordings are
+              deleted until there is room again. Default 90%.
             </div>
 
             <p class="group-title">Snapshot</p>
@@ -708,6 +807,7 @@
     let torchState = 'off';
     let deviceHasFlash = false;
     let cameraList = [];
+    let recordingMode = 'off';
 
     // Mobile screens have no room to pan a full-resolution frame around, so start
     // in Original Size, which fits the frame to the player width.
@@ -892,6 +992,25 @@
       } catch (_) { /* swallow */ }
     }
 
+    // ---- Recording mode: on demand / notify only / motion clips / continuous ----
+    function normalizeRecordingMode(mode) {
+      return ['off', 'notify', 'motion', 'continuous'].includes(mode) ? mode : 'off';
+    }
+
+    function setRecordingModeUi(mode) {
+      recordingMode = normalizeRecordingMode(mode);
+      document.querySelectorAll('input[name="recordingMode"]').forEach(radio => {
+        radio.checked = radio.value === recordingMode;
+      });
+    }
+
+    function setRecordingMode(mode) {
+      setRecordingModeUi(mode);
+      sendControl('recording_mode', recordingMode);
+      // The server stops or starts clips asynchronously, so refresh the button shortly after.
+      setTimeout(checkRecordingStatus, 600);
+    }
+
     // Map control parameter names to the `lensSettings` keys used in `info.json`.
     function toLensKey(param) {
       if (!param) return null;
@@ -899,7 +1018,9 @@
       if (param === 'snapshot_res') return 'snapshotRes';
       // Motion detection and RTSP/substream settings are global, not lens settings.
       if (param === 'motion_detection_enabled' || param === 'motion_sensitivity' ||
-        param === 'motion_record_stop_delay' || param.startsWith('rtsp_')) return null;
+        param === 'motion_record_stop_delay' || param === 'recording_mode' ||
+        param === 'recording_segment_minutes' ||
+        param === 'recording_storage_limit_percent' || param.startsWith('rtsp_')) return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -1772,11 +1893,15 @@
       if (fps && settings.fps) {
         fps.value = settings.fps;
       }
-      const motionEl = getElById('motionCheckbox');
-      if (motionEl && settings.motionDetectionEnabled !== undefined) {
-        const v = settings.motionDetectionEnabled;
-        // Accept both JSON booleans and string forms ("true"/"false"/"on"/"off"/"1"/"0").
-        motionEl.checked = v === true || v === 1 || v === 'true' || v === 'on' || v === '1';
+      const isOn = (v) => v === true || v === 1 || v === 'true' || v === 'on' || v === '1';
+      // Per-camera `lensSettings` callers pass no recording mode; only touch the radios when the
+      // global settings payload actually carries the mode (or the old motion flag).
+      const hasRecordingMode = settings.recordingMode !== undefined && settings.recordingMode !== null;
+      if (hasRecordingMode || settings.motionDetectionEnabled !== undefined) {
+        const modeValue = hasRecordingMode
+          ? normalizeRecordingMode(String(settings.recordingMode))
+          : (isOn(settings.motionDetectionEnabled) ? 'motion' : 'off');
+        setRecordingModeUi(modeValue);
       }
       const audioGain = getElById('audioGain');
       const audioGainVal = getElById('audioGainVal');
@@ -1900,19 +2025,42 @@
     function updateRecordingUi(statusData) {
       const toggleBtn = getElById('recordToggleBtn');
       isRecording = !!(statusData?.recording);
-      if (isRecording) {
+      if (statusData?.mode) {
+        recordingMode = normalizeRecordingMode(String(statusData.mode));
+        // Keep the radios in step if the mode was changed elsewhere (e.g. another browser).
+        if (!document.querySelector('input[name="recordingMode"]:checked')) {
+          setRecordingModeUi(recordingMode);
+        } else {
+          const checked = document.querySelector('input[name="recordingMode"]:checked');
+          if (checked && checked.value !== recordingMode) setRecordingModeUi(recordingMode);
+        }
+      }
+      if (recordingMode === 'continuous') {
+        if (toggleBtn) {
+          const secs = Math.floor((statusData?.durationMs || 0) / 1000);
+          const mins = Math.floor(secs / 60);
+          const remSecs = secs % 60;
+          const timeStr = `${mins}:${remSecs < 10 ? '0' : ''}${remSecs}`;
+          toggleBtn.textContent = isRecording ? `⏹️ ${timeStr}` : '⏹️ Stop Continuous';
+          toggleBtn.title = 'Continuous recording — click to stop';
+          toggleBtn.style.background = '#d32f2f';
+          toggleBtn.style.borderColor = '#b71c1c';
+        }
+      } else if (isRecording) {
         const secs = Math.floor((statusData.durationMs || 0) / 1000);
         const mins = Math.floor(secs / 60);
         const remSecs = secs % 60;
         const timeStr = `${mins}:${remSecs < 10 ? '0' : ''}${remSecs}`;
         if (toggleBtn) {
           toggleBtn.textContent = `⏹️ ${timeStr}`;
+          toggleBtn.title = '';
           toggleBtn.style.background = '#d32f2f';
           toggleBtn.style.borderColor = '#b71c1c';
         }
       } else {
         if (toggleBtn) {
           toggleBtn.textContent = '🔴 Record';
+          toggleBtn.title = '';
           toggleBtn.style.background = '';
           toggleBtn.style.borderColor = '';
         }
@@ -1946,6 +2094,12 @@
     }
 
     function toggleRecording() {
+      // Continuous recording is owned by the mode radio, so the Record button stops it by
+      // switching to the notify-only (no recording) mode.
+      if (recordingMode === 'continuous') {
+        setRecordingMode('notify');
+        return;
+      }
       const wasRecording = isRecording;
       const url = wasRecording ? '/record/stop' : '/record/start';
       fetch(url, { method: 'POST' })

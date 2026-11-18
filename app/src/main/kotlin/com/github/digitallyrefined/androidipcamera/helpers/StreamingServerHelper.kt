@@ -1485,6 +1485,9 @@ class StreamingServerHelper(
         val motionDetectionEnabled: Boolean,
         val motionSensitivity: String,
         val motionRecordStopDelay: String,
+        val recordingMode: String,
+        val recordingSegmentMinutes: String,
+        val recordingStorageLimitPercent: String,
         val onvifEnabled: Boolean,
         val rtspEnabled: Boolean,
         val rtspAudio: Boolean,
@@ -1558,6 +1561,9 @@ class StreamingServerHelper(
                 put("motionDetectionEnabled", settings.motionDetectionEnabled)
                 put("motionSensitivity", settings.motionSensitivity)
                 put("motionRecordStopDelay", settings.motionRecordStopDelay)
+                put("recordingMode", settings.recordingMode)
+                put("recordingSegmentMinutes", settings.recordingSegmentMinutes)
+                put("recordingStorageLimitPercent", settings.recordingStorageLimitPercent)
                 // Whether RTSP/ONVIF is enabled. Motion detection is always available in the web UI.
                 put("onvifEnabled", settings.onvifEnabled)
                 put("rtspEnabled", settings.rtspEnabled)
@@ -1711,12 +1717,22 @@ class StreamingServerHelper(
             deviceHasFlash = anyBackCameraWithFlash(),
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
             snapshotRes = prefs.getString("snapshot_res_$cameraId", "max") ?: "max",
-            motionDetectionEnabled = prefs.getBoolean(MotionMonitor.PREF_ENABLED, false),
+            motionDetectionEnabled = MotionMonitor.isEnabled(context),
             motionSensitivity = prefs.getString(MotionMonitor.PREF_SENSITIVITY, MotionMonitor.DEFAULT_SENSITIVITY.toString())
                 ?: MotionMonitor.DEFAULT_SENSITIVITY.toString(),
             motionRecordStopDelay = prefs.getString(MotionMonitor.PREF_STOP_DELAY, MotionMonitor.DEFAULT_STOP_DELAY.toString())
                 ?: MotionMonitor.DEFAULT_STOP_DELAY.toString(),
-            onvifEnabled = prefs.getBoolean(RtspServer.PREF_ENABLED, false),
+            recordingMode = MotionMonitor.modeFor(context),
+            recordingSegmentMinutes = prefs.getString(
+                MotionMonitor.PREF_SEGMENT_MINUTES,
+                MotionMonitor.DEFAULT_SEGMENT_MINUTES.toString()
+            ) ?: MotionMonitor.DEFAULT_SEGMENT_MINUTES.toString(),
+            recordingStorageLimitPercent = prefs.getString(
+                MotionMonitor.PREF_STORAGE_LIMIT_PERCENT,
+                MotionMonitor.DEFAULT_STORAGE_LIMIT_PERCENT.toString()
+            ) ?: MotionMonitor.DEFAULT_STORAGE_LIMIT_PERCENT.toString(),
+            onvifEnabled = MotionMonitor.isEnabled(context) ||
+                prefs.getBoolean(RtspServer.PREF_ENABLED, false),
             rtspEnabled = prefs.getBoolean(RtspServer.PREF_ENABLED, false),
             rtspAudio = prefs.getBoolean(RtspServer.PREF_AUDIO, true),
             rtspSubSize = prefs.getString(RtspServer.PREF_SUB_SIZE, null)
