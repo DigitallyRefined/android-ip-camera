@@ -55,15 +55,33 @@ class StreamSizingTest {
     }
 
     @Test
-    fun `estimateKbps follows the encoder formula`() {
-        assertEquals(2880, StreamSizing.estimateKbps(800, 600, caps))
-        assertEquals(5529, StreamSizing.estimateKbps(1280, 720, caps))
+    fun `estimateKbps follows the encoder formula at 30fps`() {
+        assertEquals(2880, StreamSizing.estimateKbps(800, 600, 30, caps))
+        assertEquals(5529, StreamSizing.estimateKbps(1280, 720, 30, caps))
+    }
+
+    @Test
+    fun `auto bitrate scales with frame rate`() {
+        // 1280x720*0.2 at 15fps = 2.7648 Mbps instead of the 30fps 5.5296 Mbps.
+        assertEquals(2764, StreamSizing.estimateKbps(1280, 720, 15, caps))
+        assertEquals(StreamSizing.autoBps(1280, 720, 30, caps),
+            StreamSizing.autoBps(1280, 720, 15, caps) * 2)
+    }
+
+    @Test
+    fun `manual target overrides auto and is clamped`() {
+        assertEquals(2_000_000, StreamSizing.targetBps(1920, 1080, 30, 2000, caps))
+        assertEquals(caps.minBitrate, StreamSizing.targetBps(1920, 1080, 30, 10, caps))
+        assertEquals(
+            StreamSizing.autoBps(1920, 1080, 30, caps),
+            StreamSizing.targetBps(1920, 1080, 30, null, caps),
+        )
     }
 
     @Test
     fun `estimateKbps clamps to the device range`() {
-        assertEquals(100, StreamSizing.estimateKbps(10, 10, caps))
-        assertEquals(20000, StreamSizing.estimateKbps(4000, 3000, caps))
+        assertEquals(100, StreamSizing.estimateKbps(10, 10, 30, caps))
+        assertEquals(20000, StreamSizing.estimateKbps(4000, 3000, 30, caps))
     }
 
     @Test

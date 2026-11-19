@@ -1321,7 +1321,8 @@ class StreamingServerHelper(
 
                 val now = System.currentTimeMillis()
                 val defaults = mapOf(
-                    "resolution" to "auto",
+                    // "low" also restores the Auto preset's quality, not just stream_res=auto.
+                    "resolution" to "low",
                     "zoom" to String.format(Locale.US, "%.1f", minZoom),
                     "exposure" to "0",
                     "focus_distance" to "-1",
@@ -1329,6 +1330,9 @@ class StreamingServerHelper(
                     "contrast" to "0",
                     "mirror" to "false",
                     "fps" to "30",
+                    StreamEncoding.PREF_BITRATE to StreamEncoding.AUTO,
+                    StreamEncoding.PREF_BITRATE_MODE to StreamEncoding.MODE_VBR,
+                    StreamEncoding.PREF_KEYFRAME_INTERVAL to StreamEncoding.DEFAULT_KEYFRAME_INTERVAL_SEC.toString(),
                     "rotate" to "0"
                 )
 
@@ -1471,6 +1475,12 @@ class StreamingServerHelper(
         val rtspSubSize: String,
         val rtspSubFps: String,
         val rtspSubBitrate: String,
+        /** Main stream target: [StreamEncoding.AUTO] or a manual kbps value. */
+        val streamBitrate: String,
+        /** "vbr" or "cbr". */
+        val streamBitrateMode: String,
+        /** Seconds between main-stream keyframes. */
+        val streamKeyframeInterval: String,
         /** Effective H.264 frame size for the current selection/Auto, e.g. "1280x720". */
         val effectiveResolution: String,
         /** Estimated H.264 and MJPEG bitrates for [effectiveResolution], in kbps. */
@@ -1556,6 +1566,9 @@ class StreamingServerHelper(
                 put("rtspSubSize", settings.rtspSubSize)
                 put("rtspSubFps", settings.rtspSubFps)
                 put("rtspSubBitrate", settings.rtspSubBitrate)
+                put("streamBitrate", settings.streamBitrate)
+                put("streamBitrateMode", settings.streamBitrateMode)
+                put("streamKeyframeInterval", settings.streamKeyframeInterval)
                 put("effectiveResolution", settings.effectiveResolution)
                 put("streamBitrateKbps", JSONObject().apply {
                     put("h264", settings.streamBitrateKbps.h264)
@@ -1701,9 +1714,20 @@ class StreamingServerHelper(
         val quality = prefs.getString("camera_resolution", "low") ?: "low"
         val streamRes = prefs.getString("stream_res", "auto") ?: "auto"
         val fps = prefs.getString("stream_fps", "30") ?: "30"
+        val fpsInt = (fps.toIntOrNull() ?: 30).coerceIn(1, 60)
+        val manualKbps = StreamEncoding.parseBitrateKbps(
+            prefs.getString(StreamEncoding.PREF_BITRATE, null)
+        )
+        val keyframeIntervalSec = StreamEncoding.parseKeyframeIntervalSec(
+            prefs.getString(StreamEncoding.PREF_KEYFRAME_INTERVAL, null)
+        )
+        val bitrateMode = StreamEncoding.normalizeMode(
+            prefs.getString(StreamEncoding.PREF_BITRATE_MODE, null)
+        )
         // Same sizing/clamping path the encoder uses, so the UI's estimate matches the stream.
         val encCaps = H264HardwareEncoder.caps()
         val (effectiveW, effectiveH) = StreamSizing.effectiveSize(streamRes, quality, encCaps)
+        val h264Bps = StreamSizing.targetBps(effectiveW, effectiveH, fpsInt, manualKbps, encCaps)
         // MJPEG applies the per-camera Scale post-processing before compressing, so its estimate
         // uses the scaled output size.
         val scale = streamScaleFor(cameraId)
@@ -1742,13 +1766,16 @@ class StreamingServerHelper(
                 ?: RtspServer.DEFAULT_SUB_FPS.toString(),
             rtspSubBitrate = prefs.getString(RtspServer.PREF_SUB_BITRATE, null)
                 ?: RtspServer.DEFAULT_SUB_BITRATE_KBPS.toString(),
+            streamBitrate = manualKbps?.toString() ?: StreamEncoding.AUTO,
+            streamBitrateMode = bitrateMode,
+            streamKeyframeInterval = keyframeIntervalSec.toString(),
             effectiveResolution = "${effectiveW}x${effectiveH}",
             streamBitrateKbps = Bitrates(
-                h264 = StreamSizing.estimateKbps(effectiveW, effectiveH, encCaps),
+                h264 = h264Bps / 1000,
                 mjpeg = StreamSizing.estimateMjpegKbps(
                     mjpegW,
                     mjpegH,
-                    (fps.toIntOrNull() ?: 30).coerceAtLeast(1),
+                    fpsInt,
                     DeviceMemoryHelper.mjpegJpegQuality(context),
                 ),
             ),
@@ -1881,7 +1908,7 @@ class StreamingServerHelper(
                         InfoSize(
                             w, h,
                             Bitrates(
-                                h264 = StreamSizing.estimateKbps(effectiveW, effectiveH, encCaps),
+                                h264 = StreamSizing.estimateKbps(effectiveW, effectiveH, streamFps, encCaps),
                                 mjpeg = StreamSizing.estimateMjpegKbps(
                                     mjpegW, mjpegH, streamFps, mjpegQuality
                                 ),

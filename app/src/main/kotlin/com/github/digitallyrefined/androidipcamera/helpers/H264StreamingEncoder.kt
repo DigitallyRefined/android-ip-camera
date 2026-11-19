@@ -74,12 +74,15 @@ class H264StreamingEncoder(
                 encMutable?.stop()
                 val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
                 val fpsCoerced = fps.coerceIn(1, 60)
+                val encConfig = StreamEncoding.encoderConfig(prefs, outW, outH, fpsCoerced)
                 encMutable = H264HardwareEncoder(
                     outW,
                     outH,
                     fpsCoerced,
-                    H264HardwareEncoder.bitrateFor(outW, outH),
-                    false
+                    encConfig.bitrateBps,
+                    false,
+                    encConfig.keyframeIntervalSec,
+                    encConfig.bitrateMode,
                 ) { d, k, pts -> broadcastH264(d, k, pts) }
                 h264HardwareEncoder = encMutable
                 encMutable.requestKeyFrame()
