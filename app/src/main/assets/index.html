@@ -596,10 +596,21 @@
               <button id="modeMjpegBtn" class="btn btn-action" style="width: 49%;">MJPEG</button>
             </div>
 
-            <p class="group-title">Camera Control</p>
+            <label for="resolutionSelect" style="margin-top: 14px">Resolution</label>
+            <select id="resolutionSelect" style="margin-bottom: 14px" onchange='setResolution(this.value)'></select>
 
-            <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
-            <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
+            <label for="fps">Frame Rate (fps)</label>
+            <select id="fps" data-control="fps" style="margin-bottom: 8px">
+              <option value="10">10 fps</option>
+              <option value="15">15 fps</option>
+              <option value="20">20 fps</option>
+              <option value="24">24 fps</option>
+              <option value="25">25 fps</option>
+              <option value="30">30 fps</option>
+            </select>
+            <div class="hint" id="streamSummary" style="margin: 0 0 16px; font-size: 12px; color: #ccc"></div>
+
+            <p class="group-title">Camera Control</p>
 
             <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
             <input id="exposure" type='range' min='-10' max='10' step='1' value='0' data-control='exposure'
@@ -618,9 +629,6 @@
             <label for="contrast">Contrast <span class='val-badge' id='contVal'>0</span></label>
             <input id="contrast" type='range' min='-50' max='50' step='10' value='0' data-control='contrast'
               data-badge='contVal'>
-
-            <label for="fps">Frame Rate (fps)</label>
-            <input id="fps" type='number' min='1' max='60' value='30' data-control='fps'>
 
             <div style="margin-top:12px;">
               <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
@@ -1154,6 +1162,13 @@
 
     document.querySelectorAll('[data-control]').forEach(bindControl);
 
+    // MJPEG's estimate (and the Auto summary) depends on the frame rate: rebuild both on change.
+    const fpsControl = getElById('fps');
+    if (fpsControl) fpsControl.addEventListener('change', () => {
+      populateResolutions();
+      updateStreamSummary();
+    });
+
     function getUserScale() {
       const el = getElById('scale');
       if (!el) return 1;
@@ -1289,7 +1304,6 @@
               ctx.clearRect(0, 0, w, h);
               ctx.drawImage(candidate.bmp, dx, dy, dw, dh);
               lastDrawn = candidate.bmp;
-              setStreamResolution(iw, ih);
               hideStreamLoading();
             }
             requestAnimationFrame(drawLoop);
@@ -1379,6 +1393,9 @@
       const mj = getElById('modeMjpegBtn'), h = getElById('modeH264Btn');
       if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
       if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
+
+      // Bitrate estimates only apply to H.264: relabel the resolution options and summary.
+      populateResolutions();
 
       if (avDelay && avDelayVal) {
         const currentVal = avDelay.value;
@@ -1667,8 +1684,81 @@
         || null;
     }
 
-    function resolutionLabel(w, h) {
-      return w + '×' + h + ' · ' + ((w * h) / 1e6).toFixed(1) + ' MP';
+    // Server-computed sizing/bitrate for the current selection (Auto included). The estimate is
+    // calculated server-side so it matches the encoder's own fit-to-caps/clamp logic exactly.
+    let serverStreamInfo = { effectiveResolution: '', bitrateKbps: { h264: 0, mjpeg: 0 }, fps: 30 };
+
+    function currentFpsValue() {
+      const el = getElById('fps');
+      const n = parseFloat(el ? el.value : '');
+      return isFinite(n) && n > 0 ? n : 0;
+    }
+
+    // MJPEG has no bitrate target: every frame is a JPEG, so its rate scales with fps. The server
+    // computed its estimate at serverStreamInfo.fps, so scale it to the frame rate shown in the UI.
+    function mjpegKbpsEstimate(kbps) {
+      const base = serverStreamInfo.fps || 0;
+      const fps = currentFpsValue();
+      if (!kbps) return 0;
+      if (!base || !fps) return kbps;
+      return Math.round(kbps * fps / base);
+    }
+
+    function streamOptionLabel(w, h, bitrates) {
+      const base = w + '×' + h;
+      if (!bitrates) return base;
+      const kbps = streamMode === 'h264'
+        ? (bitrates.h264 || 0)
+        : mjpegKbpsEstimate(bitrates.mjpeg || 0);
+      if (kbps > 0) return base + ' · ≈' + (kbps / 1000).toFixed(1) + ' Mbps';
+      return base;
+    }
+
+    // A select cannot show a stored value it does not offer; append it instead of dropping the
+    // user's existing frame rate (the server accepts 1..60).
+    function ensureFpsOption(value) {
+      const sel = getElById('fps');
+      if (!sel || value === undefined || value === null || value === '') return;
+      const v = String(value);
+      if (!Array.from(sel.options).some(o => o.value === v)) {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v + ' fps';
+        sel.appendChild(opt);
+      }
+      sel.value = v;
+    }
+
+    // Explicit sizes already carry their estimate in the option label, so this line exists only to
+    // explain what Auto resolves to. It stays hidden for explicit selections to avoid repeating
+    // the bitrate in two places.
+    function updateStreamSummary() {
+      const el = getElById('streamSummary');
+      if (!el) return;
+      const sel = getElById('resolutionSelect');
+      const isAuto = !sel || sel.value === 'auto';
+      if (!isAuto) {
+        el.textContent = '';
+        el.style.display = 'none';
+        return;
+      }
+      const fpsEl = getElById('fps');
+      const fps = fpsEl ? fpsEl.value : '';
+      const m = /^(\d+)x(\d+)$/.exec(serverStreamInfo.effectiveResolution || '');
+      const parts = [];
+      if (m) parts.push(m[1] + '×' + m[2]);
+      if (fps) parts.push(fps + ' fps');
+      const bitrates = serverStreamInfo.bitrateKbps || {};
+      if (streamMode === 'h264') {
+        if (bitrates.h264 > 0) {
+          parts.push('≈' + (bitrates.h264 / 1000).toFixed(1) + ' Mbps');
+        }
+      } else {
+        const mjpeg = mjpegKbpsEstimate(bitrates.mjpeg || 0);
+        if (mjpeg > 0) parts.push('≈' + (mjpeg / 1000).toFixed(1) + ' Mbps');
+      }
+      el.textContent = parts.length ? 'Auto → ' + parts.join(' · ') : '';
+      el.style.display = '';
     }
 
     function populateResolutions() {
@@ -1685,7 +1775,7 @@
         if (!s || !s.w || !s.h) return;
         const opt = document.createElement('option');
         opt.value = s.w + 'x' + s.h;
-        opt.textContent = resolutionLabel(s.w, s.h);
+        opt.textContent = streamOptionLabel(s.w, s.h, s.bitrateKbps);
         select.appendChild(opt);
       });
       const available = Array.from(select.options).some(o => o.value === desiredResolution);
@@ -1701,7 +1791,11 @@
         if (m) {
           const opt = document.createElement('option');
           opt.value = desiredResolution;
-          opt.textContent = resolutionLabel(parseInt(m[1], 10), parseInt(m[2], 10));
+          // The server's estimate follows the fitted effective size, which is what the encoder
+          // uses even when the camera is too busy to enumerate the requested size right now.
+          opt.textContent = streamOptionLabel(
+            parseInt(m[1], 10), parseInt(m[2], 10), serverStreamInfo.bitrateKbps
+          );
           select.appendChild(opt);
           select.value = desiredResolution;
         } else {
@@ -1711,11 +1805,13 @@
       } else {
         select.value = 'auto';
       }
+      updateStreamSummary();
     }
 
     function setResolution(value) {
       desiredResolution = value;
       sendControl('resolution', value);
+      updateStreamSummary();
     }
 
     function setCamera(camera) {
@@ -1844,6 +1940,20 @@
       if (settings.deviceHasFlash !== undefined) deviceHasFlash = !!settings.deviceHasFlash;
       if (settings.torch === 'on' || settings.torch === 'off') setTorchState(settings.torch);
       if (settings.streamRes) desiredResolution = settings.streamRes;
+      if (settings.effectiveResolution) {
+        serverStreamInfo.effectiveResolution = String(settings.effectiveResolution);
+      }
+      if (settings.streamBitrateKbps && typeof settings.streamBitrateKbps === 'object') {
+        serverStreamInfo.bitrateKbps = {
+          h264: parseInt(settings.streamBitrateKbps.h264, 10) || 0,
+          mjpeg: parseInt(settings.streamBitrateKbps.mjpeg, 10) || 0,
+        };
+      }
+      if (settings.fps != null) {
+        serverStreamInfo.fps = parseFloat(settings.fps) || serverStreamInfo.fps;
+      }
+      // Set the frame rate before rebuilding the resolution options: MJPEG estimates depend on it.
+      ensureFpsOption(settings.fps);
       if (settings.rotate != null) {
         rotate = parseInt(settings.rotate, 10) || 0;
         // Reflect server-provided rotation in the UI
@@ -1889,10 +1999,7 @@
         mirrorEl.checked = settings.mirror === 'true';
       }
 
-      const fps = getElById('fps');
-      if (fps && settings.fps) {
-        fps.value = settings.fps;
-      }
+      updateStreamSummary();
       const isOn = (v) => v === true || v === 1 || v === 'true' || v === 'on' || v === '1';
       // Per-camera `lensSettings` callers pass no recording mode; only touch the radios when the
       // global settings payload actually carries the mode (or the old motion flag).
@@ -1933,17 +2040,6 @@
           if (b) b.textContent = formatControlValue(el);
         }
       });
-    }
-
-    // Badge showing the actual negotiated resolution (from decoded frames).
-    let lastStreamRes = '';
-    function setStreamResolution(w, h) {
-      if (!w || !h) return;
-      const label = w + '×' + h;
-      if (label === lastStreamRes) return;
-      lastStreamRes = label;
-      const badge = getElById('resolutionVal');
-      if (badge) badge.innerText = label;
     }
 
     function updateStatusOverlay(data) {

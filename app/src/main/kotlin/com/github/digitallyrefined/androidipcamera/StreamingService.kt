@@ -1074,30 +1074,11 @@ class StreamingService : LifecycleService() {
         val caps = H264HardwareEncoder.caps()
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val streamRes = prefs.getString("stream_res", "auto") ?: "auto"
-        if (streamRes == "auto") {
-            val quality = prefs.getString("camera_resolution", "low") ?: "low"
-            val target = when (quality) {
-                "high" -> Size(1280, 720)
-                "medium" -> Size(960, 720)
-                "low" -> Size(800, 600)
-                else -> Size(800, 600)
-            }
-            return fitToEncoderCaps(target.width, target.height, caps.maxW, caps.maxH)
-        }
-        val m = Regex("(\\d+)x(\\d+)").find(streamRes)
-        val w = m?.groupValues?.get(1)?.toIntOrNull() ?: 1920
-        val h = m?.groupValues?.get(2)?.toIntOrNull() ?: 1080
+        val quality = prefs.getString("camera_resolution", "low") ?: "low"
         // Keep the selected aspect ratio when the encoder cannot take the full size; capping
         // width and height independently would turn e.g. 1080x1920 into a square frame.
-        return fitToEncoderCaps(w, h, caps.maxW, caps.maxH)
-    }
-
-    /** Scale [w]×[h] down to fit the encoder caps without changing its aspect ratio. */
-    private fun fitToEncoderCaps(w: Int, h: Int, maxW: Int, maxH: Int): Size {
-        if (w <= maxW && h <= maxH) return Size(w, h)
-        val scale = minOf(maxW.toDouble() / w, maxH.toDouble() / h)
-        fun even(v: Double) = ((v.toInt().coerceAtLeast(2)) / 2) * 2
-        return Size(even(w * scale), even(h * scale))
+        val (w, h) = StreamSizing.effectiveSize(streamRes, quality, caps)
+        return Size(w, h)
     }
 
     private suspend fun startCameraIfNeeded() {
