@@ -14,13 +14,13 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace 'com.github.digitallyrefined.androidipcamera'
-    compileSdk 34
+    compileSdk 36
     ndkVersion "27.2.12479018"
 
     defaultConfig {
         applicationId "com.github.digitallyrefined.androidipcamera"
         minSdk 24
-        targetSdk 34
+        targetSdk 36
         versionCode 180
         versionName "0.18.0"
 
@@ -187,35 +187,75 @@ rustAbis.each { abi ->
         description = "Builds the Rust OpenTunnel JNI library for Android ${abiName}"
         workingDir rustCrateDir
 
-        def ndk = android.ndkDirectory
-        // The NDK ships one prebuilt LLVM toolchain per host (darwin-x86_64,
-        // linux-x86_64, windows-x86_64). Pick whichever one this machine has.
-        def prebuiltParent = new File(ndk, "toolchains/llvm/prebuilt")
-        def prebuilt = prebuiltParent.listFiles()?.find { it.directory }
-        if (prebuilt == null) {
-            throw new GradleException("No NDK LLVM toolchain found under ${prebuiltParent}")
+        // Do not use android.ndkDirectory here: it throws "NDK is not installed"
+        // while the project is still being configured. F-Droid installs the NDK
+        // from the metadata `ndk:` field, and other builders may not have it
+        // until the build actually runs. Deriving the path from the SDK keeps
+        // configuration working and lets the task report a useful error.
+        def ndkVersion = android.ndkVersion
+        def sdkDir = androidComponents.sdkComponents.sdkDirectory.get().asFile
+        def ndkDir = new File(sdkDir, "ndk/${ndkVersion}")
+
+        // Keep the local username and checkout path out of the native library.
+        // Computed here because doFirst may not reference the rootProject model.
+        def userHome = new File(System.getProperty("user.home")).absolutePath
+        def cargoHome = new File(System.getenv("CARGO_HOME") ?: new File(userHome, ".cargo").path).absolutePath
+        def rustupHome = new File(System.getenv("RUSTUP_HOME") ?: new File(userHome, ".rustup").path).absolutePath
+        // Specific prefixes must come last: rustc uses the last matching prefix.
+        def rustRemapFlags = [
+            "--remap-path-prefix=${userHome}=/home/user",
+            "--remap-path-prefix=${rustupHome}=/rustup",
+            "--remap-path-prefix=${cargoHome}=/cargo",
+            "--remap-path-prefix=${rootProject.projectDir.absolutePath}=/build/${rootProject.name}",
+        ]
+        if (rustTarget == "aarch64-linux-android") {
+            // CARGO_ENCODED_RUSTFLAGS replaces the target rustflags from
+            // .cargo/config.toml, so keep the 16 KB page-size link flag.
+            rustRemapFlags.addAll(["-C", "link-arg=-Wl,-z,max-page-size=16384"])
         }
-        def clang = new File(prebuilt, "bin/${clangName}")
-        def ar = new File(prebuilt, "bin/llvm-ar")
-        def ranlib = new File(prebuilt, "bin/llvm-ranlib")
 
         environment "CARGO_TARGET_DIR", rustTargetDir.get().asFile.absolutePath
-        environment "CARGO_TARGET_${rustTarget.replace('-', '_').toUpperCase()}_LINKER", clang.absolutePath
-        environment "CC_${rustTarget}", clang.absolutePath
-        environment "CC_${rustTarget.replace('-', '_')}", clang.absolutePath
-        environment "AR_${rustTarget}", ar.absolutePath
-        environment "AR_${rustTarget.replace('-', '_')}", ar.absolutePath
-        environment "RANLIB_${rustTarget}", ranlib.absolutePath
-        environment "RANLIB_${rustTarget.replace('-', '_')}", ranlib.absolutePath
 
-        commandLine "cargo", "build", "--release", "--target", rustTarget
+        commandLine "cargo", "build", "--release", "--locked", "--target", rustTarget
 
         doFirst {
+            if (!ndkDir.isDirectory()) {
+                throw new GradleException(
+                    "Android NDK ${ndkVersion} is not installed at ${ndkDir}. " +
+                    "Install it with sdkmanager, or add 'ndk: ${ndkVersion}' to the " +
+                    "F-Droid build metadata."
+                )
+            }
+
+            // The NDK ships one prebuilt LLVM toolchain per host (darwin-x86_64,
+            // linux-x86_64, windows-x86_64). Pick whichever one this machine has.
+            def prebuiltParent = new File(ndkDir, "toolchains/llvm/prebuilt")
+            def prebuilt = prebuiltParent.listFiles()?.find { it.directory }
+            if (prebuilt == null) {
+                throw new GradleException("No NDK LLVM toolchain found under ${prebuiltParent}")
+            }
+            def clang = new File(prebuilt, "bin/${clangName}")
+            def ar = new File(prebuilt, "bin/llvm-ar")
+            def ranlib = new File(prebuilt, "bin/llvm-ranlib")
+
             [clang, ar, ranlib].each {
                 if (!it.exists()) {
                     throw new GradleException("Missing NDK tool: ${it}")
                 }
             }
+
+            environment "CARGO_TARGET_${rustTarget.replace('-', '_').toUpperCase()}_LINKER", clang.absolutePath
+            environment "CC_${rustTarget}", clang.absolutePath
+            environment "CC_${rustTarget.replace('-', '_')}", clang.absolutePath
+            environment "AR_${rustTarget}", ar.absolutePath
+            environment "AR_${rustTarget.replace('-', '_')}", ar.absolutePath
+            environment "RANLIB_${rustTarget}", ranlib.absolutePath
+            environment "RANLIB_${rustTarget.replace('-', '_')}", ranlib.absolutePath
+
+            def encodedRustFlags = System.getenv("CARGO_ENCODED_RUSTFLAGS")
+            def allRustFlags = encodedRustFlags ? encodedRustFlags.split("\u001f", -1).toList() : []
+            allRustFlags.addAll(rustRemapFlags)
+            environment "CARGO_ENCODED_RUSTFLAGS", allRustFlags.join("\u001f")
 
             def rustBin = resolveRustBinDir()
             if (rustBin == null) {
@@ -232,10 +272,14 @@ rustAbis.each { abi ->
         }
 
         inputs.files(fileTree(rustCrateDir) {
-            include "Cargo.toml", "Cargo.lock", "src/**"
+            // .cargo/config.toml carries the linker flags (16 KB page alignment),
+            // so a change there has to invalidate the cached build output.
+            include "Cargo.toml", "Cargo.lock", "src/**", ".cargo/config.toml"
         })
+        inputs.file(rootProject.file("rust-toolchain.toml"))
         inputs.property "rustTarget", rustTarget
         inputs.property "rustApiLevel", rustApiLevel
+        inputs.property "ndkVersion", ndkVersion
         outputs.dir(new File(rustJniDir.get().asFile, abiName))
 
         doLast {
@@ -271,7 +315,7 @@ tasks.matching { it.name == "preBuild" }.configureEach {
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.appcompat:appcompat:1.8.0'
     implementation 'com.google.android.material:material:1.10.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 

@@ -5,9 +5,12 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.EditTextPreference
@@ -38,6 +41,22 @@ class SettingsActivity : AppCompatActivity() {
             .beginTransaction()
             .replace(android.R.id.content, SettingsFragment())
             .commit()
+
+        // AppCompat extends the action bar behind the status bar on Android 15+, but
+        // leaves the content edge to edge and dispatches the window insets to it.
+        // Consume them so the preference list starts below the action bar and above
+        // the navigation bar.
+        val content = findViewById<View>(android.R.id.content)
+        ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(
+                systemBars.left,
+                systemBars.top,
+                systemBars.right,
+                systemBars.bottom
+            )
+            insets
+        }
     }
 
     class SettingsFragment : PreferenceFragmentCompat() {

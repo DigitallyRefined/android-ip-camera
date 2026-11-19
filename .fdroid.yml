@@ -28,12 +28,16 @@ Builds:
       - skipSigning=true
       - enableAbiSplits=false
 
-  - versionName: 0.4.0
-    versionCode: 40
-    commit: ff13748335039a109c43b6453b59a17aaaf0bbf6
+  - versionName: 0.18.0
+    versionCode: 180
+    commit: b6ca540e2b002143c94a2be227f3c303b326755c
     subdir: app
+    sudo:
+      - apt-get update
+      - apt-get install -y --no-install-recommends build-essential rustup
     gradle:
       - yes
+    ndk: 27.2.12479018
     gradleprops:
       - skipSigning=true
       - enableAbiSplits=false
@@ -42,5 +46,5 @@ AllowedAPKSigningKeys: 1111be81c861e199c6485d367c37680c4b778fba301980d2f0f9a2800
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
-CurrentVersion: 0.4.0
-CurrentVersionCode: 40
+CurrentVersion: 0.18.0
+CurrentVersionCode: 180

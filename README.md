@@ -338,17 +338,41 @@ The app uses the following permissions to function:
 <details>
 <summary>Reproducible builds</summary>
 
-This project uses [reproducible builds](https://f-droid.org/docs/Reproducible_Builds/). Release APKs should be built from a clean tree at the tagged commit using Gradle directly:
+> **Build releases in the container.** Native macOS and Windows builds are not byte-for-byte identical to Linux builds — the Rust compiler, Android NDK and JDK each ship separate host toolchains — so they do not match the F-Droid APK. Build the release APK in the provided Docker builder (it runs Linux on any host; add `--platform linux/amd64` on Apple Silicon or ARM Windows) or on a Linux CI runner, not with Android Studio's native toolchain.
+
+This project uses [reproducible builds](https://f-droid.org/docs/Reproducible_Builds/). Release APKs should be built from a clean tree at the tagged commit in the container:
 
 ```bash
-./gradlew clean assembleRelease
+docker build -t android-ip-camera:builder .
+docker run --rm \
+  -v "$PWD":/workspace \
+  -v "$PWD/.cache/gradle":/cache/gradle \
+  android-ip-camera:builder release -PenableAbiSplits=false
 ```
+
+App bundle build:
+
+```bash
+docker run --rm \
+  -v "$PWD":/workspace \
+  -v "$PWD/.cache/gradle":/cache/gradle \
+  android-ip-camera:builder ./gradlew bundleRelease
+```
+
+Debug build:
+
+```bash
+docker run --rm \
+  -v "$PWD":/workspace \
+  -v "$PWD/.cache/gradle":/cache/gradle \
+  android-ip-camera:builder debug
+```
+
+Signing: copy `signing.properties.default` to `signing.properties`, set `storeFile` to your keystore (for example `app/signing-key.jks`) and fill in the passwords. Without `signing.properties`, add `-PskipSigning` to the release command to produce an unsigned APK.
 
 The release variant will automatically sign the APK build. Build-tools 35+ is known to produce signatures that fail reproducibility verification.
 
 The OpenTunnel client is compiled from `opentunnel-native` by the Gradle build, so a local build also needs the Android NDK `27.2.12479018` and a Rust toolchain with the `aarch64-linux-android` and `armv7-linux-androideabi` targets. The Docker builder installs both.
-
-You can also build the debug or signed release APKs with Docker: `docker build -t android-ip-camera:builder .` then `docker run --rm -v "$PWD":/workspace -v "$PWD/.cache/gradle":/cache/gradle android-ip-camera:builder debug` (or `release` to build with a signing key). See the [Dockerfile](Dockerfile) for caching and advanced usage.
 
 ### Build Variants
 
@@ -362,6 +386,11 @@ By default, release builds generate architecture-specific APK splits for `arm64-
 **Release builds with architecture-specific APKs (default):**
 ```bash
 ./gradlew clean assembleRelease
+```
+
+**Release build as an app bundle:**
+```bash
+./gradlew clean bundleRelease
 ```
 
 The `enableAbiSplits` property defaults to `true`. Set it to `false` to generate only the universal APK, which is the recommended approach for F-Droid to avoid unnecessary complexity in the build pipeline.

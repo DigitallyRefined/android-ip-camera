@@ -29,7 +29,7 @@
 #          -v "$PWD/.cache/android-sdk":/cache/sdk \
 #          android-ip-camera:builder \
 #          sh -lc 'yes | sdkmanager --sdk_root=/cache/sdk --licenses >/dev/null \
-#                   && sdkmanager --sdk_root=/cache/sdk --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null'
+#                   && sdkmanager --sdk_root=/cache/sdk --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null'
 #
 #    (If you skip .cache/android-sdk, the SDK baked into the image is used
 #     instead and AGP simply re-downloads anything extra on demand.)
@@ -85,17 +85,16 @@ ENV ANDROID_HOME=/opt/android-sdk \
 
 # SDK components matched to .github/workflows/reproducible-build.yml
 ARG ANDROID_CMD_TOOLS_VERSION=11076708
-ARG ANDROID_PLATFORM=android-34
-ARG ANDROID_BUILD_TOOLS=34.0.0
+ARG ANDROID_PLATFORM=android-36
+ARG ANDROID_BUILD_TOOLS=36.0.0
 ARG ANDROID_NDK_VERSION=27.2.12479018
-ARG RUST_VERSION=1.91.0
 
 WORKDIR /workspace
 
 # Minimal tooling to fetch/unpack the SDK (git/ssh keep Gradle VCS plugins happy).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip git openssh-client build-essential \
+      ca-certificates curl unzip git build-essential rustup \
  && rm -rf /var/lib/apt/lists/*
 
 # Install Android command-line tools.
@@ -118,13 +117,13 @@ RUN yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev
 ENV ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
 
 # Rust + the Android ARM targets, used to build the OpenTunnel JNI libraries.
+# The channel, profile, and targets come from rust-toolchain.toml; rustup is
+# the distro package, installed above.
 ENV RUSTUP_HOME=/opt/rustup \
     CARGO_HOME=/opt/cargo \
     PATH="/opt/cargo/bin:${PATH}"
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal \
-      --default-toolchain "${RUST_VERSION}" \
-      --target aarch64-linux-android \
-      --target armv7-linux-androideabi \
+COPY rust-toolchain.toml /workspace/rust-toolchain.toml
+RUN rustup show \
  && rustc --version \
  && cargo --version \
  && rustup target list --installed
