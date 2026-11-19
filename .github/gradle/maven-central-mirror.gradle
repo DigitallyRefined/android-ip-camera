@@ -1,0 +1,75 @@
+// Route Maven Central downloads through Google's mirror of Maven Central.
+//
+// GitHub-hosted runners share egress IPs that Maven Central rate-limits or
+// blocks. When that happens every artifact hosted on Maven Central fails with
+// "Could not find ...", even though the coordinates are valid.
+//
+// Google publishes a mirror of Maven Central at:
+//   https://maven-central.storage-download.googleapis.com/maven2/
+//
+// The mirror can lag Maven Central by a day, so the real Maven Central stays at
+// the end of the repository list as a fallback for newly published artifacts.
+
+def centralPattern = ~/^https:\/\/(repo\.maven\.apache\.org|repo1\.maven\.org)\/maven2\/?/
+def mirrorUrl = 'https://maven-central.storage-download.googleapis.com/maven2/'
+def fallbackName = 'mavenCentralBehindMirror'
+def fallbackUrl = 'https://repo.maven.apache.org/maven2/'
+
+def routeRepositories = { RepositoryHandler repositories ->
+    // `all` also runs for repositories the build adds later, e.g. the ones in
+    // the root buildscript block.
+    def routedCentral = false
+    repositories.all { repository ->
+        if (!(repository instanceof MavenArtifactRepository) || repository.name == fallbackName) {
+            return
+        }
+
+        if (repository.url.toString() =~ centralPattern) {
+            // Replace the URL in place so google() etc. keep their order.
+            repository.url = repository.url.toString().replaceFirst(centralPattern, mirrorUrl)
+            routedCentral = true
+        }
+
+        if (routedCentral) {
+            if (repositories.findByName(fallbackName) == null) {
+                repositories.maven {
+                    name = fallbackName
+                    url = fallbackUrl
+                }
+            }
+            // Keep the real Maven Central last, after any repository added
+            // after this callback has run.
+            def fallback = repositories.findByName(fallbackName)
+            if (repositories.last() != fallback) {
+                repositories.remove(fallback)
+                repositories.add(fallback)
+            }
+        }
+    }
+}
+
+beforeSettings { settings ->
+    routeRepositories(settings.buildscript.repositories)
+    routeRepositories(settings.pluginManagement.repositories)
+    routeRepositories(settings.dependencyResolutionManagement.repositories)
+}
+
+settingsEvaluated { settings ->
+    // A build without plugin repositories uses the Gradle Plugin Portal, which
+    // redirects artifacts it does not host to Maven Central.
+    if (settings.pluginManagement.repositories.isEmpty()) {
+        settings.pluginManagement.repositories { repositories ->
+            maven { url = mirrorUrl }
+            maven {
+                name = fallbackName
+                url = fallbackUrl
+            }
+            gradlePluginPortal()
+        }
+    }
+}
+
+allprojects { project ->
+    routeRepositories(project.buildscript.repositories)
+    routeRepositories(project.repositories)
+}

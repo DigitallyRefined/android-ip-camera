@@ -2,4 +2,5 @@
 # The repo sources and signing secrets are bind-mounted at run time instead.
 *
 !Dockerfile
+!rust-toolchain.toml
 !scripts/docker/

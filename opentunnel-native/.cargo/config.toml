@@ -1,0 +1,14 @@
+# Android 16 KB page-size support.
+#
+# Android 15+ devices can ship with 16 KB memory pages, and latest requirements
+# need every 64-bit native library to be 16 KB aligned. NDK r27 still defaults the
+# linker to 4 KB pages, so the LOAD segments of libopentunnel_native.so would be
+# emitted with p_align 0x1000 and the app would be rejected. Ask lld for 16 KB
+# alignment explicitly; 32-bit ABIs are unaffected because 16 KB pages are a
+# 64-bit-only configuration.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+# Kept for parity in case an x86_64 emulator target is added later.
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
