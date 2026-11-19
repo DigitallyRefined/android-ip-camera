@@ -5,6 +5,7 @@ import java.io.BufferedInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -12,9 +13,13 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.URI
+import java.net.URL
 import java.util.ArrayDeque
 import java.util.LinkedHashMap
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -43,8 +48,10 @@ data class OnvifStreamInfo(
 )
 
 /**
- * Minimal ONVIF Profile S (+ PullPoint events) device over HTTP(S)/SOAP 1.2, plus WS-Discovery.
- * Targets Home Assistant's ONVIF integration and UniFi Protect third-party adoption.
+ * Minimal ONVIF Profile S (+ PullPoint and WS-BaseNotification push events) device over
+ * HTTP(S)/SOAP 1.2, plus WS-Discovery.
+ * Targets Home Assistant's ONVIF integration, UniFi Protect and hardware NVRs that subscribe
+ * to motion events via `wsnt:Subscribe`.
  * Pure JVM; the Android caller must hold a WifiManager.MulticastLock for discovery.
  */
 class OnvifServer(
@@ -72,6 +79,7 @@ class OnvifServer(
         private const val TOPIC_DIALECT = "http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet"
         private const val TOPIC_CELL = "tns1:RuleEngine/CellMotionDetector/Motion"
         private const val TOPIC_ALARM = "tns1:VideoSource/MotionAlarm"
+        private const val WSNT_BW = "http://docs.oasis-open.org/wsn/bw-2"
 
         /** Operations ONVIF allows without credentials (plus GetCapabilities for Protect probing). */
         private val UNAUTHENTICATED = setOf(
@@ -89,7 +97,11 @@ class OnvifServer(
         val text: String get() = String(body, Charsets.UTF_8)
     }
 
-    private class Subscription(val id: String, @Volatile var expiresAt: Long) {
+    /**
+     * A subscription is either a pull-point queue ([consumer] null) or a WS-BaseNotification
+     * push subscription that POSTs `wsnt:Notify` to [consumer].
+     */
+    private class Subscription(val id: String, @Volatile var expiresAt: Long, val consumer: String? = null) {
         val queue = ArrayDeque<String>()
         val lock = Object()
     }
@@ -104,6 +116,8 @@ class OnvifServer(
     private val issuedNonces = object : LinkedHashMap<String, Long>(64, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?) = size > 256
     }
+    /** Serialises outbound `wsnt:Notify` deliveries so consumers see events in order. */
+    @Volatile private var notifyPool: ExecutorService? = null
     @Volatile private var motion = false
     @Volatile private var secure = false
     private val openSockets = ConcurrentHashMap.newKeySet<Socket>()
@@ -151,6 +165,8 @@ class OnvifServer(
 
     @Synchronized
     fun stop() {
+        notifyPool?.shutdownNow()
+        notifyPool = null
         if (!running) return
         running = false
         stopped = true
@@ -167,12 +183,15 @@ class OnvifServer(
         acceptThread = null
     }
 
-    /** Publish motion state to every PullPoint subscriber (both CellMotionDetector and MotionAlarm topics). */
+    /** Publish motion state to every subscriber (PullPoint queue or push consumer). */
     fun setMotion(active: Boolean) {
         if (motion == active) return
         motion = active
         val now = System.currentTimeMillis()
-        for (s in subscriptions.values) enqueue(s, motionMessages(active, "Changed", now))
+        val msgs = motionMessages(active, "Changed", now)
+        for (s in subscriptions.values) {
+            if (s.consumer != null) postNotify(s, msgs) else enqueue(s, msgs)
+        }
     }
 
     // ===================================================================== HTTP
@@ -321,7 +340,15 @@ class OnvifServer(
         }
         if (result == null) onLog("ONVIF unsupported action $action ($ns) from $who")
         return if (result == null) soapFault("ter:ActionNotSupported", "Action $action not supported", 400)
-        else HttpResponse(200, OnvifXml.envelope(result).toByteArray(Charsets.UTF_8))
+        else HttpResponse(200, OnvifXml.envelope(result, wsntResponseHeader(action)).toByteArray(Charsets.UTF_8))
+    }
+
+    /** WS-BaseNotification clients (hardware NVRs) expect the response's `wsa:Action`. */
+    private fun wsntResponseHeader(action: String): String = when (action) {
+        "Subscribe" -> "<wsa:Action>$WSNT_BW/NotificationProducer/SubscribeResponse</wsa:Action>"
+        "Renew" -> "<wsa:Action>$WSNT_BW/SubscriptionManager/RenewResponse</wsa:Action>"
+        "Unsubscribe" -> "<wsa:Action>$WSNT_BW/SubscriptionManager/UnsubscribeResponse</wsa:Action>"
+        else -> ""
     }
 
     private fun fault(code: String, msg: String) = "FAULT:$code|$msg"
@@ -450,7 +477,7 @@ class OnvifServer(
                 "<tt:SupportedVersions><tt:Major>2</tt:Major><tt:Minor>60</tt:Minor></tt:SupportedVersions></tt:System>" +
                 "<tt:Security><tt:TLS1.1>false</tt:TLS1.1><tt:TLS1.2>$secure</tt:TLS1.2><tt:OnboardKeyGeneration>false</tt:OnboardKeyGeneration><tt:AccessPolicyConfig>false</tt:AccessPolicyConfig><tt:X.509Token>false</tt:X.509Token><tt:SAMLToken>false</tt:SAMLToken><tt:KerberosToken>false</tt:KerberosToken><tt:RELToken>false</tt:RELToken></tt:Security>" +
                 "</tt:Device>" +
-                "<tt:Events><tt:XAddr>$b/onvif/events_service</tt:XAddr><tt:WSSubscriptionPolicySupport>false</tt:WSSubscriptionPolicySupport><tt:WSPullPointSupport>true</tt:WSPullPointSupport><tt:WSPausableSubscriptionManagerInterfaceSupport>false</tt:WSPausableSubscriptionManagerInterfaceSupport></tt:Events>" +
+                "<tt:Events><tt:XAddr>$b/onvif/events_service</tt:XAddr><tt:WSSubscriptionPolicySupport>true</tt:WSSubscriptionPolicySupport><tt:WSPullPointSupport>true</tt:WSPullPointSupport><tt:WSPausableSubscriptionManagerInterfaceSupport>false</tt:WSPausableSubscriptionManagerInterfaceSupport></tt:Events>" +
                 "<tt:Imaging><tt:XAddr>$b/onvif/imaging_service</tt:XAddr></tt:Imaging>" +
                 "<tt:Media><tt:XAddr>$b/onvif/media_service</tt:XAddr><tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast><tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP></tt:StreamingCapabilities>" +
                 "<tt:Extension><tt:ProfileCapabilities><tt:MaximumNumberOfProfiles>2</tt:MaximumNumberOfProfiles></tt:ProfileCapabilities></tt:Extension></tt:Media>" +
@@ -651,8 +678,8 @@ class OnvifServer(
     // ===================================================================== events
 
     private fun eventServiceCaps() =
-        "<tev:Capabilities WSSubscriptionPolicySupport=\"false\" WSPullPointSupport=\"true\" WSPausableSubscriptionManagerInterfaceSupport=\"false\" " +
-            "MaxNotificationProducers=\"1\" MaxPullPoints=\"$MAX_SUBSCRIPTIONS\" PersistentNotificationStorage=\"false\"/>"
+        "<tev:Capabilities WSSubscriptionPolicySupport=\"true\" WSPullPointSupport=\"true\" WSPausableSubscriptionManagerInterfaceSupport=\"false\" " +
+            "MaxNotificationProducers=\"$MAX_SUBSCRIPTIONS\" MaxPullPoints=\"$MAX_SUBSCRIPTIONS\" PersistentNotificationStorage=\"false\"/>"
 
     private fun messageDescription(source: List<Pair<String, String>>, data: Pair<String, String>) =
         "<tt:MessageDescription IsProperty=\"true\"><tt:Source>" +
@@ -705,6 +732,67 @@ class OnvifServer(
         }
     }
 
+    private fun notifyExecutor(): ExecutorService {
+        notifyPool?.takeIf { !it.isShutdown }?.let { return it }
+        return synchronized(this) {
+            notifyPool?.takeIf { !it.isShutdown } ?: Executors.newSingleThreadExecutor { r ->
+                Thread(r, "OnvifNotify").apply { isDaemon = true }
+            }.also { notifyPool = it }
+        }
+    }
+
+    /** Queues a WS-BaseNotification `wsnt:Notify` POST for a push subscriber. */
+    private fun postNotify(s: Subscription, msgs: List<String>, delayMs: Long = 0) {
+        val url = s.consumer ?: return
+        try {
+            notifyExecutor().execute {
+                // Give the SubscribeResponse time to reach the consumer first; some NVRs
+                // reject notifications that arrive before the subscription handshake completes.
+                if (delayMs > 0) {
+                    try {
+                        Thread.sleep(delayMs)
+                    } catch (_: InterruptedException) {
+                        return@execute
+                    }
+                }
+                deliverNotify(url, msgs)
+            }
+        } catch (_: RejectedExecutionException) {
+            onLog("ONVIF Notify dropped (server stopping) for $url")
+        }
+    }
+
+    private fun notifyXml(to: String, msgs: List<String>): String {
+        val header = "<wsa:Action>$WSNT_BW/NotificationProducer/Notify</wsa:Action>" +
+            "<wsa:MessageID>urn:uuid:${UUID.randomUUID()}</wsa:MessageID>" +
+            "<wsa:To>${e(to)}</wsa:To>"
+        return OnvifXml.envelope("<wsnt:Notify>${msgs.joinToString("")}</wsnt:Notify>", header)
+    }
+
+    private fun deliverNotify(url: String, msgs: List<String>) {
+        val xml = notifyXml(url, msgs)
+        try {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            try {
+                conn.connectTimeout = 5_000
+                conn.readTimeout = 5_000
+                conn.useCaches = false
+                conn.instanceFollowRedirects = false
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/soap+xml; charset=utf-8")
+                conn.outputStream.use { it.write(xml.toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                (if (code in 200..299) conn.inputStream else conn.errorStream)?.use { it.readBytes() }
+                if (code !in 200..299) onLog("ONVIF Notify to $url rejected with HTTP $code")
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            onLog("ONVIF Notify to $url failed: ${e.message}")
+        }
+    }
+
     private fun pruneExpired(now: Long) {
         subscriptions.values.filter { it.expiresAt < now }.forEach { s ->
             subscriptions.remove(s.id)
@@ -714,9 +802,11 @@ class OnvifServer(
 
     /** Find the subscription addressed by the request path or (fallback) the wsa:To header. */
     private fun subscriptionFor(path: String, header: Element?): Subscription? {
-        val id = path.substringAfter("/onvif/pullpoint/", "").ifEmpty {
-            OnvifXml.text(header, "To")?.substringAfter("/onvif/pullpoint/", "").orEmpty()
-        }.trim('/')
+        fun idFrom(value: String): String =
+            value.substringAfter("/onvif/pullpoint/", "").ifEmpty {
+                value.substringAfter("/onvif/subscription/", "")
+            }.substringBefore('/').substringBefore('?')
+        val id = idFrom(path).ifEmpty { idFrom(OnvifXml.text(header, "To") ?: "") }
         return if (id.isEmpty()) null else subscriptions[id]
     }
 
@@ -766,8 +856,11 @@ class OnvifServer(
             }
             "SetSynchronizationPoint" -> {
                 val sub = subscriptionFor(path, header)
-                if (sub != null) enqueue(sub, motionMessages(motion, "Initialized", now))
-                else subscriptions.values.forEach { enqueue(it, motionMessages(motion, "Initialized", now)) }
+                val targets = sub?.let { listOf(it) } ?: subscriptions.values.toList()
+                targets.forEach { s ->
+                    val msgs = motionMessages(motion, "Initialized", now)
+                    if (s.consumer != null) postNotify(s, msgs) else enqueue(s, msgs)
+                }
                 "<tev:SetSynchronizationPointResponse/>"
             }
             "Seek" -> fault("ter:ActionNotSupported", "Seek not supported")
@@ -775,11 +868,36 @@ class OnvifServer(
         }
     }
 
-    /** WS-BaseNotification operations sent to the pull-point (subscription manager) address. */
+    /** WS-BaseNotification operations sent to the events service or subscription manager address. */
     private fun notification(action: String, op: Element, path: String, header: Element?): String? {
         val now = System.currentTimeMillis()
         pruneExpired(now)
         return when (action) {
+            "Subscribe" -> {
+                val consumer = OnvifXml.find(op, "ConsumerReference")
+                    ?.let { OnvifXml.text(it, "Address") }
+                    ?.trim()
+                    .orEmpty()
+                val uri = runCatching { URI(consumer) }.getOrNull()
+                val scheme = uri?.scheme?.lowercase().orEmpty()
+                if (uri == null || (scheme != "http" && scheme != "https") || uri.host.isNullOrEmpty()) {
+                    return fault("ter:InvalidArgVal", "Invalid ConsumerReference address")
+                }
+                val term = OnvifXml.parseTermination(OnvifXml.text(op, "InitialTerminationTime"), now)
+                    ?: (now + DEFAULT_SUB_MS)
+                if (subscriptions.size >= MAX_SUBSCRIPTIONS) {
+                    subscriptions.values.minByOrNull { it.expiresAt }?.let { subscriptions.remove(it.id) }
+                }
+                val sub = Subscription(OnvifXml.randomHex(8), term.coerceAtLeast(now + 10_000), consumer)
+                subscriptions[sub.id] = sub
+                onLog("ONVIF push subscription ${sub.id} -> $consumer")
+                // Initial state, like a real NotificationProducer; lets the NVR seed its alarm state.
+                postNotify(sub, motionMessages(motion, "Initialized", now), delayMs = 250)
+                "<wsnt:SubscribeResponse><wsnt:SubscriptionReference>" +
+                    "<wsa:Address>${e(baseUrl())}/onvif/subscription/${sub.id}</wsa:Address></wsnt:SubscriptionReference>" +
+                    "<wsnt:CurrentTime>${OnvifXml.isoUtc(now)}</wsnt:CurrentTime><wsnt:TerminationTime>${OnvifXml.isoUtc(sub.expiresAt)}</wsnt:TerminationTime>" +
+                    "</wsnt:SubscribeResponse>"
+            }
             "Renew" -> {
                 val sub = subscriptionFor(path, header) ?: return fault("ter:InvalidArgVal", "Unknown subscription")
                 sub.expiresAt = (OnvifXml.parseTermination(OnvifXml.text(op, "TerminationTime"), now) ?: (now + DEFAULT_SUB_MS)).coerceAtLeast(now + 10_000)
@@ -792,7 +910,6 @@ class OnvifServer(
                 synchronized(sub.lock) { sub.lock.notifyAll() }
                 "<wsnt:UnsubscribeResponse/>"
             }
-            // Push (Subscribe) isn't offered: HA falls back to PullPoint when this faults.
             else -> null
         }
     }

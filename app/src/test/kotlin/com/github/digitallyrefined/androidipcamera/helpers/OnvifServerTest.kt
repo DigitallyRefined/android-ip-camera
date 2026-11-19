@@ -7,9 +7,15 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.BufferedInputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.net.URL
 import java.util.UUID
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 class OnvifServerTest {
     private val user = "admin"
@@ -120,9 +126,16 @@ class OnvifServerTest {
         assertEquals("a1:b2:c3:d4:e5:f6", OnvifXml.text(ni, "HwAddress"))
         val caps = parseOk(call(s, "<tds:GetCapabilities/>")).documentElement
         assertEquals("true", OnvifXml.text(OnvifXml.find(caps, "Events"), "WSPullPointSupport"))
+        assertEquals("true", OnvifXml.text(OnvifXml.find(caps, "Events"), "WSSubscriptionPolicySupport"))
         assertTrue(OnvifXml.text(OnvifXml.find(caps, "Media"), "XAddr")!!.endsWith("/onvif/media_service"))
         val services = parseOk(call(s, "<tds:GetServices><tds:IncludeCapability>true</tds:IncludeCapability></tds:GetServices>")).documentElement
-        assertTrue(services.getElementsByTagNameNS(OnvifNs.TDS, "Service").length >= 4)
+        val serviceNodes = services.getElementsByTagNameNS(OnvifNs.TDS, "Service")
+        assertTrue(serviceNodes.length >= 4)
+        val eventService = (0 until serviceNodes.length)
+            .map { serviceNodes.item(it) as org.w3c.dom.Element }
+            .first { OnvifXml.text(it, "Namespace") == OnvifNs.TEV }
+        val eventCaps = eventService.getElementsByTagNameNS(OnvifNs.TEV, "Capabilities").item(0) as org.w3c.dom.Element
+        assertEquals("true", eventCaps.getAttribute("WSSubscriptionPolicySupport"))
     }
 
     @Test fun `media profiles and stream uri`() {
@@ -185,6 +198,61 @@ class OnvifServerTest {
         assertEquals(200, call(s, "<wsnt:Renew><wsnt:TerminationTime>PT120S</wsnt:TerminationTime></wsnt:Renew>", path).status)
         assertEquals(200, call(s, "<wsnt:Unsubscribe/>", path).status)
         assertEquals(400, call(s, pull, path).status)
+    }
+
+    @Test fun `wsnt subscribe pushes motion notifications to the consumer`() {
+        val sink = NotifySink()
+        try {
+            val s = newServer()
+            val consumer = sink.url
+            val r = call(
+                s,
+                "<wsnt:Subscribe><wsnt:ConsumerReference><wsa:Address>$consumer</wsa:Address></wsnt:ConsumerReference>" +
+                    "<wsnt:InitialTerminationTime>PT60S</wsnt:InitialTerminationTime></wsnt:Subscribe>",
+                "/onvif/events_service"
+            )
+            val response = parseOk(r)
+            assertEquals(
+                "http://docs.oasis-open.org/wsn/bw-2/NotificationProducer/SubscribeResponse",
+                OnvifXml.text(response.documentElement, "Action")
+            )
+            val address = OnvifXml.text(response.documentElement, "Address")!!
+            assertTrue(address, address.contains("/onvif/subscription/"))
+            assertNotNull(OnvifXml.text(response.documentElement, "TerminationTime"))
+
+            // The producer seeds the consumer with the current state after Subscribe.
+            val initial = sink.poll(5, TimeUnit.SECONDS)
+            assertNotNull("initial notification must be pushed", initial)
+            assertTrue(initial!!.contains("<wsnt:Notify>"))
+            assertTrue(initial.contains("Initialized"))
+            assertTrue(initial.contains("tns1:RuleEngine/CellMotionDetector/Motion"))
+            assertTrue(initial.contains("http://docs.oasis-open.org/wsn/bw-2/NotificationProducer/Notify"))
+
+            // Motion changes are pushed as wsnt:Notify to the ConsumerReference.
+            s.setMotion(true)
+            val changed = sink.poll(5, TimeUnit.SECONDS)
+            assertNotNull("motion notification must be pushed", changed)
+            assertTrue(changed!!.contains("PropertyOperation=\"Changed\""))
+            assertTrue(changed.contains("Name=\"IsMotion\" Value=\"true\""))
+            assertTrue(changed.contains("tns1:VideoSource/MotionAlarm"))
+            assertTrue(changed.contains("<wsa:To>$consumer</wsa:To>"))
+
+            // Renew and Unsubscribe address the returned SubscriptionReference.
+            val path = address.substringAfter("192.168.3.194:${s.localPort}")
+            assertEquals(200, call(s, "<wsnt:Renew><wsnt:TerminationTime>PT120S</wsnt:TerminationTime></wsnt:Renew>", path).status)
+            assertEquals(200, call(s, "<wsnt:Unsubscribe/>", path).status)
+            s.setMotion(false)
+            assertNull("unsubscribed consumers get no more notifications", sink.poll(500, TimeUnit.MILLISECONDS))
+        } finally {
+            sink.close()
+        }
+    }
+
+    @Test fun `wsnt subscribe rejects an invalid consumer address`() {
+        val s = newServer()
+        val r = call(s, "<wsnt:Subscribe><wsnt:ConsumerReference><wsa:Address>not-a-url</wsa:Address></wsnt:ConsumerReference></wsnt:Subscribe>", "/onvif/events_service")
+        assertEquals(400, r.status)
+        assertTrue(r.text.contains("ter:InvalidArgVal"))
     }
 
     @Test fun `no credentials configured means open access`() {
@@ -272,5 +340,67 @@ class OnvifServerTest {
         assertEquals(OnvifDiscovery.WSD_2009, OnvifXml.find(OnvifXml.parse(r2009)!!.documentElement, "ProbeMatches")!!.namespaceURI)
         assertFalse(discovery.buildAnnounce(false).isEmpty())
         assertNotNull(OnvifXml.parse(discovery.buildAnnounce(true)))
+    }
+
+    /**
+     * Minimal plain-HTTP sink for outbound `wsnt:Notify` POSTs. Android's unit-test
+     * bootclasspath has no `com.sun.net.httpserver`, so a raw ServerSocket is used.
+     */
+    private class NotifySink : AutoCloseable {
+        private val server = ServerSocket(0, 10, InetAddress.getByName("127.0.0.1"))
+        private val bodies = LinkedBlockingQueue<String>()
+        val url = "http://127.0.0.1:${server.localPort}/callback"
+
+        init {
+            Thread({
+                while (!server.isClosed) {
+                    val sock = try { server.accept() } catch (_: Exception) { break }
+                    try {
+                        sock.soTimeout = 5_000
+                        val input = BufferedInputStream(sock.getInputStream())
+                        readLine(input) // request line
+                        var length = 0
+                        while (true) {
+                            val line = readLine(input) ?: break
+                            if (line.isEmpty()) break
+                            if (line.startsWith("Content-Length:", true)) {
+                                length = line.substringAfter(':').trim().toIntOrNull() ?: 0
+                            }
+                        }
+                        val body = ByteArray(length)
+                        var off = 0
+                        while (off < length) {
+                            val n = input.read(body, off, length - off)
+                            if (n < 0) break
+                            off += n
+                        }
+                        bodies += body.copyOf(off).toString(Charsets.UTF_8)
+                        sock.getOutputStream().apply {
+                            write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+                            flush()
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        try { sock.close() } catch (_: Exception) {}
+                    }
+                }
+            }, "test-notify-sink").apply { isDaemon = true; start() }
+        }
+
+        fun poll(timeout: Long, unit: TimeUnit): String? = bodies.poll(timeout, unit)
+
+        override fun close() {
+            try { server.close() } catch (_: Exception) {}
+        }
+
+        private fun readLine(input: InputStream): String? {
+            val sb = StringBuilder()
+            while (true) {
+                val c = input.read()
+                if (c < 0) return if (sb.isEmpty()) null else sb.toString()
+                if (c == '\n'.code) return sb.toString().trimEnd('\r')
+                sb.append(c.toChar())
+            }
+        }
     }
 }
