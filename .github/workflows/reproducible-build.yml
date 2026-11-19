@@ -18,7 +18,8 @@ jobs:
         uses: actions/setup-java@v6.2.0
         with:
           distribution: temurin
-          java-version: 17
+          # Matches gradle/gradle-daemon-jvm.properties (toolchainVersion=21).
+          java-version: 21
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -33,6 +34,14 @@ jobs:
         uses: dtolnay/rust-toolchain@1.91.0
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - name: Route Maven Central through Google's mirror
+        run: |
+          # GitHub-hosted runners are rate-limited by Maven Central, which makes
+          # the build fail to resolve every artifact hosted there.
+          gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
+          mkdir -p "$gradle_home/init.d"
+          cp .github/gradle/maven-central-mirror.gradle "$gradle_home/init.d/"
 
       - name: Build release APK (first)
         run: |
@@ -54,20 +63,18 @@ jobs:
           mkdir -p build/unsigned
           cp app/build/outputs/apk/release/*universal-release.apk build/unsigned/build2.apk
 
-      - name: Install verification tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends diffoscope
-
       - name: Compare APKs
         run: |
           cmp -s build/unsigned/build1.apk build/unsigned/build2.apk
           echo "Reproducible build verification passed (APKs are identical)."
 
-      - name: diffoscope report on failure
+      - name: Generate diffoscope report on failure
         if: failure()
         continue-on-error: true
-        run: diffoscope build/unsigned/build1.apk build/unsigned/build2.apk > diffoscope.txt || true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends diffoscope
+          diffoscope build/unsigned/build1.apk build/unsigned/build2.apk > diffoscope.txt || true
 
       - name: Upload diffoscope report
         if: failure()
