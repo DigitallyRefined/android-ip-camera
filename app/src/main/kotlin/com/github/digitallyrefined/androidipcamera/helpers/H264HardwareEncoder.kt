@@ -30,6 +30,8 @@ class H264HardwareEncoder(
     val useSurface: Boolean,
     /** Seconds between keyframes. Longer saves bandwidth; new viewers wait up to this long. */
     keyFrameIntervalSec: Int = 1,
+    /** [MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR] or [MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR]. */
+    bitrateMode: Int = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR,
     private val onNal: (ByteArray, Boolean, Long) -> Unit
 ) {
     private val codec: MediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -67,25 +69,63 @@ class H264HardwareEncoder(
     init {
         val colorFormat = if (useSurface) MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
                           else pickYuvFormat()   // sets semiPlanar; NV12 if the HW takes it, else I420
+        // Ask the codec whether it can honour the requested mode; older encoders only do VBR.
+        var mode = bitrateMode
+        try {
+            val encoderCaps = codec.codecInfo
+                .getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                .encoderCapabilities
+            if (encoderCaps?.isBitrateModeSupported(mode) != true) {
+                mode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+            }
+        } catch (_: Exception) {
+            mode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+        }
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, keyFrameIntervalSec)
-            try { setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) } catch (_: Exception) {}
+            setInteger(MediaFormat.KEY_BITRATE_MODE, mode)
         }
-        try {
+        fun configureAndStart() {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             if (useSurface) inputSurface = codec.createInputSurface()
             codec.start()
+        }
+        try {
+            configureAndStart()
         } catch (e: Exception) {
-            // e.g. a size this encoder does not support: free the codec so the caller can retry.
-            try { inputSurface?.release() } catch (_: Exception) {}
-            try { codec.release() } catch (_: Exception) {}
-            throw e
+            if (mode != MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) {
+                // Some encoders advertise CBR but reject it at configure time; keep the stream
+                // alive rather than turning a bitrate-mode preference into a failed camera start.
+                Log.w(TAG, "Bitrate mode $mode rejected, falling back to VBR: ${e.message}")
+                mode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                format.setInteger(MediaFormat.KEY_BITRATE_MODE, mode)
+                try { inputSurface?.release() } catch (_: Exception) {}
+                inputSurface = null
+                try { codec.reset() } catch (_: Exception) {}
+                try {
+                    configureAndStart()
+                } catch (retry: Exception) {
+                    releaseCodec()
+                    throw retry
+                }
+            } else {
+                // e.g. a size this encoder does not support: free the codec so the caller can retry.
+                releaseCodec()
+                throw e
+            }
         }
         thread = Thread { drainLoop() }.apply { isDaemon = true; start() }
-        Log.i(TAG, "H264HardwareEncoder started ${width}x$height @${frameRate}fps ${bitRate / 1000}kbps surface=$useSurface")
+        Log.i(TAG, "H264HardwareEncoder started ${width}x$height @${frameRate}fps ${bitRate / 1000}kbps " +
+            "surface=$useSurface mode=${if (mode == MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) "CBR" else "VBR"} " +
+            "keyframe=${keyFrameIntervalSec}s")
+    }
+
+    private fun releaseCodec() {
+        try { inputSurface?.release() } catch (_: Exception) {}
+        try { codec.release() } catch (_: Exception) {}
     }
 
     fun requestKeyFrame() {
@@ -710,12 +750,6 @@ class H264HardwareEncoder(
             Log.i(TAG, "AVC encoder caps ${c.maxW}x${c.maxH} bitrate ${c.minBitrate}..${c.maxBitrate}")
             return c
         }
-
-        /**
-         * Target ~0.2 bits/pixel/frame at 30fps (w*h*6) — enough to avoid visible H.264 macroblocking
-         * (the old w*h*3 ≈ 0.1 bpp looked "compressed" at 1440x1080). Clamped to the device's range.
-         */
-        fun bitrateFor(w: Int, h: Int): Int = clampBitrate(w.toLong() * h * 6)
 
         /** [bitsPerSecond] within the device encoder's supported range. */
         fun clampBitrate(bitsPerSecond: Long): Int {
