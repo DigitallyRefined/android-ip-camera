@@ -364,6 +364,11 @@ By default, release builds generate architecture-specific APK splits for `arm64-
 ./gradlew clean assembleRelease
 ```
 
+**Release build as an app bundle:**
+```bash
+./gradlew clean bundleRelease
+```
+
 The `enableAbiSplits` property defaults to `true`. Set it to `false` to generate only the universal APK, which is the recommended approach for F-Droid to avoid unnecessary complexity in the build pipeline.
 
 To verify that two unsigned builds from the same source are identical:

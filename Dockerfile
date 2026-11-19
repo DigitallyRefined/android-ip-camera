@@ -29,7 +29,7 @@
 #          -v "$PWD/.cache/android-sdk":/cache/sdk \
 #          android-ip-camera:builder \
 #          sh -lc 'yes | sdkmanager --sdk_root=/cache/sdk --licenses >/dev/null \
-#                   && sdkmanager --sdk_root=/cache/sdk --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null'
+#                   && sdkmanager --sdk_root=/cache/sdk --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null'
 #
 #    (If you skip .cache/android-sdk, the SDK baked into the image is used
 #     instead and AGP simply re-downloads anything extra on demand.)
@@ -85,8 +85,8 @@ ENV ANDROID_HOME=/opt/android-sdk \
 
 # SDK components matched to .github/workflows/reproducible-build.yml
 ARG ANDROID_CMD_TOOLS_VERSION=11076708
-ARG ANDROID_PLATFORM=android-34
-ARG ANDROID_BUILD_TOOLS=34.0.0
+ARG ANDROID_PLATFORM=android-36
+ARG ANDROID_BUILD_TOOLS=36.0.0
 ARG ANDROID_NDK_VERSION=27.2.12479018
 ARG RUST_VERSION=1.91.0
 

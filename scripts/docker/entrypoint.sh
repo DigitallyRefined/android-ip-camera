@@ -20,7 +20,7 @@ find_apksigner() {
   APKSIGNER="$(ls "${ANDROID_HOME}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1 || true)"
   if [ -z "${APKSIGNER}" ]; then
     echo "ERROR: apksigner not found under \$ANDROID_HOME/build-tools" >&2
-    echo "       Install it with: sdkmanager 'build-tools;34.0.0'" >&2
+    echo "       Install it with: sdkmanager 'build-tools;36.0.0'" >&2
     exit 1
   fi
 }

@@ -14,13 +14,13 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace 'com.github.digitallyrefined.androidipcamera'
-    compileSdk 34
+    compileSdk 36
     ndkVersion "27.2.12479018"
 
     defaultConfig {
         applicationId "com.github.digitallyrefined.androidipcamera"
         minSdk 24
-        targetSdk 34
+        targetSdk 36
         versionCode 180
         versionName "0.18.0"
 
