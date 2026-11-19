@@ -151,15 +151,8 @@ rtsps://[username]:[password]@[ip_address]:8554/live
 
 > **Note:** VLC does not reliably handle self-signed TLS certificates for RTSPS streams. Use **mpv** or **ffplay** to play, or use a trusted certificate. Disabling TLS may work with VLC, at the risk of sending your username/password in plaintext.
 
-* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, target bitrate, bitrate mode, keyframe interval, rotation and mirror follow the web controls). Each client starts at a keyframe.
-* **Sub stream:** `rtsps://[username]:[password]@[ip_address]:8554/live/sub` is a smaller version of the same picture for slow links such as 4G, and can be watched alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled); changes apply the next time a viewer connects. The phone encodes it in addition to the main stream only while someone watches it. Where the picture does not go through the GPU path (front camera, devices whose camera is not FULL level), the sub stream carries the main stream instead.
-* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
-* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
-* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front).
-* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming and ONVIF ports).
-* The camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
-
-When **TLS** is enabled, RTSP is served over TLS (`rtsps://`) using the same certificate as the web server and ONVIF, so the control connection and credentials are encrypted. With TLS disabled it is plain `rtsp://`, so only use it on a trusted network (or through a VPN) in that case.
+* **Streams:** `/live` is the main H.264 stream; `/live/sub` is an optional smaller stream for slow links. The camera starts when a client connects and is released when the last one leaves.
+* **Security:** RTSP Digest authentication with the app username and password, port `8554` by default, and TLS (`rtsps://`) when enabled. Sub stream, audio, transport, authentication and TLS details are in **Server URL Paths & Remote Control API** below.
 
 Examples:
 
@@ -173,12 +166,7 @@ ONVIF lets NVRs and home automation systems discover and control the camera as a
 * **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled
 * **Snapshot:** `https://[ip_address]:8000/onvif/snapshot.jpg` (or `http://` without TLS)
 * **RTSP:** `rtsps://[username]:[password]@[ip_address]:8554/live`, or `rtsps://` on the same port when TLS is enabled
-* **Motion events and recording:** choose a recording mode in the web interface. Every mode except **On demand** keeps the camera running and sends a notification when motion is seen. **Motion clips** also records a `-motion.mp4` clip while motion is present, and **Continuous recording** records every moment in `-continuous.mp4` segments. In every mode except **On demand**, the app compares luma frames in the background and publishes ONVIF pull-point events (`tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm`). The **Sensitivity** slider (1 = least sensitive, 10 = most sensitive, default 5) controls how much of the frame must change. Lighting changes such as a TV cutting between scenes are ignored.
-* **Stop Recording After Motion** (under Sensitivity, default 10 seconds) controls how long a motion recording keeps running after motion has cleared. Set it to `0` to stop as soon as motion ends.
-* **Continuous Clip Length** (Settings tab, default 5 minutes) controls how often continuous recording closes the current file and starts a new one. **Delete Oldest Clips at** (default 90%) deletes the oldest recordings once the drive holding the recordings reaches that usage, until there is room again.
-* While a mode other than **On demand** is selected, the camera runs continuously so it can see motion with no viewer connected. With **On demand** and RTSP disabled, the camera opens when an HTTP viewer connects and is released when the last one leaves. ONVIF follows the RTSP switch, or stays available automatically while an always-on recording mode is selected.
-
-ONVIF and RTSP use the username and password from the Authentication settings. ONVIF discovery uses UDP multicast, so the phone and the client must be on the same network (or reachable through a VPN that forwards multicast).
+* **Motion events:** modes other than **On demand** keep the camera running and publish ONVIF motion events through both PullPoint and WS-BaseNotification, so polling clients and hardware NVRs both see motion. Recording modes, event delivery and notification details are in **Server URL Paths & Remote Control API** below.
 
 #### UniFi Protect
 
@@ -293,6 +281,19 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query whether streaming is currently enabled.
   * **Format:** `application/json` — `{"streaming":<bool>}`
 
+### 📡 RTSP stream
+
+The RTSP endpoints are `rtsps://[username]:[password]@[ip_address]:8554/live` and `.../live/sub` (use `rtsp://` when TLS is disabled).
+
+* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, target bitrate, bitrate mode, keyframe interval, rotation and mirror follow the web controls). Each client starts at a keyframe.
+* **Sub stream:** `/live/sub` is a smaller version of the same picture for slow links such as 4G, and can be watched alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled); changes apply the next time a viewer connects. The phone encodes it in addition to the main stream only while someone watches it. Where the picture does not go through the GPU path (front camera, devices whose camera is not FULL level), the sub stream carries the main stream instead.
+* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
+* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
+* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front).
+* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming and ONVIF ports).
+* **Lifecycle:** the camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
+* **TLS:** when enabled, RTSP is served over TLS (`rtsps://`) using the same certificate as the web server and ONVIF, so the control connection and credentials are encrypted. With TLS disabled it is plain `rtsp://`, so only use it on a trusted network (or through a VPN) in that case.
+
 ### 🎛️ Remote Control Commands
 
 Settings can be changed dynamically by passing query parameters in HTTP GET requests (e.g., to the root path `/` or any control endpoint).
@@ -321,6 +322,24 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `mirror=<true|false>`: Mirror the video.
   * `api=<auto|camerax|camera1>`: Prefer capture API implementation.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
+
+### 🎬 Motion events and recording
+
+Choose a recording mode in the web interface or with `recording_mode`:
+
+* **On demand** (`off`): the camera opens when a viewer connects (HTTP/RTSP) and is released when the last one leaves.
+* **Notify only** (`notify`): the camera stays on, detects motion and publishes ONVIF events, but writes no local MP4 files.
+* **Motion clips** (`motion`): like **Notify only**, and also records a `-motion.mp4` clip while motion is present.
+* **Continuous recording** (`continuous`): records every moment into `-continuous.mp4` segments, with the camera always on.
+
+Except in **On demand**, the app compares luma frames in the background. **Sensitivity** (1 = least sensitive, 10 = most sensitive, default 5) controls how much the frame must change; lighting changes such as a TV cutting between scenes are ignored. Motion is published as `tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm` over both PullPoint (`CreatePullPointSubscription` + `PullMessages`) and WS-BaseNotification (`wsnt:Subscribe`, `Renew`, `Unsubscribe`). Home Assistant, ONVIF Device Manager and UniFi Protect poll via PullPoint; hardware NVRs (for example Xiongmai/VMS) subscribe and receive `wsnt:Notify` HTTP POSTs at their consumer address whenever motion starts or stops.
+
+Notifications to an NVR contain event metadata only (topic and motion state, no video) and are posted to the consumer URL the authenticated NVR supplies, which is normally plain HTTP on the local network.
+
+* **Stop Recording After Motion** (under Sensitivity, default 10 seconds): how long a motion recording keeps running after motion clears; `0` stops immediately.
+* **Continuous Clip Length** (default 5 minutes): how often continuous recording closes the current file. **Delete Oldest Clips at** (default 90%) removes the oldest recordings once that drive usage is reached.
+
+ONVIF and RTSP use the username and password from the Authentication settings. ONVIF discovery uses UDP multicast, so the phone and the client must be on the same network (or reachable through a VPN that forwards multicast).
 
 </details>
 
