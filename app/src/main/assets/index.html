@@ -278,6 +278,30 @@
       color: #007AFF;
     }
 
+    details.advanced-stream {
+      border-top: 1px solid #333;
+      margin: 0 0 16px;
+      padding-top: 10px;
+    }
+
+    details.advanced-stream summary {
+      cursor: pointer;
+      font-size: 12px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: bold;
+      user-select: none;
+    }
+
+    details.advanced-stream[open] summary {
+      margin-bottom: 12px;
+    }
+
+    details.advanced-stream summary::marker {
+      color: #007AFF;
+    }
+
     h3 {
       margin-top: 0;
       font-size: 14px;
@@ -596,10 +620,70 @@
               <button id="modeMjpegBtn" class="btn btn-action" style="width: 49%;">MJPEG</button>
             </div>
 
-            <p class="group-title">Camera Control</p>
+            <label for="resolutionSelect" style="margin-top: 14px">Resolution</label>
+            <select id="resolutionSelect" style="margin-bottom: 14px" onchange='setResolution(this.value)'></select>
 
-            <label for="resolutionSelect">Resolution <span class='val-badge' id='resolutionVal'>&mdash;</span></label>
-            <select id="resolutionSelect" style="margin-bottom: 20px" onchange='setResolution(this.value)'></select>
+            <label for="fps">Frame Rate (fps)</label>
+            <select id="fps" data-control="fps" style="margin-bottom: 8px">
+              <option value="10">10 fps</option>
+              <option value="15">15 fps</option>
+              <option value="20">20 fps</option>
+              <option value="24">24 fps</option>
+              <option value="25">25 fps</option>
+              <option value="30">30 fps</option>
+            </select>
+            <div class="hint" id="streamSummary" style="margin: 0 0 16px; font-size: 12px; color: #ccc"></div>
+
+            <details id="advancedStreamSection" class="advanced-stream">
+              <summary>Advanced stream settings</summary>
+
+              <label for="streamBitrate">Target Bitrate</label>
+              <select id="streamBitrate" data-control="stream_bitrate" style="margin-bottom: 6px">
+                <option value="auto">Auto (match resolution &amp; frame rate)</option>
+                <option value="500">500 kbps</option>
+                <option value="1000">1000 kbps (1 Mbps)</option>
+                <option value="1500">1500 kbps (1.5 Mbps)</option>
+                <option value="2000">2000 kbps (2 Mbps)</option>
+                <option value="3000">3000 kbps (3 Mbps)</option>
+                <option value="4000">4000 kbps (4 Mbps)</option>
+                <option value="6000">6000 kbps (6 Mbps)</option>
+                <option value="8000">8000 kbps (8 Mbps)</option>
+              </select>
+              <div class="hint" style="margin:0 0 14px; font-size:12px; color:#ccc">
+                Auto targets ~0.2 bits per pixel per frame, scaled by resolution and frame rate.
+                A manual value (500–8000 kbps) stays fixed when the resolution changes and is
+                clamped to what the device encoder supports.
+              </div>
+
+              <label for="streamBitrateMode">Bitrate Mode</label>
+              <select id="streamBitrateMode" data-control="stream_bitrate_mode" style="margin-bottom: 6px">
+                <option value="vbr">VBR (better quality)</option>
+                <option value="cbr">CBR (steadier bandwidth)</option>
+              </select>
+              <div class="hint" style="margin:0 0 14px; font-size:12px; color:#ccc">
+                CBR limits bandwidth spikes but can lower quality in complex scenes. Falls back
+                to VBR on devices whose encoder does not support CBR.
+              </div>
+
+              <label for="streamKeyframeInterval">Keyframe Interval</label>
+              <select id="streamKeyframeInterval" data-control="stream_keyframe_interval">
+                <option value="1">1 second</option>
+                <option value="2">2 seconds</option>
+                <option value="3">3 seconds</option>
+                <option value="5">5 seconds</option>
+                <option value="10">10 seconds</option>
+                <option value="15">15 seconds</option>
+                <option value="30">30 seconds</option>
+                <option value="60">60 seconds (1 minute)</option>
+                <option value="120">120 seconds (2 minutes)</option>
+              </select>
+              <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
+                Longer intervals cut average bandwidth for 24/7 recording. New viewers request a
+                keyframe when they connect, so they do not wait for the next scheduled one.
+              </div>
+            </details>
+
+            <p class="group-title">Camera Control</p>
 
             <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
             <input id="exposure" type='range' min='-10' max='10' step='1' value='0' data-control='exposure'
@@ -618,9 +702,6 @@
             <label for="contrast">Contrast <span class='val-badge' id='contVal'>0</span></label>
             <input id="contrast" type='range' min='-50' max='50' step='10' value='0' data-control='contrast'
               data-badge='contVal'>
-
-            <label for="fps">Frame Rate (fps)</label>
-            <input id="fps" type='number' min='1' max='60' value='30' data-control='fps'>
 
             <div style="margin-top:12px;">
               <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
@@ -1020,7 +1101,9 @@
       if (param === 'motion_detection_enabled' || param === 'motion_sensitivity' ||
         param === 'motion_record_stop_delay' || param === 'recording_mode' ||
         param === 'recording_segment_minutes' ||
-        param === 'recording_storage_limit_percent' || param.startsWith('rtsp_')) return null;
+        param === 'recording_storage_limit_percent' || param.startsWith('rtsp_') ||
+        param === 'stream_bitrate' || param === 'stream_bitrate_mode' ||
+        param === 'stream_keyframe_interval') return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -1153,6 +1236,28 @@
     }
 
     document.querySelectorAll('[data-control]').forEach(bindControl);
+
+    // MJPEG's estimate (and the Auto summary) depends on the frame rate: rebuild both on change.
+    const fpsControl = getElById('fps');
+    if (fpsControl) fpsControl.addEventListener('change', () => {
+      populateResolutions();
+      updateStreamSummary();
+      // The server-side Auto H.264 estimate depends on fps; refresh it after the control is sent.
+      setTimeout(() => loadDeviceInfo(true), 600);
+    });
+
+    // A manual bitrate changes whether the resolution labels repeat the target, and the summary
+    // text. Advanced controls also need a fresh /info.json because the server clamps the value to
+    // the device encoder and reports the effective target.
+    const bitrateControl = getElById('streamBitrate');
+    if (bitrateControl) bitrateControl.addEventListener('change', () => {
+      populateResolutions();
+      updateStreamSummary();
+    });
+    ['streamBitrate', 'streamBitrateMode', 'streamKeyframeInterval'].forEach(id => {
+      const el = getElById(id);
+      if (el) el.addEventListener('change', () => setTimeout(() => loadDeviceInfo(true), 600));
+    });
 
     function getUserScale() {
       const el = getElById('scale');
@@ -1289,7 +1394,6 @@
               ctx.clearRect(0, 0, w, h);
               ctx.drawImage(candidate.bmp, dx, dy, dw, dh);
               lastDrawn = candidate.bmp;
-              setStreamResolution(iw, ih);
               hideStreamLoading();
             }
             requestAnimationFrame(drawLoop);
@@ -1379,6 +1483,10 @@
       const mj = getElById('modeMjpegBtn'), h = getElById('modeH264Btn');
       if (mj) mj.className = 'btn' + (mode === 'mjpeg' ? ' active' : '');
       if (h && !h.disabled) h.className = 'btn' + (mode === 'h264' ? ' active' : '');
+
+      // Bitrate estimates only apply to H.264: relabel the resolution options and summary.
+      populateResolutions();
+      updateStreamSummary();
 
       if (avDelay && avDelayVal) {
         const currentVal = avDelay.value;
@@ -1667,8 +1775,94 @@
         || null;
     }
 
-    function resolutionLabel(w, h) {
-      return w + '×' + h + ' · ' + ((w * h) / 1e6).toFixed(1) + ' MP';
+    // Server-computed sizing/bitrate for the current selection (Auto included). The estimate is
+    // calculated server-side so it matches the encoder's own fit-to-caps/clamp logic exactly.
+    let serverStreamInfo = { effectiveResolution: '', bitrateKbps: { h264: 0, mjpeg: 0 }, fps: 30 };
+
+    function currentFpsValue() {
+      const el = getElById('fps');
+      const n = parseFloat(el ? el.value : '');
+      return isFinite(n) && n > 0 ? n : 0;
+    }
+
+    // Manual main-stream bitrate in kbps, or 0 for Auto.
+    function currentManualBitrateKbps() {
+      const el = getElById('streamBitrate');
+      const n = parseInt(el ? el.value : '', 10);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    }
+
+    // MJPEG has no bitrate target: every frame is a JPEG, so its rate scales with fps. The server
+    // computed its estimate at serverStreamInfo.fps, so scale it to the frame rate shown in the UI.
+    function mjpegKbpsEstimate(kbps) {
+      const base = serverStreamInfo.fps || 0;
+      const fps = currentFpsValue();
+      if (!kbps) return 0;
+      if (!base || !fps) return kbps;
+      return Math.round(kbps * fps / base);
+    }
+
+    function streamOptionLabel(w, h, bitrates) {
+      const base = w + '×' + h;
+      if (!bitrates) return base;
+      // A manual target is the same for every size, so repeating it in each option is noise.
+      if (streamMode === 'h264' && currentManualBitrateKbps() > 0) return base;
+      const kbps = streamMode === 'h264'
+        ? (bitrates.h264 || 0)
+        : mjpegKbpsEstimate(bitrates.mjpeg || 0);
+      if (kbps > 0) return base + ' · ≈' + (kbps / 1000).toFixed(1) + ' Mbps';
+      return base;
+    }
+
+    // A select cannot show a stored value it does not offer; append it instead of dropping the
+    // user's existing frame rate (the server accepts 1..60).
+    function ensureFpsOption(value) {
+      ensureSelectOption(getElById('fps'), value, v => v + ' fps');
+    }
+
+    function ensureSelectOption(sel, value, labelFor) {
+      if (!sel || value === undefined || value === null || value === '') return;
+      const v = String(value);
+      if (!Array.from(sel.options).some(o => o.value === v)) {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = labelFor ? labelFor(v) : v;
+        sel.appendChild(opt);
+      }
+      sel.value = v;
+    }
+
+    // Explicit sizes already carry their estimate in the option label, so this line exists only to
+    // explain what Auto resolves to. A manual H.264 target always shows here because its value is
+    // not per-resolution and is not repeated in the options.
+    function updateStreamSummary() {
+      const el = getElById('streamSummary');
+      if (!el) return;
+      const sel = getElById('resolutionSelect');
+      const isAuto = !sel || sel.value === 'auto';
+      const manual = currentManualBitrateKbps();
+      const manualH264 = streamMode === 'h264' && manual > 0;
+      if (!isAuto && !manualH264) {
+        el.textContent = '';
+        el.style.display = 'none';
+        return;
+      }
+      const fpsEl = getElById('fps');
+      const fps = fpsEl ? fpsEl.value : '';
+      const m = /^(\d+)x(\d+)$/.exec(serverStreamInfo.effectiveResolution || '');
+      const parts = [];
+      if (m) parts.push(m[1] + '×' + m[2]);
+      if (fps) parts.push(fps + ' fps');
+      const bitrates = serverStreamInfo.bitrateKbps || {};
+      if (streamMode === 'h264') {
+        const kbps = manualH264 ? manual : (bitrates.h264 || 0);
+        if (kbps > 0) parts.push((manualH264 ? '' : '≈') + (kbps / 1000).toFixed(1) + ' Mbps');
+      } else {
+        const mjpeg = mjpegKbpsEstimate(bitrates.mjpeg || 0);
+        if (mjpeg > 0) parts.push('≈' + (mjpeg / 1000).toFixed(1) + ' Mbps');
+      }
+      el.textContent = parts.length ? (manualH264 ? 'Manual → ' : 'Auto → ') + parts.join(' · ') : '';
+      el.style.display = '';
     }
 
     function populateResolutions() {
@@ -1685,7 +1879,7 @@
         if (!s || !s.w || !s.h) return;
         const opt = document.createElement('option');
         opt.value = s.w + 'x' + s.h;
-        opt.textContent = resolutionLabel(s.w, s.h);
+        opt.textContent = streamOptionLabel(s.w, s.h, s.bitrateKbps);
         select.appendChild(opt);
       });
       const available = Array.from(select.options).some(o => o.value === desiredResolution);
@@ -1701,7 +1895,11 @@
         if (m) {
           const opt = document.createElement('option');
           opt.value = desiredResolution;
-          opt.textContent = resolutionLabel(parseInt(m[1], 10), parseInt(m[2], 10));
+          // The server's estimate follows the fitted effective size, which is what the encoder
+          // uses even when the camera is too busy to enumerate the requested size right now.
+          opt.textContent = streamOptionLabel(
+            parseInt(m[1], 10), parseInt(m[2], 10), serverStreamInfo.bitrateKbps
+          );
           select.appendChild(opt);
           select.value = desiredResolution;
         } else {
@@ -1711,11 +1909,13 @@
       } else {
         select.value = 'auto';
       }
+      updateStreamSummary();
     }
 
     function setResolution(value) {
       desiredResolution = value;
       sendControl('resolution', value);
+      updateStreamSummary();
     }
 
     function setCamera(camera) {
@@ -1844,6 +2044,20 @@
       if (settings.deviceHasFlash !== undefined) deviceHasFlash = !!settings.deviceHasFlash;
       if (settings.torch === 'on' || settings.torch === 'off') setTorchState(settings.torch);
       if (settings.streamRes) desiredResolution = settings.streamRes;
+      if (settings.effectiveResolution) {
+        serverStreamInfo.effectiveResolution = String(settings.effectiveResolution);
+      }
+      if (settings.streamBitrateKbps && typeof settings.streamBitrateKbps === 'object') {
+        serverStreamInfo.bitrateKbps = {
+          h264: parseInt(settings.streamBitrateKbps.h264, 10) || 0,
+          mjpeg: parseInt(settings.streamBitrateKbps.mjpeg, 10) || 0,
+        };
+      }
+      if (settings.fps != null) {
+        serverStreamInfo.fps = parseFloat(settings.fps) || serverStreamInfo.fps;
+      }
+      // Set the frame rate before rebuilding the resolution options: MJPEG estimates depend on it.
+      ensureFpsOption(settings.fps);
       if (settings.rotate != null) {
         rotate = parseInt(settings.rotate, 10) || 0;
         // Reflect server-provided rotation in the UI
@@ -1859,6 +2073,11 @@
         if (sVal === 'match') sVal = 'stream';
         sr.value = sVal;
       }
+      // Advanced main-stream controls: add a stored custom value as an option before the generic
+      // data-control pass tries to select it, and before the resolution labels check manual mode.
+      ensureSelectOption(getElById('streamBitrate'), settings.streamBitrate, v => v + ' kbps');
+      ensureSelectOption(getElById('streamBitrateMode'), settings.streamBitrateMode, v => v.toUpperCase());
+      ensureSelectOption(getElById('streamKeyframeInterval'), settings.streamKeyframeInterval, v => v + ' seconds');
       populateResolutions();
       const zoom = getElById('zoom');
       const zoomVal = getElById('zoomVal');
@@ -1889,10 +2108,9 @@
         mirrorEl.checked = settings.mirror === 'true';
       }
 
-      const fps = getElById('fps');
-      if (fps && settings.fps) {
-        fps.value = settings.fps;
-      }
+      // Advanced main-stream controls are applied before populateResolutions() above so the
+      // resolution labels know whether a manual target is active.
+      updateStreamSummary();
       const isOn = (v) => v === true || v === 1 || v === 'true' || v === 'on' || v === '1';
       // Per-camera `lensSettings` callers pass no recording mode; only touch the radios when the
       // global settings payload actually carries the mode (or the old motion flag).
@@ -1933,17 +2151,6 @@
           if (b) b.textContent = formatControlValue(el);
         }
       });
-    }
-
-    // Badge showing the actual negotiated resolution (from decoded frames).
-    let lastStreamRes = '';
-    function setStreamResolution(w, h) {
-      if (!w || !h) return;
-      const label = w + '×' + h;
-      if (label === lastStreamRes) return;
-      lastStreamRes = label;
-      const badge = getElById('resolutionVal');
-      if (badge) badge.innerText = label;
     }
 
     function updateStatusOverlay(data) {

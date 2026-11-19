@@ -18,6 +18,7 @@ import android.graphics.Matrix
 import android.hardware.Camera
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.MediaCodecInfo
 import android.os.Binder
 import android.os.Build
 import android.os.Handler
@@ -786,11 +787,14 @@ class StreamingService : LifecycleService() {
             stream = {
                 val size = desiredSize()
                 val fps = (prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30).coerceIn(1, 60)
+                val enc = StreamEncoding.encoderConfig(prefs, size.width, size.height, fps)
                 val scheme = if (TlsHelper.isEnabled(this)) "rtsps" else "rtsp"
                 OnvifStreamInfo(
                     rtspUrl = "$scheme://${getLocalIpAddress()}:$rtspPort${RtspServer.PATH}",
                     width = size.width, height = size.height, fps = fps,
-                    bitrateKbps = H264HardwareEncoder.bitrateFor(size.width, size.height) / 1000,
+                    bitrateKbps = enc.bitrateBps / 1000,
+                    keyframeIntervalSec = enc.keyframeIntervalSec,
+                    cbr = enc.bitrateMode == MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR,
                 )
             },
             credentials = { streamCredentials() },
@@ -1074,30 +1078,11 @@ class StreamingService : LifecycleService() {
         val caps = H264HardwareEncoder.caps()
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val streamRes = prefs.getString("stream_res", "auto") ?: "auto"
-        if (streamRes == "auto") {
-            val quality = prefs.getString("camera_resolution", "low") ?: "low"
-            val target = when (quality) {
-                "high" -> Size(1280, 720)
-                "medium" -> Size(960, 720)
-                "low" -> Size(800, 600)
-                else -> Size(800, 600)
-            }
-            return fitToEncoderCaps(target.width, target.height, caps.maxW, caps.maxH)
-        }
-        val m = Regex("(\\d+)x(\\d+)").find(streamRes)
-        val w = m?.groupValues?.get(1)?.toIntOrNull() ?: 1920
-        val h = m?.groupValues?.get(2)?.toIntOrNull() ?: 1080
+        val quality = prefs.getString("camera_resolution", "low") ?: "low"
         // Keep the selected aspect ratio when the encoder cannot take the full size; capping
         // width and height independently would turn e.g. 1080x1920 into a square frame.
-        return fitToEncoderCaps(w, h, caps.maxW, caps.maxH)
-    }
-
-    /** Scale [w]×[h] down to fit the encoder caps without changing its aspect ratio. */
-    private fun fitToEncoderCaps(w: Int, h: Int, maxW: Int, maxH: Int): Size {
-        if (w <= maxW && h <= maxH) return Size(w, h)
-        val scale = minOf(maxW.toDouble() / w, maxH.toDouble() / h)
-        fun even(v: Double) = ((v.toInt().coerceAtLeast(2)) / 2) * 2
-        return Size(even(w * scale), even(h * scale))
+        val (w, h) = StreamSizing.effectiveSize(streamRes, quality, caps)
+        return Size(w, h)
     }
 
     private suspend fun startCameraIfNeeded() {
@@ -1427,13 +1412,18 @@ class StreamingService : LifecycleService() {
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
             val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
             val fpsCoerced = fps.coerceIn(1, 60)
-            fun newEncoder(size: Size) = H264HardwareEncoder(
-                size.width,
-                size.height,
-                fpsCoerced,
-                H264HardwareEncoder.bitrateFor(size.width, size.height),
-                true // useSurface = true
-            ) { d, k, pts -> h264.broadcastH264(d, k, pts) }
+            fun newEncoder(size: Size): H264HardwareEncoder {
+                val encConfig = StreamEncoding.encoderConfig(prefs, size.width, size.height, fpsCoerced)
+                return H264HardwareEncoder(
+                    size.width,
+                    size.height,
+                    fpsCoerced,
+                    encConfig.bitrateBps,
+                    true, // useSurface = true
+                    encConfig.keyframeIntervalSec,
+                    encConfig.bitrateMode,
+                ) { d, k, pts -> h264.broadcastH264(d, k, pts) }
+            }
 
             // Encode in the picture's shape (portrait when the camera image is upright portrait).
             // If the encoder rejects the portrait size, fall back to the byte-buffer YUV path,
@@ -1656,7 +1646,16 @@ class StreamingService : LifecycleService() {
         val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
         val fpsCoerced = fps.coerceIn(1, 60)
         val frame = surfaceEncoderSize(cameraSize)
-        val enc = H264HardwareEncoder(frame.width, frame.height, fpsCoerced, H264HardwareEncoder.bitrateFor(frame.width, frame.height), true) { d, k, pts -> h264StreamingEncoder?.broadcastH264(d, k, pts) }
+        val encConfig = StreamEncoding.encoderConfig(prefs, frame.width, frame.height, fpsCoerced)
+        val enc = H264HardwareEncoder(
+            frame.width,
+            frame.height,
+            fpsCoerced,
+            encConfig.bitrateBps,
+            true,
+            encConfig.keyframeIntervalSec,
+            encConfig.bitrateMode,
+        ) { d, k, pts -> h264StreamingEncoder?.broadcastH264(d, k, pts) }
         h264StreamingEncoder?.setEncoder(enc)
         streamingServerHelper?.resetH264Wait()
         return CameraGlPipe(enc.inputSurface!!, frame.width, frame.height, fpsCoerced).also {
@@ -2181,6 +2180,33 @@ class StreamingService : LifecycleService() {
                         debouncedStartCamera()
                     }
                 }
+            }
+            // Main stream encoder settings. MediaCodec only reads bitrate, bitrate mode and
+            // keyframe interval at configure time, so a change rebuilds the encoder via a restart.
+            "stream_bitrate" -> {
+                val raw = value.trim().lowercase()
+                if (raw == StreamEncoding.AUTO) {
+                    prefs.edit().putString(StreamEncoding.PREF_BITRATE, StreamEncoding.AUTO).apply()
+                } else {
+                    val kbps = raw.toIntOrNull()
+                        ?.takeIf { it in StreamEncoding.MIN_BITRATE_KBPS..StreamEncoding.MAX_BITRATE_KBPS }
+                        ?: return
+                    prefs.edit().putString(StreamEncoding.PREF_BITRATE, kbps.toString()).apply()
+                }
+                debouncedStartCamera()
+            }
+            "stream_bitrate_mode" -> {
+                val mode = value.trim().lowercase()
+                if (mode != StreamEncoding.MODE_VBR && mode != StreamEncoding.MODE_CBR) return
+                prefs.edit().putString(StreamEncoding.PREF_BITRATE_MODE, mode).apply()
+                debouncedStartCamera()
+            }
+            "stream_keyframe_interval" -> {
+                val sec = value.toIntOrNull()
+                    ?.takeIf { it in StreamEncoding.MIN_KEYFRAME_INTERVAL_SEC..StreamEncoding.MAX_KEYFRAME_INTERVAL_SEC }
+                    ?: return
+                prefs.edit().putString(StreamEncoding.PREF_KEYFRAME_INTERVAL, sec.toString()).apply()
+                debouncedStartCamera()
             }
             // RTSP sub stream and audio settings. The RTSP server reads them when a viewer
             // connects, so a change applies to the next connection (as the old Settings screen did).

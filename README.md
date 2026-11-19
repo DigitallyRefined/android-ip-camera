@@ -151,7 +151,7 @@ rtsps://[username]:[password]@[ip_address]:8554/live
 
 > **Note:** VLC does not reliably handle self-signed TLS certificates for RTSPS streams. Use **mpv** or **ffplay** to play, or use a trusted certificate. Disabling TLS may work with VLC, at the risk of sending your username/password in plaintext.
 
-* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, rotation and mirror follow the web controls). Each client starts at a keyframe.
+* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, target bitrate, bitrate mode, keyframe interval, rotation and mirror follow the web controls). Each client starts at a keyframe.
 * **Sub stream:** `rtsps://[username]:[password]@[ip_address]:8554/live/sub` is a smaller version of the same picture for slow links such as 4G, and can be watched alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled); changes apply the next time a viewer connects. The phone encodes it in addition to the main stream only while someone watches it. Where the picture does not go through the GPU path (front camera, devices whose camera is not FULL level), the sub stream carries the main stream instead.
 * **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
 * **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
@@ -300,6 +300,10 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
 * **Parameters:**
   * `camera=<id|front|back|toggle>`: Switches the active camera sensor (supports logical:physical ids).
   * `resolution=<low|medium|high|auto|max|WxH>`: Change capture/stream resolution. Use `low|medium|high` for presets; `auto`/`max` or explicit `WxH` may be used to control the negotiated stream size.
+  * `fps=<1..60>`: Main stream frame rate.
+  * `stream_bitrate=<auto|500..8000>`: Main stream target bitrate in kbps. `auto` scales ~0.2 bits per pixel per frame with resolution and frame rate.
+  * `stream_bitrate_mode=<vbr|cbr>`: Main stream rate control mode (falls back to VBR when unsupported).
+  * `stream_keyframe_interval=<1..120>`: Seconds between main stream keyframes.
   * `zoom=<value>`: Adjusts digital zoom (e.g., `1.0`, `2.5`).
   * `scale=<value>`: Adjusts preview stream scale (per-camera; e.g., `0.5`, `1.0`).
   * `exposure=<value>`: Adjusts exposure value (per-camera).

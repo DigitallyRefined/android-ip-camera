@@ -35,7 +35,11 @@ data class OnvifStreamInfo(
     val width: Int,
     val height: Int,
     val fps: Int,
-    val bitrateKbps: Int
+    val bitrateKbps: Int,
+    /** Seconds between keyframes, reported as ONVIF GovLength in frames. */
+    val keyframeIntervalSec: Int = 1,
+    /** Whether the encoder runs in CBR mode. */
+    val cbr: Boolean = false,
 )
 
 /**
@@ -515,10 +519,11 @@ class OnvifServer(
     private fun videoEncoderConfig(token: String, tag: String = "tt:VideoEncoderConfiguration"): String {
         val s = stream()
         val fps = s.fps.coerceAtLeast(1)
+        val govLength = (fps * s.keyframeIntervalSec.coerceAtLeast(1)).coerceAtLeast(1)
         return "<$tag token=\"vec_$token\"><tt:Name>${if (token == "main") "MainStream" else "SubStream"}</tt:Name><tt:UseCount>1</tt:UseCount>" +
             "<tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>${s.width}</tt:Width><tt:Height>${s.height}</tt:Height></tt:Resolution>" +
             "<tt:Quality>5</tt:Quality><tt:RateControl><tt:FrameRateLimit>$fps</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>${s.bitrateKbps}</tt:BitrateLimit></tt:RateControl>" +
-            "<tt:H264><tt:GovLength>${fps}</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>" +
+            "<tt:H264><tt:GovLength>$govLength</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>" +
             "<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address><tt:Port>0</tt:Port><tt:TTL>1</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>" +
             "<tt:SessionTimeout>PT60S</tt:SessionTimeout></$tag>"
     }
@@ -558,7 +563,7 @@ class OnvifServer(
             "GetVideoEncoderConfigurationOptions" -> "<trt:GetVideoEncoderConfigurationOptionsResponse><trt:Options>" +
                 "<tt:QualityRange><tt:Min>1</tt:Min><tt:Max>5</tt:Max></tt:QualityRange>" +
                 "<tt:H264><tt:ResolutionsAvailable><tt:Width>${s.width}</tt:Width><tt:Height>${s.height}</tt:Height></tt:ResolutionsAvailable>" +
-                "<tt:GovLengthRange><tt:Min>1</tt:Min><tt:Max>300</tt:Max></tt:GovLengthRange><tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>${s.fps.coerceAtLeast(1)}</tt:Max></tt:FrameRateRange>" +
+                "<tt:GovLengthRange><tt:Min>1</tt:Min><tt:Max>${s.fps.coerceAtLeast(1) * StreamEncoding.MAX_KEYFRAME_INTERVAL_SEC}</tt:Max></tt:GovLengthRange><tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>${s.fps.coerceAtLeast(1)}</tt:Max></tt:FrameRateRange>" +
                 "<tt:EncodingIntervalRange><tt:Min>1</tt:Min><tt:Max>1</tt:Max></tt:EncodingIntervalRange><tt:H264ProfilesSupported>Main</tt:H264ProfilesSupported></tt:H264>" +
                 "</trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse>"
             "SetVideoEncoderConfiguration" -> "<trt:SetVideoEncoderConfigurationResponse/>"
@@ -590,9 +595,10 @@ class OnvifServer(
 
     private fun media2EncoderConfig(token: String, tag: String): String {
         val s = stream()
-        return "<$tag token=\"vec_$token\" GovLength=\"${s.fps.coerceAtLeast(1)}\" Profile=\"Main\"><tt:Name>${if (token == "main") "MainStream" else "SubStream"}</tt:Name><tt:UseCount>1</tt:UseCount>" +
+        val govLength = (s.fps.coerceAtLeast(1) * s.keyframeIntervalSec.coerceAtLeast(1)).coerceAtLeast(1)
+        return "<$tag token=\"vec_$token\" GovLength=\"$govLength\" Profile=\"Main\"><tt:Name>${if (token == "main") "MainStream" else "SubStream"}</tt:Name><tt:UseCount>1</tt:UseCount>" +
             "<tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>${s.width}</tt:Width><tt:Height>${s.height}</tt:Height></tt:Resolution>" +
-            "<tt:RateControl ConstantBitRate=\"false\"><tt:FrameRateLimit>${s.fps}</tt:FrameRateLimit><tt:BitrateLimit>${s.bitrateKbps}</tt:BitrateLimit></tt:RateControl>" +
+            "<tt:RateControl ConstantBitRate=\"${s.cbr}\"><tt:FrameRateLimit>${s.fps}</tt:FrameRateLimit><tt:BitrateLimit>${s.bitrateKbps}</tt:BitrateLimit></tt:RateControl>" +
             "<tt:Quality>5</tt:Quality></$tag>"
     }
 
@@ -610,8 +616,8 @@ class OnvifServer(
         "GetVideoEncoderConfigurationOptions" -> {
             val s = stream()
             val fps = s.fps.coerceAtLeast(1)
-            "<tr2:GetVideoEncoderConfigurationOptionsResponse><tr2:Options GovLengthRange=\"1 300\" FrameRatesSupported=\"$fps\" " +
-                "ProfilesSupported=\"Main\" ConstantBitRateSupported=\"false\" GuaranteedInstances=\"2\">" +
+            "<tr2:GetVideoEncoderConfigurationOptionsResponse><tr2:Options GovLengthRange=\"1 ${fps * StreamEncoding.MAX_KEYFRAME_INTERVAL_SEC}\" FrameRatesSupported=\"$fps\" " +
+                "ProfilesSupported=\"Main\" ConstantBitRateSupported=\"true\" GuaranteedInstances=\"2\">" +
                 "<tt:Encoding>H264</tt:Encoding><tt:QualityRange><tt:Min>1</tt:Min><tt:Max>5</tt:Max></tt:QualityRange>" +
                 "<tt:ResolutionsAvailable><tt:Width>${s.width}</tt:Width><tt:Height>${s.height}</tt:Height></tt:ResolutionsAvailable>" +
                 "<tt:BitrateRange><tt:Min>${(s.bitrateKbps / 4).coerceAtLeast(64)}</tt:Min><tt:Max>${s.bitrateKbps * 2}</tt:Max></tt:BitrateRange>" +
