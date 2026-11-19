@@ -1,0 +1,8 @@
+## What's Changed
+* Add advanced stream encoding controls in #155
+* Use explicit Content-Length for HTTP responses in #150
+* Support ONVIF WS-BaseNotification push subscriptions in #156
+* Fix F-Droid builds in #154
+* Bump dependencies by @dependabot[bot] in #157
+
+**Full Changelog**: https://github.com/DigitallyRefined/android-ip-camera/compare/v0.18.0...v0.19.0
