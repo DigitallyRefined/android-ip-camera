@@ -249,7 +249,9 @@ rustAbis.each { abi ->
         }
 
         inputs.files(fileTree(rustCrateDir) {
-            include "Cargo.toml", "Cargo.lock", "src/**"
+            // .cargo/config.toml carries the linker flags (16 KB page alignment),
+            // so a change there has to invalidate the cached build output.
+            include "Cargo.toml", "Cargo.lock", "src/**", ".cargo/config.toml"
         })
         inputs.file(rootProject.file("rust-toolchain.toml"))
         inputs.property "rustTarget", rustTarget
