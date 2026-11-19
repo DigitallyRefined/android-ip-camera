@@ -25,7 +25,11 @@
 
     <uses-feature android:name="android.hardware.camera.any" />
 
+    <!-- Hardware NVRs subscribe to ONVIF events with a plain-HTTP ConsumerReference on the
+         LAN, so outbound wsnt:Notify POSTs must be allowed to use cleartext. The camera's
+         own endpoints remain plain HTTP unless TLS is enabled in Settings. -->
     <application
+        android:usesCleartextTraffic="true"
         android:label="Android IP Camera"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
