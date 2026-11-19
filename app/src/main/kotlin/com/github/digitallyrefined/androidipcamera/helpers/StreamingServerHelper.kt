@@ -501,12 +501,11 @@ class StreamingServerHelper(
                 if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
                     // CRITICAL: No valid credentials configured - reject all connections
                     recordFailedAttempt(clientIp)
-                    writer.print("HTTP/1.1 403 Forbidden\r\n")
-                    writer.print("Content-Type: text/plain\r\n")
-                    writer.print("Connection: close\r\n\r\n")
-                    writer.print("SECURITY ERROR: Authentication credentials not properly configured.\r\n")
-                    writer.print("Configure username and password in app settings.\r\n")
-                    writer.flush()
+                    writeFixedResponse(
+                        writer, outputStream, "403 Forbidden", "text/plain",
+                        "SECURITY ERROR: Authentication credentials not properly configured.\r\n" +
+                                "Configure username and password in app settings.\r\n"
+                    )
                     socket.close()
                     onLog("SECURITY: Connection rejected - authentication credentials not configured")
                     return
@@ -537,22 +536,22 @@ class StreamingServerHelper(
                 if (authHeaderPair == null) {
                     // Rate limiting ONLY applies to unauthenticated requests
                     if (isRateLimited(clientIp)) {
-                        writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                        writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for unauthenticated
-                        writer.print("Connection: close\r\n\r\n")
-                        writer.print("Too Many Requests. Retry after 30 seconds or restart the app.\r\n")
-                        writer.flush()
+                        writeFixedResponse(
+                            writer, outputStream, "429 Too Many Requests", null,
+                            "Too Many Requests. Retry after 30 seconds or restart the app.\r\n",
+                            "Retry-After: 30\r\n" // Reduced to 30 seconds for unauthenticated
+                        )
                         socket.close()
                         onLog("SECURITY: Rate limited unauthenticated request from $clientIp")
                         Thread.sleep(100)
                         return
                     }
                     recordFailedAttempt(clientIp)
-                    writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                    writer.print("WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n")
-                    writer.print("Connection: close\r\n\r\n")
-                    writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                    writer.flush()
+                    writeFixedResponse(
+                        writer, outputStream, "401 Unauthorized", "text/plain",
+                        "Unauthorized. Check username and password in the app settings.\r\n",
+                        "WWW-Authenticate: Basic realm=\"Android IP Camera\"\r\n"
+                    )
                     socket.close()
                     return
                 }
@@ -565,20 +564,20 @@ class StreamingServerHelper(
                 } catch (e: IllegalArgumentException) {
                     // Malformed base64
                     if (isRateLimited(clientIp)) {
-                        writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                        writer.print("Retry-After: 30\r\n")
-                        writer.print("Connection: close\r\n\r\n")
-                        writer.flush()
+                        writeFixedResponse(
+                            writer, outputStream, "429 Too Many Requests", null,
+                            ByteArray(0), "Retry-After: 30\r\n"
+                        )
                         socket.close()
                         onLog("SECURITY: Rate limited malformed auth attempt from $clientIp")
                         Thread.sleep(100)
                         return
                     }
                     recordFailedAttempt(clientIp)
-                    writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                    writer.print("Connection: close\r\n\r\n")
-                    writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                    writer.flush()
+                    writeFixedResponse(
+                        writer, outputStream, "401 Unauthorized", "text/plain",
+                        "Unauthorized. Check username and password in the app settings.\r\n"
+                    )
                     socket.close()
                     onLog("SECURITY: Failed authentication attempt from $clientIp (malformed base64)")
                     return
@@ -587,20 +586,20 @@ class StreamingServerHelper(
                 if (providedAuth != "$username:$password") {
                     // Rate limiting ONLY applies to failed authentication attempts
                     if (isRateLimited(clientIp)) {
-                        writer.print("HTTP/1.1 429 Too Many Requests\r\n")
-                        writer.print("Retry-After: 30\r\n") // Reduced to 30 seconds for failed auth
-                        writer.print("Connection: close\r\n\r\n")
-                        writer.flush()
+                        writeFixedResponse(
+                            writer, outputStream, "429 Too Many Requests", null,
+                            ByteArray(0), "Retry-After: 30\r\n" // Reduced to 30 seconds for failed auth
+                        )
                         socket.close()
                         onLog("SECURITY: Rate limited failed auth attempt from $clientIp")
                         Thread.sleep(100)
                         return
                     }
                     recordFailedAttempt(clientIp)
-                    writer.print("HTTP/1.1 401 Unauthorized\r\n")
-                    writer.print("Connection: close\r\n\r\n")
-                    writer.print("Unauthorized. Check username and password in the app settings.\r\n")
-                    writer.flush()
+                    writeFixedResponse(
+                        writer, outputStream, "401 Unauthorized", "text/plain",
+                        "Unauthorized. Check username and password in the app settings.\r\n"
+                    )
                     socket.close()
                     onLog("SECURITY: Failed authentication attempt from $clientIp")
                     return
@@ -630,8 +629,7 @@ class StreamingServerHelper(
                     "/control/stop" -> setStreamingEnabled(false)
                     "/control/status" -> {}
                     else -> {
-                        writer.print("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
-                        writer.flush()
+                        writeFixedResponse(writer, outputStream, "404 Not Found", null, ByteArray(0))
                         try { socket.close() } catch (_: Exception) {}
                         return
                     }
@@ -685,9 +683,10 @@ class StreamingServerHelper(
                     writer.print("Connection: close\r\n\r\n")
                     writer.flush(); outputStream.write(jpeg); outputStream.flush()
                 } else {
-                    writer.print("HTTP/1.1 503 Service Unavailable\r\n")
-                    writer.print("Content-Type: text/plain\r\n")
-                    writer.print("Cache-Control: no-store\r\nConnection: close\r\n\r\nno frame"); writer.flush()
+                    writeFixedResponse(
+                        writer, outputStream, "503 Service Unavailable", "text/plain",
+                        "no frame", "Cache-Control: no-store\r\n"
+                    )
                 }
                 try { socket.close() } catch (_: Exception) {}
                 return
@@ -991,11 +990,7 @@ class StreamingServerHelper(
                     removeClient(client)
                 }
             } else {
-                writer.print("HTTP/1.1 404 Not Found\r\n")
-                writer.print("Content-Type: text/plain\r\n")
-                writer.print("Connection: close\r\n\r\n")
-                writer.print("Not Found\r\n")
-                writer.flush()
+                writeFixedResponse(writer, outputStream, "404 Not Found", "text/plain", "Not Found\r\n")
                 try {
                     socket.close()
                 } catch (_: Exception) {
@@ -1107,11 +1102,10 @@ class StreamingServerHelper(
             onLog("Talk upload error: ${e.message}")
             if (!headersSent) {
                 try {
-                    writer.print("HTTP/1.1 500 Internal Server Error\r\n")
-                    writer.print("Content-Type: text/plain\r\n")
-                    writer.print("Connection: close\r\n\r\n")
-                    writer.print("Talk streaming failed.\r\n")
-                    writer.flush()
+                    writeFixedResponse(
+                        writer, outputStream, "500 Internal Server Error", "text/plain",
+                        "Talk streaming failed.\r\n"
+                    )
                 } catch (_: Exception) {
                 }
             }
@@ -1259,11 +1253,12 @@ class StreamingServerHelper(
     fun handleMaxClients(socket: Socket, isAuthenticated: Boolean = false): Boolean {
         val maxAllowed = if (isAuthenticated) maxAuthenticatedClients else maxClients
         if (clients.size >= maxAllowed) {
-            socket.getOutputStream().writer().use { writer ->
-                writer.write("HTTP/1.1 503 Service Unavailable\r\n")
-                writer.write("Retry-After: 30\r\n") // 30 seconds
-                writer.write("Connection: close\r\n\r\n")
-                writer.flush()
+            val outputStream = socket.getOutputStream()
+            PrintWriter(outputStream, true).use { writer ->
+                writeFixedResponse(
+                    writer, outputStream, "503 Service Unavailable", null,
+                    ByteArray(0), "Retry-After: 30\r\n" // 30 seconds
+                )
             }
             socket.close()
             // Add small delay to prevent rapid reconnection loops
@@ -1276,11 +1271,12 @@ class StreamingServerHelper(
     fun handleMaxH264Clients(socket: Socket, isAuthenticated: Boolean = false): Boolean {
         val maxAllowed = if (isAuthenticated) maxAuthenticatedClients else maxClients
         if (h264Clients.size >= maxAllowed) {
-            socket.getOutputStream().writer().use { writer ->
-                writer.write("HTTP/1.1 503 Service Unavailable\r\n")
-                writer.write("Retry-After: 30\r\n") // 30 seconds
-                writer.write("Connection: close\r\n\r\n")
-                writer.flush()
+            val outputStream = socket.getOutputStream()
+            PrintWriter(outputStream, true).use { writer ->
+                writeFixedResponse(
+                    writer, outputStream, "503 Service Unavailable", null,
+                    ByteArray(0), "Retry-After: 30\r\n" // 30 seconds
+                )
             }
             socket.close()
             // Add small delay to prevent rapid reconnection loops

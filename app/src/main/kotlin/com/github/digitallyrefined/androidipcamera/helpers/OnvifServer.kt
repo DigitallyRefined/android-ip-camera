@@ -203,7 +203,7 @@ class OnvifServer(
                     HttpResponse(500, OnvifXml.fault("ter:Action", "Internal error", sender = false).toByteArray())
                 }
                 val keepAlive = !req.headers["connection"].equals("close", true) && req.version != "HTTP/1.0"
-                writeResponse(out, resp, keepAlive)
+                writeResponse(out, resp, keepAlive, headRequest = req.method == "HEAD")
                 if (!keepAlive) break
             }
         } catch (_: Exception) {
@@ -250,17 +250,19 @@ class OnvifServer(
         return Req(parts[0].uppercase(), parts[1], parts.getOrElse(2) { "HTTP/1.1" }, headers, body)
     }
 
-    private fun writeResponse(out: OutputStream, r: HttpResponse, keepAlive: Boolean) {
+    private fun writeResponse(out: OutputStream, r: HttpResponse, keepAlive: Boolean, headRequest: Boolean = false) {
         val reason = when (r.status) { 200 -> "OK"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 404 -> "Not Found"; 405 -> "Method Not Allowed"; 503 -> "Service Unavailable"; else -> "Internal Server Error" }
         val sb = StringBuilder("HTTP/1.1 ${r.status} $reason\r\n")
         sb.append("Content-Type: ${r.contentType}\r\n")
+        // For HEAD, Content-Length must describe the body a GET would return (RFC 9110 §9.3.2),
+        // even though the body itself is never sent.
         sb.append("Content-Length: ${r.body.size}\r\n")
         sb.append("Server: AndroidIPCamera-ONVIF\r\n")
         sb.append("Connection: ${if (keepAlive) "keep-alive" else "close"}\r\n")
         r.headers.forEach { (k, v) -> sb.append("$k: $v\r\n") }
         sb.append("\r\n")
         out.write(sb.toString().toByteArray(Charsets.ISO_8859_1))
-        out.write(r.body)
+        if (!headRequest) out.write(r.body)
         out.flush()
     }
 
@@ -273,7 +275,7 @@ class OnvifServer(
             if (!httpAuthOk(method, rawPath, headers)) return unauthorized("text/plain", "Unauthorized".toByteArray())
             val jpeg = try { snapshot?.invoke() } catch (_: Exception) { null }
                 ?: return HttpResponse(503, "No snapshot available".toByteArray(), "text/plain")
-            return HttpResponse(200, if (method == "HEAD") ByteArray(0) else jpeg, "image/jpeg", listOf("Cache-Control" to "no-store"))
+            return HttpResponse(200, jpeg, "image/jpeg", listOf("Cache-Control" to "no-store"))
         }
         if (method != "POST") {
             return HttpResponse(if (path.startsWith("/onvif")) 405 else 404, ByteArray(0), "text/plain")

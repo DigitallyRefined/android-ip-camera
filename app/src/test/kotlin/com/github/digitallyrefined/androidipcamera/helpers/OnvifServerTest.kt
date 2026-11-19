@@ -207,6 +207,34 @@ class OnvifServerTest {
         assertTrue(byteArrayOf(9, 8, 7).contentEquals(snap.inputStream.readBytes()))
     }
 
+    @Test fun `HEAD snapshot resolves the same representation as GET`() {
+        val s = newServer(withCreds = false, snapshot = { byteArrayOf(4, 5) })
+        val r = s.handle("HEAD", "/onvif/snapshot.jpg", emptyMap(), ByteArray(0))
+        assertEquals(200, r.status)
+        assertEquals(2, r.body.size)
+    }
+
+    @Test fun `HEAD on snapshot reports the GET content length without a body`() {
+        val s = newServer(withCreds = false, snapshot = { byteArrayOf(9, 8, 7) })
+        s.start()
+        val head = URL("http://127.0.0.1:${s.localPort}/onvif/snapshot.jpg").openConnection() as HttpURLConnection
+        head.requestMethod = "HEAD"
+        assertEquals(200, head.responseCode)
+        assertEquals("image/jpeg", head.contentType)
+        assertEquals(3, head.contentLength)
+        assertEquals(0, head.inputStream.readBytes().size)
+    }
+
+    @Test fun `HEAD on snapshot mirrors the error body length`() {
+        val s = newServer(withCreds = false, snapshot = { null })
+        s.start()
+        val head = URL("http://127.0.0.1:${s.localPort}/onvif/snapshot.jpg").openConnection() as HttpURLConnection
+        head.requestMethod = "HEAD"
+        assertEquals(503, head.responseCode)
+        assertEquals("No snapshot available".length, head.contentLength)
+        assertEquals(0, head.errorStream?.readBytes()?.size ?: 0)
+    }
+
     // ---------------- WS-Discovery ----------------
 
     private val discovery = OnvifDiscovery(
