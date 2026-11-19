@@ -28,19 +28,30 @@ Builds:
       - skipSigning=true
       - enableAbiSplits=false
 
-  - versionName: 0.4.0
-    versionCode: 40
-    commit: ff13748335039a109c43b6453b59a17aaaf0bbf6
+  - versionName: 0.18.0
+    versionCode: 180
+    commit: b6ca540e2b002143c94a2be227f3c303b326755c
     subdir: app
     gradle:
       - yes
     gradleprops:
       - skipSigning=true
       - enableAbiSplits=false
+    # The app builds its JNI library from Rust, so the builder needs both the
+    # NDK and a Rust toolchain with the Android targets.
+    sudo:
+      - apt-get update
+      - apt-get install -y --no-install-recommends build-essential
+    ndk: 27.2.12479018
+    srclibs:
+      - rustup@1.28.0
+    prebuild:
+      - $$rustup$$/rustup-init.sh -y --default-toolchain 1.91.0 --profile minimal
+      - $HOME/.cargo/bin/rustup target add aarch64-linux-android armv7-linux-androideabi
 
 AllowedAPKSigningKeys: 1111be81c861e199c6485d367c37680c4b778fba301980d2f0f9a2800f77f70a
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
-CurrentVersion: 0.4.0
-CurrentVersionCode: 40
+CurrentVersion: 0.18.0
+CurrentVersionCode: 180

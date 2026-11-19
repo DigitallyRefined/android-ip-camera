@@ -30,7 +30,7 @@ jobs:
           sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018"
 
       - name: Install Rust and the Android targets
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.91.0
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi
 

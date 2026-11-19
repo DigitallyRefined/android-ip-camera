@@ -22,3 +22,4 @@ opentunnel-native/target
 
 # local build helpers (machine-specific paths)
 _wsl_*.sh
+.DS_Store
