@@ -27,6 +27,11 @@
         android:key="opentunnel_category"
         android:title="Remote Access (OpenTunnel)"
         android:persistent="false">
+        <CheckBoxPreference
+            android:key="opentunnel_enabled"
+            android:title="Enable OpenTunnel"
+            android:summary="Allow remote access through an OpenTunnel server"
+            android:defaultValue="true" />
         <com.github.digitallyrefined.androidipcamera.activities.ReadOnlyEditTextPreference
             android:key="opentunnel_api_url"
             android:title="OpenTunnel Server"

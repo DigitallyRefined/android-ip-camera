@@ -7,12 +7,21 @@ import java.net.URI
 
 /** Preferences and security rules shared by the service, main screen, and Settings. */
 object OpenTunnelConfig {
+    const val PREF_ENABLED = "opentunnel_enabled"
     const val PREF_API_URL = "opentunnel_api_url"
     const val DEFAULT_API_URL = "https://opentunnel.xyz"
     const val PROFILE = "default"
 
     /** Set the first time the user taps the OpenTunnel hint on the main screen. */
     const val PREF_TAPPED = "opentunnel_setup_tapped"
+
+    /**
+     * Whether OpenTunnel may connect at all. Disabling it disconnects the tunnel but keeps the
+     * registered identity and all other settings, so enabling it again needs no new registration.
+     */
+    fun isEnabled(context: Context): Boolean =
+        PreferenceManager.getDefaultSharedPreferences(context)
+            .getBoolean(PREF_ENABLED, true)
 
     fun apiUrl(context: Context): String {
         val raw = PreferenceManager.getDefaultSharedPreferences(context)

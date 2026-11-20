@@ -217,6 +217,7 @@ class StreamingService : LifecycleService() {
         const val ACTION_START_SERVER = "com.github.digitallyrefined.androidipcamera.START_SERVER"
         const val ACTION_OPEN_TUNNEL_REGISTER = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_REGISTER"
         const val ACTION_OPEN_TUNNEL_CONNECT = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_CONNECT"
+        const val ACTION_OPEN_TUNNEL_DISCONNECT = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_DISCONNECT"
         const val ACTION_OPEN_TUNNEL_FORGET = "com.github.digitallyrefined.androidipcamera.OPEN_TUNNEL_FORGET"
     }
 
@@ -239,6 +240,7 @@ class StreamingService : LifecycleService() {
             ACTION_RESTART_SERVER -> if (ensureForegroundTypes()) restartServer()
             ACTION_OPEN_TUNNEL_REGISTER -> { registerOpenTunnel(); return START_STICKY }
             ACTION_OPEN_TUNNEL_CONNECT -> { connectOpenTunnel(); return START_STICKY }
+            ACTION_OPEN_TUNNEL_DISCONNECT -> { disconnectOpenTunnel(); return START_STICKY }
             ACTION_OPEN_TUNNEL_FORGET -> { forgetOpenTunnel(); return START_STICKY }
             // Cold start with no activity bound (e.g. from BootReceiver): the activity normally
             // calls startStreamingServer() after binding, so start it here instead.
@@ -571,6 +573,11 @@ class StreamingService : LifecycleService() {
         lifecycleScope.launch(Dispatchers.IO) { startOpenTunnel(createIfNeeded = false) }
     }
 
+    /** Drop an active tunnel while keeping the registration files and preferences. */
+    fun disconnectOpenTunnel() {
+        lifecycleScope.launch(Dispatchers.IO) { stopOpenTunnel() }
+    }
+
     /** Disconnect and delete every saved OpenTunnel file (and the tunnel on the server). */
     fun forgetOpenTunnel() {
         lifecycleScope.launch(Dispatchers.IO) {
@@ -584,6 +591,7 @@ class StreamingService : LifecycleService() {
     }
 
     private fun startOpenTunnel(createIfNeeded: Boolean) {
+        if (!OpenTunnelConfig.isEnabled(this)) return
         val problem = OpenTunnelConfig.credentialsProblem(this)
         if (problem != null) {
             toastOnMain(problem)
@@ -615,6 +623,7 @@ class StreamingService : LifecycleService() {
 
     /** Runs on a background dispatcher. Reconnects only when already registered. */
     private fun autoConnectOpenTunnel() {
+        if (!OpenTunnelConfig.isEnabled(this)) return
         if (!OpenTunnelController.isAvailable) return
         if (OpenTunnelConfig.credentialsProblem(this) != null) return
         val status = OpenTunnelController.status(this)

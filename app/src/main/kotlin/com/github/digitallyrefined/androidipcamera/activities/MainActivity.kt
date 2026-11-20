@@ -260,6 +260,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun updateOpenTunnelText() {
         if (!::openTunnelText.isInitialized) return
+        if (!OpenTunnelConfig.isEnabled(this)) {
+            openTunnelText.visibility = View.GONE
+            openTunnelText.setOnClickListener(null)
+            openTunnelText.isClickable = false
+            return
+        }
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val tapped = prefs.getBoolean(OpenTunnelConfig.PREF_TAPPED, false)
         val status = if (isBound) {
@@ -327,6 +333,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onOpenTunnelTapped() {
+        if (!OpenTunnelConfig.isEnabled(this)) return
         val problem = OpenTunnelConfig.credentialsProblem(this)
         if (problem != null) {
             Toast.makeText(this, problem, Toast.LENGTH_LONG).show()

@@ -504,6 +504,32 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         private fun setupOpenTunnelPreferences() {
+            findPreference<androidx.preference.CheckBoxPreference>(OpenTunnelConfig.PREF_ENABLED)?.apply {
+                setOpenTunnelOptionsVisible(isChecked)
+                setOnPreferenceChangeListener { _, newValue ->
+                    val enabled = newValue as Boolean
+                    setOpenTunnelOptionsVisible(enabled)
+                    if (!enabled) {
+                        val status = OpenTunnelController.status(requireContext())
+                        val wasRegistered = status.registered || status.connected
+                        // Drop a live tunnel but keep the identity and every other preference.
+                        requireContext().startService(
+                            Intent(requireContext(), StreamingService::class.java).setAction(
+                                StreamingService.ACTION_OPEN_TUNNEL_DISCONNECT
+                            )
+                        )
+                        if (wasRegistered) {
+                            Toast.makeText(
+                                requireContext(),
+                                "OpenTunnel disconnected",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                    true
+                }
+            }
+
             findPreference<ReadOnlyEditTextPreference>(OpenTunnelConfig.PREF_API_URL)?.apply {
                 summary = OpenTunnelConfig.apiUrl(requireContext())
                 onReadOnlyClick = {
@@ -619,6 +645,15 @@ class SettingsActivity : AppCompatActivity() {
         private fun registeredServerMessage(): String =
             "Use Disconnect & disassociate before switching servers."
 
+        private fun setOpenTunnelOptionsVisible(visible: Boolean) {
+            listOf(
+                OpenTunnelConfig.PREF_API_URL,
+                "opentunnel_status",
+                "opentunnel_action",
+                "opentunnel_disconnect"
+            ).forEach { findPreference<Preference>(it)?.isVisible = visible }
+        }
+
         private fun startOpenTunnelPolling() {
             openTunnelPollJob?.cancel()
             openTunnelPollJob = lifecycleScope.launch {
@@ -631,6 +666,10 @@ class SettingsActivity : AppCompatActivity() {
 
         private fun refreshOpenTunnelPreferences() {
             val context = context ?: return
+            val enabled = OpenTunnelConfig.isEnabled(context)
+            setOpenTunnelOptionsVisible(enabled)
+            if (!enabled) return
+
             val status = OpenTunnelController.status(context)
             val registered = status.registered
             val connected = status.connected
