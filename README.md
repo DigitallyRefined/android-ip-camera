@@ -361,7 +361,11 @@ The app uses the following permissions to function:
 <details>
 <summary>Reproducible builds</summary>
 
-> **Build releases in the container.** Native macOS and Windows builds are not byte-for-byte identical to Linux builds — the Rust compiler, Android NDK and JDK each ship separate host toolchains — so they do not match the F-Droid APK. Build the release APK in the provided Docker builder (it runs Linux on any host; add `--platform linux/amd64` on Apple Silicon or ARM Windows) or on a Linux CI runner, not with Android Studio's native toolchain.
+> **Build releases in the container.** Native macOS and Windows builds are not byte-for-byte identical to Linux builds — the Rust compiler, Android NDK and JDK each ship separate host toolchains — so they do not match the F-Droid APK. Build the release APK in the provided Docker builder or on a Linux CI runner, not with Android Studio's native toolchain.
+>
+> The builder image is pinned to `linux/amd64` because the Android NDK only ships x86_64 Linux host tools. On Apple Silicon, ARM Windows and ARM Linux hosts Docker runs it through x86_64 emulation: Docker Desktop does this automatically (Rosetta on Apple Silicon), while ARM Linux needs `qemu-user-static`/binfmt support for x86_64 containers. Docker prints a platform-mismatch warning on ARM hosts; it is expected and the build still runs.
+>
+> Run the commands below from the repository root, so the mounted `/workspace` contains `gradlew` and `rust-toolchain.toml`.
 
 This project uses [reproducible builds](https://f-droid.org/docs/Reproducible_Builds/). Release APKs should be built from a clean tree at the tagged commit in the container:
 
@@ -369,17 +373,19 @@ This project uses [reproducible builds](https://f-droid.org/docs/Reproducible_Bu
 docker build -t android-ip-camera:builder .
 docker run --rm \
   -v "$PWD":/workspace \
-  -v "$PWD/.cache/gradle":/cache/gradle \
-  android-ip-camera:builder release -PenableAbiSplits=false
+  -v "$HOME/.cache":/cache \
+  android-ip-camera:builder release #-PenableAbiSplits=false
 ```
 
-App bundle build:
+The container keeps the Android SDK, NDK, Gradle caches and Rust toolchain in `$HOME/.cache` (`android-sdk/`, `gradle/`, `cargo/` and `rustup/`) and installs them on the first run, so later builds start quickly. Delete those directories to force a clean reinstall. Gradle's daemon is disabled in the container because it cannot survive the end of a `docker run`.
+
+Signed app bundle build (verified afterwards like the APK release):
 
 ```bash
 docker run --rm \
   -v "$PWD":/workspace \
-  -v "$PWD/.cache/gradle":/cache/gradle \
-  android-ip-camera:builder ./gradlew bundleRelease
+  -v "$HOME/.cache":/cache \
+  android-ip-camera:builder releaseBundle
 ```
 
 Debug build:
@@ -387,13 +393,26 @@ Debug build:
 ```bash
 docker run --rm \
   -v "$PWD":/workspace \
-  -v "$PWD/.cache/gradle":/cache/gradle \
+  -v "$HOME/.cache":/cache \
   android-ip-camera:builder debug
 ```
 
-Signing: copy `signing.properties.default` to `signing.properties`, set `storeFile` to your keystore (for example `app/signing-key.jks`) and fill in the passwords. Without `signing.properties`, add `-PskipSigning` to the release command to produce an unsigned APK.
+Clean the Gradle build outputs, or wipe the cached toolchains to force a fresh install:
 
-The release variant will automatically sign the APK build. Build-tools 35+ is known to produce signatures that fail reproducibility verification.
+```bash
+docker run --rm \
+  -v "$PWD":/workspace \
+  -v "$HOME/.cache":/cache \
+  android-ip-camera:builder clean
+
+docker run --rm \
+  -v "$HOME/.cache":/cache \
+  android-ip-camera:builder clean-cache
+```
+
+Signing: copy `signing.properties.default` to `signing.properties`, set `storeFile` to your keystore (for example `app/signing-key.jks`) and fill in the passwords. Without `signing.properties`, add `-PskipSigning` to the `release` or `releaseBundle` command to produce an unsigned APK or bundle.
+
+The release variant will automatically sign the APK and app bundle builds. Build-tools 35+ is known to produce signatures that fail reproducibility verification.
 
 The OpenTunnel client is compiled from `opentunnel-native` by the Gradle build, so a local build also needs the Android NDK `27.2.12479018` and a Rust toolchain with the `aarch64-linux-android` and `armv7-linux-androideabi` targets. The Docker builder installs both.
 
@@ -415,6 +434,8 @@ By default, release builds generate architecture-specific APK splits for `arm64-
 ```bash
 ./gradlew clean bundleRelease
 ```
+
+The Docker builder wraps this as `apic-build releaseBundle`, which also verifies the bundle's signature and certificate after the build.
 
 The `enableAbiSplits` property defaults to `true`. Set it to `false` to generate only the universal APK, which is the recommended approach for F-Droid to avoid unnecessary complexity in the build pipeline.
 
