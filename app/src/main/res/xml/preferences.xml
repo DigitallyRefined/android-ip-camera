@@ -8,19 +8,16 @@
             android:title="Enable Authentication"
             android:summary="Require username/password to access the stream"
             android:defaultValue="true" />
-        <EditTextPreference
+        <com.github.digitallyrefined.androidipcamera.activities.SingleLineEditTextPreference
             android:key="username"
             android:title="Username"
             android:summary="Not set"
-            android:defaultValue=""
-            android:singleLine="true" />
-        <EditTextPreference
+            android:defaultValue="" />
+        <com.github.digitallyrefined.androidipcamera.activities.PasswordEditTextPreference
             android:key="password"
             android:title="Password"
             android:summary="Not set"
-            android:defaultValue=""
-            android:inputType="textPassword"
-            android:singleLine="true" />
+            android:defaultValue="" />
     </PreferenceCategory>
 
     <PreferenceCategory
@@ -36,9 +33,7 @@
             android:key="opentunnel_api_url"
             android:title="OpenTunnel Server"
             android:summary="Tunnel server URL (default: https://opentunnel.xyz)"
-            android:defaultValue="https://opentunnel.xyz"
-            android:inputType="textUri"
-            android:singleLine="true" />
+            android:defaultValue="https://opentunnel.xyz" />
         <Preference
             android:key="opentunnel_status"
             android:title="Tunnel Status"
@@ -61,26 +56,21 @@
             android:key="rtsp_enabled"
             android:title="Enable RTSP"
             android:defaultValue="false" />
-        <EditTextPreference
+        <com.github.digitallyrefined.androidipcamera.activities.SingleLineEditTextPreference
             android:key="rtsp_port"
             android:title="RTSP Port"
             android:summary="Port for the RTSP server (default: 8554)"
-            android:defaultValue="8554"
-            android:inputType="number"
-            android:singleLine="true" />
-        <EditTextPreference
+            android:defaultValue="8554" />
+        <com.github.digitallyrefined.androidipcamera.activities.SingleLineEditTextPreference
             android:key="onvif_name"
             android:title="ONVIF Camera Name"
             android:summary="Name shown to ONVIF clients (default: device model)"
-            android:defaultValue=""
-            android:singleLine="true" />
-        <EditTextPreference
+            android:defaultValue="" />
+        <com.github.digitallyrefined.androidipcamera.activities.SingleLineEditTextPreference
             android:key="onvif_port"
             android:title="ONVIF Port"
             android:summary="Port for the ONVIF service (default: 8000)"
-            android:defaultValue="8000"
-            android:inputType="number"
-            android:singleLine="true" />
+            android:defaultValue="8000" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Recording">
@@ -98,13 +88,11 @@
 
     <PreferenceCategory
         android:title="Startup">
-        <EditTextPreference
+        <com.github.digitallyrefined.androidipcamera.activities.SingleLineEditTextPreference
             android:key="server_port"
             android:title="Streaming Port"
             android:summary="Port for the streaming server (default: 4444)"
-            android:defaultValue="4444"
-            android:inputType="number"
-            android:singleLine="true" />
+            android:defaultValue="4444" />
         <ListPreference
             android:key="listen_interface"
             android:title="Listen Interface"
@@ -133,12 +121,11 @@
         <Preference
             android:key="certificate_path"
             android:title="Custom TLS Certificate" android:summary="Select your own certificate" android:persistent="true" />
-        <EditTextPreference
+        <com.github.digitallyrefined.androidipcamera.activities.PasswordEditTextPreference
             android:key="certificate_password"
             android:title="Certificate Password"
             android:summary="Optional password for the TLS certificate"
-            android:persistent="true"
-            android:inputType="textPassword" />
+            android:persistent="true" />
         <Preference
             android:key="test_certificate"
             android:title="Test Certificate Setup"

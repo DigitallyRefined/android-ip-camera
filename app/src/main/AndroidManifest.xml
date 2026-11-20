@@ -33,7 +33,7 @@
         android:label="Android IP Camera"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
+        android:theme="@style/Theme.AndroidIPCamera">
         <activity
             android:name=".activities.MainActivity"
             android:exported="true">

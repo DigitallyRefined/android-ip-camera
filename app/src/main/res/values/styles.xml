@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Bridge theme: keeps the existing AppCompat styling while enabling Material components. -->
+    <style name="Theme.AndroidIPCamera" parent="Theme.MaterialComponents.Light.DarkActionBar.Bridge" />
+</resources>

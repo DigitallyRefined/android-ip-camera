@@ -7,7 +7,6 @@ import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
-import android.view.inputmethod.EditorInfo
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -541,18 +540,6 @@ class SettingsActivity : AppCompatActivity() {
                 setOnBindEditTextListener { editText ->
                     editText.inputType =
                         InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-                    editText.isSingleLine = true
-                    editText.imeOptions = EditorInfo.IME_ACTION_DONE
-                    // Let the keyboard's action key commit the dialog, like the Save button.
-                    editText.setOnEditorActionListener { view, actionId, _ ->
-                        if (actionId == EditorInfo.IME_ACTION_DONE) {
-                            view.rootView.findViewById<View>(android.R.id.button1)
-                                ?.performClick()
-                            true
-                        } else {
-                            false
-                        }
-                    }
                 }
                 onReadOnlyClick = {
                     Toast.makeText(requireContext(), registeredServerMessage(), Toast.LENGTH_LONG).show()
