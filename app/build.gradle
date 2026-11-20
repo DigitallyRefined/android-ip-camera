@@ -26,6 +26,15 @@ android {
 
         // https://f-droid.org/docs/Reproducible_Builds/#pngs-generated-from-vector-drawables
         vectorDrawables.generatedDensities = []
+
+        // androidx.camera:camera-core ships libimage_processing_util_jni.so for
+        // x86 and x86_64 too, while the Rust OpenTunnel library is only built
+        // for ARM. Packaging the x86 CameraX library would advertise x86
+        // support in the APK/F-Droid listing even though remote access cannot
+        // work there, so only package the ABIs the app actually supports.
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a'
+        }
     }
 
     // https://f-droid.org/docs/Reproducible_Builds/#png-crushcrunch

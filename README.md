@@ -439,6 +439,8 @@ The Docker builder wraps this as `apic-build releaseBundle`, which also verifies
 
 The `enableAbiSplits` property defaults to `true`. Set it to `false` to generate only the universal APK, which is the recommended approach for F-Droid to avoid unnecessary complexity in the build pipeline.
 
+Every APK only packages the `arm64-v8a` and `armeabi-v7a` ABIs (`ndk.abiFilters` in `app/build.gradle`). CameraX ships an x86/x86_64 build of `libimage_processing_util_jni.so`, but the OpenTunnel client is only built for ARM. Packaging the CameraX x86 libraries would advertise x86 support (for example in the F-Droid listing) even though remote access would not work there.
+
 To verify that two unsigned builds from the same source are identical:
 
 ```bash
