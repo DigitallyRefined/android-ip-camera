@@ -2,4 +2,8 @@
 <resources>
     <!-- Bridge theme: keeps the existing AppCompat styling while enabling Material components. -->
     <style name="Theme.AndroidIPCamera" parent="Theme.MaterialComponents.Light.DarkActionBar.Bridge" />
+
+    <!-- Settings follows the system light/dark setting (DayNight), while the rest of the
+         app keeps its fixed light theme. -->
+    <style name="Theme.AndroidIPCamera.Settings" parent="Theme.MaterialComponents.DayNight.DarkActionBar.Bridge" />
 </resources>
