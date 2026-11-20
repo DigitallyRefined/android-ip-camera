@@ -14,8 +14,6 @@ import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
 import android.view.View
-import android.view.WindowInsets
-import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.ImageButton
 import android.widget.TextView
@@ -24,6 +22,10 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.R
@@ -51,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var openTunnelText: TextView
     private var openTunnelPollJob: Job? = null
     private lateinit var backGestureCallback: OnBackPressedCallback
+    private var isFullscreen = false
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
@@ -135,6 +138,10 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Black window background so the system bar inset padding and the preview
+        // surface never flash the light theme colour behind them.
+        window.setBackgroundDrawableResource(android.R.color.black)
+
         // Initialize view binding first
         viewBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(viewBinding.root)
@@ -148,23 +155,17 @@ class MainActivity : AppCompatActivity() {
         }
         onBackPressedDispatcher.addCallback(this, backGestureCallback)
 
+        // Draw behind the system bars and apply the bar insets as padding ourselves. This
+        // keeps the buttons clear of the status bar on start (and on Android 15+, where
+        // edge-to-edge is enforced) while still allowing true fullscreen in black screen mode.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        applySystemBarInsets()
+
         supportActionBar?.hide()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(false)
-            val controller = window.insetsController
-            controller?.let {
-                it.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = (
-                    View.SYSTEM_UI_FLAG_FULLSCREEN
-                            or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                    )
-        }
+        // Start with the system bars visible; fullscreen is only entered for the black
+        // screen (hidden preview) mode.
+        setFullscreen(false)
 
         if (!allPermissionsGranted() && !hasRequestedPermissions) {
             hasRequestedPermissions = true
@@ -220,6 +221,50 @@ class MainActivity : AppCompatActivity() {
         updateOpenTunnelText()
         startOpenTunnelPolling()
         checkNotificationChannelEnabled()
+        // Re-apply the bar visibility: a returning activity or dialog may have restored them.
+        setFullscreen(userHiddenPreview)
+    }
+
+    /**
+     * Pads the root layout by the system bar insets while they are visible. In fullscreen
+     * mode the padding is removed so the camera preview and black screen fill the display.
+     */
+    private fun applySystemBarInsets() {
+        val root = viewBinding.root
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            if (isFullscreen) {
+                view.setPadding(0, 0, 0, 0)
+            } else {
+                // Include the cutout so the buttons clear a notch in landscape too.
+                val bars = insets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+                )
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(root)
+    }
+
+    /**
+     * Shows or hides the status and navigation bars. Hiding uses the transient-by-swipe
+     * behaviour so a user can still reveal the system bars if they need them.
+     */
+    private fun setFullscreen(enabled: Boolean) {
+        isFullscreen = enabled
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        // White icons on the app's black background regardless of the system theme.
+        controller.isAppearanceLightStatusBars = false
+        controller.isAppearanceLightNavigationBars = false
+        if (enabled) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+        ViewCompat.requestApplyInsets(viewBinding.root)
     }
 
     private fun updateIpAddressText() {
@@ -481,6 +526,8 @@ class MainActivity : AppCompatActivity() {
         if (!userHiddenPreview) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+            setFullscreen(true)
+
             viewFinder.visibility = View.INVISIBLE
             ipAddressText.visibility = View.GONE
             urlBar.visibility = View.GONE
@@ -501,6 +548,8 @@ class MainActivity : AppCompatActivity() {
             }
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+            setFullscreen(false)
 
             ipAddressText.visibility = View.VISIBLE
             urlBar.visibility = View.VISIBLE
