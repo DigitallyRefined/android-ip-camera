@@ -14,6 +14,7 @@ signing.properties
 app/signing-key.jks
 certificates
 .venv
+fastlane/metadata/android/en-US/images/phoneScreenshots/stylised
 
 # Docker builder caches (see Dockerfile usage)
 .cache

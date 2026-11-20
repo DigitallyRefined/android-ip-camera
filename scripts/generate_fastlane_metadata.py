@@ -317,12 +317,6 @@ def main():
     write_file(out_dir / "changelogs" / f"{version_code}.txt", _truncate_replace_line(safe_notes, 500))
 
     images_dir = out_dir / "images"
-    phone_dir = images_dir / "phoneScreenshots"
-    phone_dir.mkdir(parents=True, exist_ok=True)
-    screenshot_src = repo_root / "screenshot.webp"
-    if screenshot_src.exists():
-        png_dest = phone_dir / "1.png"
-        ok = convert_webp_to_png(str(screenshot_src), str(png_dest))
 
     icons = find_icon_pngs(str(repo_root))
     if icons:
@@ -339,9 +333,6 @@ def main():
         made_icon = False
         if background_xml.exists() and foreground_xml.exists():
             made_icon = render_icon_from_vectors(str(background_xml), str(foreground_xml), str(images_dir / "icon.png"), size=512)
-        if not made_icon and screenshot_src.exists():
-            # Fallback: generate icon from screenshot if available
-            create_icon_from_screenshot(str(screenshot_src), str(images_dir / "icon.png"))
 
     print(json.dumps({"output_dir": str(out_dir)}))
 

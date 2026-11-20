@@ -5,7 +5,7 @@
 
 Turn your Android device into a remote security IP camera
 
-![Desktop Browser](screenshot.webp)
+[![Screenshot](screenshot.webp)](https://github.com/DigitallyRefined/android-ip-camera/tree/main/fastlane/metadata/android/en-US/images/phoneScreenshots)
 
 ## 📲 Install
 
@@ -53,6 +53,7 @@ The app runs as a foreground service with a persistent notification, so it won't
 * **Don't swipe the app away** from recent apps - force-stopping it terminates the server.
 * Don't dismiss the persistent notification or the server may get stopped.
 * The display can be safely turned off while streaming.
+* **Disable automatic updates:** Installing an update stops the app and its background streaming service. App stores and updaters (Google Play, F-Droid, Obtainium, etc.) may install updates in the background, interrupting 24/7 operation. Turn off auto-update for Android IP Camera in the store or updater, and install updates manually when you are able to reopen the app and start streaming again.
 * Enable **Start on Boot** in the app settings for unattended setups. On Android 14 and newer, Android does not allow the camera/microphone foreground service to start from the background, so the app posts a notification after boot; tap it to open the app and start streaming.
 
 ## 🎥 Frigate config
@@ -473,5 +474,18 @@ Signer #1 certificate SHA-256 digest: 1111be81c861e199c6485d367c37680c4b778fba30
 Signer #1 certificate SHA-1 digest: 1560ceccdd719b2b97d431ad9a4c877abf5c2f32
 Signer #1 certificate MD5 digest: 5fdf04f5b6bab9fdacbe28aa6dc85abb
 ```
+
+### Regenerate Play Store assets
+
+The stylised store screenshots and feature graphic are rendered from the raw captures in `fastlane/metadata/android/en-US/images/phoneScreenshots/` with Pillow in Docker:
+
+```bash
+docker run --rm -v "$(pwd):/work" -w /work python:3.12-slim bash -c \
+  "apt-get update -qq && apt-get install -y -qq fonts-noto-core fonts-dejavu-core > /dev/null 2>&1 && \
+   pip install -q pillow && \
+   python fastlane/scripts/play_store_assets.py"
+```
+
+Outputs are written to `fastlane/metadata/android/en-US/images/phoneScreenshots/stylised/`.
 
 </details>
