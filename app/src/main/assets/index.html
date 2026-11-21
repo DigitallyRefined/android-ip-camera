@@ -66,6 +66,20 @@
       display: block;
     }
 
+    #cropOverlayCanvas {
+      position: absolute;
+      display: none;
+      pointer-events: none;
+      z-index: 4;
+      touch-action: none;
+    }
+
+    .stream-container.cropping #cropOverlayCanvas {
+      display: block;
+      pointer-events: auto;
+      cursor: crosshair;
+    }
+
     .status-overlay {
       position: absolute;
       top: 15px;
@@ -551,6 +565,7 @@
       </div>
       <div id="streamLoading" class="stream-loading">Loading...</div>
       <canvas id='streamCanvas'></canvas>
+      <canvas id="cropOverlayCanvas" aria-label="Crop selection overlay"></canvas>
       <audio id="audioEl" preload="none" muted></audio>
     </div>
 
@@ -817,6 +832,13 @@
             <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
               Countdown before a snapshot is captured. Set to 0 to take it instantly. Use the Take Snapshot button in the Camera tab.
             </div>
+
+            <p class="group-title">Crop</p>
+
+            <div style="display:flex; gap:8px;">
+              <button id="cropBtn" class="btn" style="flex:1 1 0; min-width:0;">✂️ Crop Image</button>
+              <button id="resetCropBtn" class="btn" style="flex:1 1 0; min-width:0;">Reset Crop</button>
+            </div>
           </div>
 
           <details id="substreamSection" class="setting-group" style="display:none">
@@ -908,6 +930,7 @@
     const muteBtn = getElById('muteBtn');
     const audioControls = getElById('audioControls');
     const streamContainer = getElById('streamContainer');
+    const cropOverlayCanvas = getElById('cropOverlayCanvas');
     const avDelay = getElById('avDelay');
     const avDelayVal = getElById('avDelayVal');
     const STREAM_SRC = '/video/mjpeg';
@@ -923,6 +946,17 @@
     let cameraList = [];
     let recordingMode = 'off';
 
+    // Crop selection: normalised 0..1 rectangle in the displayed (rotated) frame.
+    let cropRegion = null;
+    // Crop that was active when crop mode started. A new rectangle is drawn inside the already
+    // cropped preview, so it is composed with this when saved.
+    let cropBaseRegion = null;
+    let cropMode = false;
+    let cropDrag = null;
+    // Destination rectangle of the last drawn video frame, in canvas pixels. The crop overlay uses
+    // this so selections line up with the picture rather than the letterbox around it.
+    let lastImageRect = null;
+
     // Mobile screens have no room to pan a full-resolution frame around, so start
     // in Original Size, which fits the frame to the player width.
     if (isMobileLayout()) setView('original');
@@ -934,6 +968,240 @@
     function isMobileLayout() {
       return window.matchMedia('(max-width: 900px)').matches;
     }
+
+    // ---- Crop selection (desktop only) ----
+    function parseCropValue(value) {
+      if (!value || typeof value !== 'string') return null;
+      const text = value.trim().toLowerCase();
+      if (!text || text === 'reset' || text === 'none') return null;
+      const parts = text.split(',').map(Number);
+      if (parts.length !== 4 || parts.some(n => !Number.isFinite(n))) return null;
+      const [left, top, right, bottom] = parts;
+      if (left < 0 || top < 0 || right > 1 || bottom > 1) return null;
+      if (right - left < 0.02 || bottom - top < 0.02) return null;
+      return { left, top, right, bottom };
+    }
+
+    function formatCropValue(region) {
+      return [region.left, region.top, region.right, region.bottom]
+        .map(n => n.toFixed(4)).join(',');
+    }
+
+    function cropImageRect() {
+      const w = cropOverlayCanvas ? cropOverlayCanvas.width : (streamCanvas ? streamCanvas.width : 1);
+      const h = cropOverlayCanvas ? cropOverlayCanvas.height : (streamCanvas ? streamCanvas.height : 1);
+      const r = lastImageRect;
+      if (r && r.w > 1 && r.h > 1) return r;
+      return { x: 0, y: 0, w: Math.max(1, w), h: Math.max(1, h) };
+    }
+
+    function syncCropOverlay() {
+      if (!cropOverlayCanvas || !streamCanvas) return;
+      const w = Math.max(1, streamCanvas.width);
+      const h = Math.max(1, streamCanvas.height);
+      if (cropOverlayCanvas.width !== w) cropOverlayCanvas.width = w;
+      if (cropOverlayCanvas.height !== h) cropOverlayCanvas.height = h;
+      const left = (streamCanvas.offsetLeft || 0) + 'px';
+      const top = (streamCanvas.offsetTop || 0) + 'px';
+      if (cropOverlayCanvas.style.left !== left) cropOverlayCanvas.style.left = left;
+      if (cropOverlayCanvas.style.top !== top) cropOverlayCanvas.style.top = top;
+      const width = w + 'px';
+      const height = h + 'px';
+      if (cropOverlayCanvas.style.width !== width) cropOverlayCanvas.style.width = width;
+      if (cropOverlayCanvas.style.height !== height) cropOverlayCanvas.style.height = height;
+      if (cropMode) renderCropOverlay();
+    }
+
+    function renderCropOverlay() {
+      if (!cropOverlayCanvas) return;
+      const ctx = cropOverlayCanvas.getContext('2d');
+      if (!ctx) return;
+      const w = cropOverlayCanvas.width;
+      const h = cropOverlayCanvas.height;
+      ctx.clearRect(0, 0, w, h);
+      if (!cropMode) return;
+
+      const img = cropImageRect();
+      let rect = null;
+      if (cropDrag) {
+        rect = {
+          x: Math.min(cropDrag.startX, cropDrag.x),
+          y: Math.min(cropDrag.startY, cropDrag.y),
+          w: Math.abs(cropDrag.x - cropDrag.startX),
+          h: Math.abs(cropDrag.y - cropDrag.startY)
+        };
+      } else if (cropRegion && !cropBaseRegion) {
+        // When a crop is already active the preview shows only that crop, so drawing the old
+        // full-frame rectangle again would be misleading. The whole view is the existing crop.
+        rect = {
+          x: img.x + cropRegion.left * img.w,
+          y: img.y + cropRegion.top * img.h,
+          w: (cropRegion.right - cropRegion.left) * img.w,
+          h: (cropRegion.bottom - cropRegion.top) * img.h
+        };
+      }
+
+      if (!rect || rect.w <= 1 || rect.h <= 1) {
+        ctx.strokeStyle = 'rgba(69, 158, 255, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(img.x + 1, img.y + 1, Math.max(1, img.w - 2), Math.max(1, img.h - 2));
+        ctx.setLineDash([]);
+        return;
+      }
+
+      // Dim everything outside the selection, then punch the chosen area clear so the live
+      // preview stays visible.
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.fillRect(0, 0, w, h);
+      ctx.clearRect(rect.x, rect.y, rect.w, rect.h);
+      ctx.strokeStyle = '#459eff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.strokeRect(rect.x + 1, rect.y + 1, Math.max(1, rect.w - 2), Math.max(1, rect.h - 2));
+    }
+
+    function setCropMode(active) {
+      if (!cropOverlayCanvas || !streamContainer) return;
+      cropMode = !!active;
+      cropDrag = null;
+      if (cropMode) {
+        cropBaseRegion = cropRegion ? { ...cropRegion } : null;
+      } else {
+        cropBaseRegion = null;
+      }
+      streamContainer.classList.toggle('cropping', cropMode);
+      const btn = getElById('cropBtn');
+      if (btn) {
+        btn.textContent = cropMode ? '✖ Cancel Crop' : '✂️ Crop Image';
+        btn.classList.toggle('active', cropMode);
+      }
+      syncCropOverlay();
+      renderCropOverlay();
+    }
+
+    function toggleCropMode() {
+      if (isMobileLayout()) {
+        alert('Cropping can only be changed from a desktop browser. Open this page on a computer on the same network to set a crop area.');
+        return;
+      }
+      if (!cropMode && !lastImageRect) {
+        alert('Wait for the video to load, then try cropping again.');
+        return;
+      }
+      setCropMode(!cropMode);
+    }
+
+    function resetCrop() {
+      if (isMobileLayout()) {
+        alert('Cropping can only be changed from a desktop browser. Open this page on a computer on the same network to reset the crop area.');
+        return;
+      }
+      setCropMode(false);
+      cropRegion = null;
+      sendControl('crop', 'reset');
+      renderCropOverlay();
+      setTimeout(() => loadDeviceInfo(true), 600);
+    }
+
+    function cropPointerPosition(event, area) {
+      const rect = cropOverlayCanvas.getBoundingClientRect();
+      const scaleX = rect.width ? cropOverlayCanvas.width / rect.width : 1;
+      const scaleY = rect.height ? cropOverlayCanvas.height / rect.height : 1;
+      const img = area || cropImageRect();
+      const x = (event.clientX - rect.left) * scaleX;
+      const y = (event.clientY - rect.top) * scaleY;
+      return {
+        x: Math.max(img.x, Math.min(img.x + img.w, x)),
+        y: Math.max(img.y, Math.min(img.y + img.h, y))
+      };
+    }
+
+    function saveCropSelection() {
+      if (!cropDrag) return;
+      const drag = cropDrag;
+      const leftPx = Math.min(drag.startX, drag.x);
+      const rightPx = Math.max(drag.startX, drag.x);
+      const topPx = Math.min(drag.startY, drag.y);
+      const bottomPx = Math.max(drag.startY, drag.y);
+      const region = {
+        left: (leftPx - drag.img.x) / drag.img.w,
+        top: (topPx - drag.img.y) / drag.img.h,
+        right: (rightPx - drag.img.x) / drag.img.w,
+        bottom: (bottomPx - drag.img.y) / drag.img.h
+      };
+      cropDrag = null;
+      if (rightPx - leftPx < 8 || bottomPx - topPx < 8 ||
+          region.right - region.left < 0.02 || region.bottom - region.top < 0.02) {
+        renderCropOverlay();
+        return;
+      }
+      // A new selection is relative to what is currently visible. When that is already a crop,
+      // compose it with the previous rectangle so the saved coordinates stay full-frame relative.
+      let saved = region;
+      if (cropBaseRegion) {
+        const base = cropBaseRegion;
+        const baseW = base.right - base.left;
+        const baseH = base.bottom - base.top;
+        saved = {
+          left: base.left + region.left * baseW,
+          top: base.top + region.top * baseH,
+          right: base.left + region.right * baseW,
+          bottom: base.top + region.bottom * baseH
+        };
+      }
+      cropRegion = saved;
+      sendControl('crop', formatCropValue(saved));
+      setCropMode(false);
+    }
+
+    if (cropOverlayCanvas) {
+      cropOverlayCanvas.addEventListener('pointerdown', (event) => {
+        if (!cropMode) return;
+        event.preventDefault();
+        const p = cropPointerPosition(event);
+        cropDrag = {
+          img: cropImageRect(),
+          startX: p.x,
+          startY: p.y,
+          x: p.x,
+          y: p.y,
+          pointerId: event.pointerId
+        };
+        try { cropOverlayCanvas.setPointerCapture(event.pointerId); } catch (_) { }
+        renderCropOverlay();
+      });
+
+      cropOverlayCanvas.addEventListener('pointermove', (event) => {
+        if (!cropMode || !cropDrag || event.pointerId !== cropDrag.pointerId) return;
+        event.preventDefault();
+        const p = cropPointerPosition(event, cropDrag.img);
+        cropDrag.x = p.x;
+        cropDrag.y = p.y;
+        renderCropOverlay();
+      });
+
+      const endCropDrag = (event) => {
+        if (!cropMode || !cropDrag || event.pointerId !== cropDrag.pointerId) return;
+        const p = cropPointerPosition(event, cropDrag.img);
+        cropDrag.x = p.x;
+        cropDrag.y = p.y;
+        try { cropOverlayCanvas.releasePointerCapture(event.pointerId); } catch (_) { }
+        saveCropSelection();
+      };
+      cropOverlayCanvas.addEventListener('pointerup', endCropDrag);
+      cropOverlayCanvas.addEventListener('pointercancel', () => {
+        cropDrag = null;
+        renderCropOverlay();
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && cropMode) setCropMode(false);
+      });
+    }
+
+    getElById('cropBtn')?.addEventListener('click', toggleCropMode);
+    getElById('resetCropBtn')?.addEventListener('click', resetCrop);
 
     // On mobile the player width is fixed by the screen, so size the player to the
     // frame's aspect ratio instead of showing a bigger-than-screen original-size
@@ -995,6 +1263,7 @@
         streamCanvas.height = size.h;
       }
       updateStreamAspect(size);
+      syncCropOverlay();
     }
 
     function updateMuteButton() {
@@ -1430,6 +1699,7 @@
               const dy = Math.floor((h - dh) / 2);
               ctx.clearRect(0, 0, w, h);
               ctx.drawImage(candidate.bmp, dx, dy, dw, dh);
+              lastImageRect = { x: dx, y: dy, w: dw, h: dh };
               lastDrawn = candidate.bmp;
               hideStreamLoading();
             }
@@ -1599,12 +1869,21 @@
               ctx.rotate(residual * Math.PI / 180);
               ctx.drawImage(frame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
               ctx.restore();
+              lastImageRect = {
+                x: (size.w - cw * s) / 2,
+                y: (size.h - ch * s) / 2,
+                w: cw * s,
+                h: ch * s
+              };
             } else {
               const size = targetCanvasSize({ width: fw, height: fh });
               applyCanvasSize(size);
               const s = Math.min(size.w / fw, size.h / fh) * getUserScale();
               ctx.clearRect(0, 0, size.w, size.h);
-              ctx.drawImage(frame, (size.w - fw * s) / 2, (size.h - fh * s) / 2, fw * s, fh * s);
+              const dx = (size.w - fw * s) / 2;
+              const dy = (size.h - fh * s) / 2;
+              ctx.drawImage(frame, dx, dy, fw * s, fh * s);
+              lastImageRect = { x: dx, y: dy, w: fw * s, h: fh * s };
             }
             ctx.filter = 'none';
             hideStreamLoading();
@@ -2052,6 +2331,7 @@
       if (document.fullscreenElement || document.webkitFullscreenElement) {
         applyCanvasSize(targetCanvasSize(lastDrawn));
       }
+      syncCropOverlay();
     });
 
     // RTSP/substream settings: the section only exists when the RTSP server is enabled, and the
@@ -2143,6 +2423,10 @@
       const mirrorEl = getElById('mirrorCheckbox');
       if (mirrorEl && settings.mirror !== undefined) {
         mirrorEl.checked = settings.mirror === 'true';
+      }
+      if (settings.crop !== undefined) {
+        cropRegion = parseCropValue(String(settings.crop));
+        if (cropMode) renderCropOverlay();
       }
 
       // Advanced main-stream controls are applied before populateResolutions() above so the

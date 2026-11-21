@@ -93,6 +93,7 @@ class MjpegStreamingEncoder(
                 val phys = camId.substringAfter(':', camId)
                 prefStringWithFallback(prefs, "mirror_$camId", "mirror_$phys")?.toBoolean() ?: false
             } else false
+            val crop = CropRegion.read(prefs, camId)
 
             val nv21 = convertYUV420toNV21(image, nv21Buffer, nv21RowBuffer).also {
                 nv21Buffer = it
@@ -102,9 +103,9 @@ class MjpegStreamingEncoder(
             }
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
             var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height, quality)
-            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror
+            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror || crop != null
             if (needsTransform) {
-                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality, mirror)
+                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality, mirror, crop)
             }
             broadcastJpeg(jpegBytes)
         } catch (e: OutOfMemoryError) {
@@ -148,12 +149,13 @@ class MjpegStreamingEncoder(
                 val phys = camId.substringAfter(':', camId)
                 prefStringWithFallback(prefs, "mirror_$camId", "mirror_$phys")?.toBoolean() ?: false
             } else false
+            val crop = CropRegion.read(prefs, camId)
 
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
             var jpegBytes = convertNV21toJPEG(nv21, width, height, quality)
-            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror
+            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror || crop != null
             if (needsTransform) {
-                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality, mirror)
+                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality, mirror, crop)
             }
             broadcastJpeg(jpegBytes)
         } catch (e: OutOfMemoryError) {
@@ -323,7 +325,8 @@ class MjpegStreamingEncoder(
         scaleFactor: Float,
         contrastValue: Int,
         jpegQuality: Int,
-        mirror: Boolean = false
+        mirror: Boolean = false,
+        crop: CropRegion? = null
     ): ByteArray {
         var bitmap: Bitmap? = null
         try {
@@ -362,6 +365,21 @@ class MjpegStreamingEncoder(
                 if (transformedBitmap != bitmap) {
                     bitmap.recycle()
                     bitmap = transformedBitmap
+                }
+
+                // Apply the crop after mirror/rotation/scale, matching the rectangle the user drew
+                // over the displayed preview. The output takes the cropped pixel dimensions.
+                if (crop != null) {
+                    val bounds = crop.pixelBounds(bitmap.width, bitmap.height)
+                    if (bounds.width < bitmap.width || bounds.height < bitmap.height) {
+                        val cropped = Bitmap.createBitmap(
+                            bitmap, bounds.left, bounds.top, bounds.width, bounds.height
+                        )
+                        if (cropped !== bitmap) {
+                            bitmap.recycle()
+                            bitmap = cropped
+                        }
+                    }
                 }
 
                 // Contrast allocates another full-size bitmap — skip under memory pressure.

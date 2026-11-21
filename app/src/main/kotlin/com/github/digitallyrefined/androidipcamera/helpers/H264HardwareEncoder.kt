@@ -151,8 +151,15 @@ class H264HardwareEncoder(
      * buffer is free. [rotation] is an angle in degrees (multiple of 90) applied before encoding so the
      * emitted H.264 stream carries the rotation baked in — downstream clients need no extra transcode.
      * When [rotation] is 90/270 the encoder must already have been created with swapped width/height.
+     * [crop] is applied after rotation/mirror and must match the encoder's configured size.
      */
-    fun feed(image: ImageProxy, ptsUs: Long, mirror: Boolean = false, rotation: Int = 0) {
+    fun feed(
+        image: ImageProxy,
+        ptsUs: Long,
+        mirror: Boolean = false,
+        rotation: Int = 0,
+        crop: CropRegion? = null,
+    ) {
         if (useSurface) return
         synchronized(codecLock) {
             if (!running) return
@@ -160,7 +167,7 @@ class H264HardwareEncoder(
                 val idx = codec.dequeueInputBuffer(2000)
                 if (idx < 0) return
 
-                if (rotation % 360 == 0) {
+                if (rotation % 360 == 0 && crop == null) {
                     // Always use getInputImage for proper stride handling; when mirror is needed
                     // we copy source pixels in reversed column order instead of post-mirroring.
                     val dstImage = codec.getInputImage(idx)
@@ -198,7 +205,7 @@ class H264HardwareEncoder(
                     val dstSize = width * height * 3 / 2
                     var dstArr = rotYuv
                     if (dstArr == null || dstArr.size != dstSize) { dstArr = ByteArray(dstSize); rotYuv = dstArr }
-                    rotateYuv(srcArr, image.width, image.height, rotation, mirror, semiPlanar, dstArr)
+                    rotateYuv(srcArr, image.width, image.height, rotation, mirror, semiPlanar, dstArr, crop)
                     writeRotatedDenseToInputImage(dstImage, dstArr, width, height)
                     codec.queueInputBuffer(idx, 0, dstSize, ptsUs, 0)
                     return
@@ -235,20 +242,35 @@ class H264HardwareEncoder(
         rotation: Int,
         mirror: Boolean,
         semiPlanar: Boolean,
-        dst: ByteArray
+        dst: ByteArray,
+        crop: CropRegion? = null,
     ) {
         val swap = rotation == 90 || rotation == 270
-        val dstW = if (swap) srcH else srcW
-        val dstH = if (swap) srcW else srcH
+        val fullW = if (swap) srcH else srcW
+        val fullH = if (swap) srcW else srcH
+        val bounds = crop?.pixelBounds(fullW, fullH)
+        // The encoder was created for the crop's pixel size; when there is no crop this is fullW/H.
+        val dstW = width
+        val dstH = height
+        val cropX = bounds?.left ?: 0
+        val cropY = bounds?.top ?: 0
+        val cropW = bounds?.width ?: fullW
+        val cropH = bounds?.height ?: fullH
+
+        fun mapX(dx: Int): Int = cropX + (dx.toLong() * cropW / dstW).toInt()
+        fun mapY(dy: Int): Int = cropY + (dy.toLong() * cropH / dstH).toInt()
 
         val cw = srcW / 2; val ch = srcH / 2
         val dcw = dstW / 2; val dch = dstH / 2
+        val cropCx = cropX / 2; val cropCy = cropY / 2
+        val cropCw = (cropW / 2).coerceAtLeast(1); val cropCh = (cropH / 2).coerceAtLeast(1)
 
         // Y plane
         for (dy in 0 until dstH) {
             val dRowOff = dy * dstW
+            val fy = mapY(dy)
             for (dx in 0 until dstW) {
-                val (sx, sy) = rotatedSrcCoords(dx, dy, srcW, srcH, rotation, mirror)
+                val (sx, sy) = rotatedSrcCoords(mapX(dx), fy, srcW, srcH, rotation, mirror)
                 dst[dRowOff + dx] = src[sy * srcW + sx]
             }
         }
@@ -259,8 +281,10 @@ class H264HardwareEncoder(
             val dOff = dstW * dstH
             for (dy in 0 until dch) {
                 val dRowOff = dOff + dy * dcw * 2
+                val fy = cropCy + (dy.toLong() * cropCh / dch).toInt()
                 for (dx in 0 until dcw) {
-                    val (sx, sy) = rotatedSrcCoords(dx, dy, cw, ch, rotation, mirror)
+                    val fx = cropCx + (dx.toLong() * cropCw / dcw).toInt()
+                    val (sx, sy) = rotatedSrcCoords(fx, fy, cw, ch, rotation, mirror)
                     val sIdx = sOff + (sy * cw + sx) * 2
                     val dIdx = dRowOff + dx * 2
                     dst[dIdx] = src[sIdx]
@@ -276,8 +300,10 @@ class H264HardwareEncoder(
             for (dy in 0 until dch) {
                 val dRowOffU = duOff + dy * dcw
                 val dRowOffV = dvOff + dy * dcw
+                val fy = cropCy + (dy.toLong() * cropCh / dch).toInt()
                 for (dx in 0 until dcw) {
-                    val (sx, sy) = rotatedSrcCoords(dx, dy, cw, ch, rotation, mirror)
+                    val fx = cropCx + (dx.toLong() * cropCw / dcw).toInt()
+                    val (sx, sy) = rotatedSrcCoords(fx, fy, cw, ch, rotation, mirror)
                     val sIdx = sy * cw + sx
                     dst[dRowOffU + dx] = src[uOff + sIdx]
                     dst[dRowOffV + dx] = src[vOff + sIdx]

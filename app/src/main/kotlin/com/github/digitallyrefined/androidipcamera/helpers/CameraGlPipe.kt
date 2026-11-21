@@ -67,6 +67,8 @@ class CameraGlPipe(
     /** Clockwise rotation (degrees) applied to the camera frame. This is the only rotation source:
      *  the surface transform's sensor orientation is deliberately ignored (quantised to 90° steps). */
     @Volatile var rotation: Int = 0
+    /** Rectangle of the displayed (rotated, mirrored) picture to keep; null keeps the whole frame. */
+    @Volatile var crop: CropRegion? = null
     @Volatile var frameWidth: Int = 0
     @Volatile var frameHeight: Int = 0
     /** Elapsed realtime of the last camera frame, see CameraXCapture.lastFrameAtMs. */
@@ -81,6 +83,8 @@ class CameraGlPipe(
         put(floatArrayOf(-1f,-1f, 0f,0f,  1f,-1f, 1f,0f,  -1f,1f, 0f,1f,  1f,1f, 1f,1f)); position(0)
     }
     private val rotatedQuad = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+    private val croppedQuad = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+    private val quadScratch = FloatArray(16)
     private val stMatrix = FloatArray(16)
 
     fun start() {
@@ -189,9 +193,11 @@ class CameraGlPipe(
         GLES20.glViewport(0, 0, outW, outH)
 
         val rot = ((rotation % 360) + 360) % 360
+        val cropRegion = crop?.takeUnless { it.isFullFrame() }
         // Use externally-provided frame dimensions (from CameraX Preview use case) to
         // letterbox when the camera output aspect ratio differs from the pipe surface.
         var fw = frameWidth; var fh = frameHeight
+        var contentX = 0; var contentY = 0; var contentW = outW; var contentH = outH
         if (fw > 0 && fh > 0) {
             // The quad is rotated [rot]° below, so the drawn content dimensions are swapped
             // for right-angle rotations — letterbox against the rotated shape.
@@ -209,24 +215,30 @@ class CameraGlPipe(
                 vpY = (outH - vpH) / 2
             }
             if (vpW < 1) vpW = 1; if (vpH < 1) vpH = 1
-            GLES20.glViewport(vpX, vpY, vpW, vpH)
+            contentX = vpX; contentY = vpY; contentW = vpW; contentH = vpH
+        }
+        // With a crop the selected sub-rectangle is expanded to fill the whole encoder frame,
+        // so the encoder surface itself needs no letterbox (its size follows the crop aspect).
+        if (cropRegion != null) {
+            GLES20.glViewport(0, 0, outW, outH)
+        } else {
+            GLES20.glViewport(contentX, contentY, contentW, contentH)
         }
 
         // When rotation is a non-zero multiple of 90°, build a scratch buffer with the
         // quad's positions rotated clockwise about the origin (texture coords untouched).
         val buf: FloatBuffer
         if (rot == 90 || rot == 180 || rot == 270) {
-            val src = FloatArray(16)
             quad.rewind()
-            quad.get(src)
+            quad.get(quadScratch)
             quad.position(0)
             val q = rotatedQuad
             q.rewind()
             for (i in 0 until 4) {
-                val x = src[i * 4]
-                val y = src[i * 4 + 1]
-                val u = src[i * 4 + 2]
-                val v = src[i * 4 + 3]
+                val x = quadScratch[i * 4]
+                val y = quadScratch[i * 4 + 1]
+                val u = quadScratch[i * 4 + 2]
+                val v = quadScratch[i * 4 + 3]
                 val (nx, ny) = when (rot) {
                     90 -> y to -x
                     180 -> -x to -y
@@ -242,11 +254,45 @@ class CameraGlPipe(
             buf = quad
         }
 
-        buf.position(0)
-        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 16, buf)
+        // Crop in displayed (rotated and mirrored) coordinates by scaling the quad positions
+        // after rotation. Texture coordinates are untouched, so this is a pure sample/scale.
+        val drawBuf: FloatBuffer
+        if (cropRegion != null) {
+            val glLeft = contentX.toFloat() / outW * 2f - 1f
+            val glRight = (contentX + contentW).toFloat() / outW * 2f - 1f
+            val glBottom = contentY.toFloat() / outH * 2f - 1f
+            val glTop = (contentY + contentH).toFloat() / outH * 2f - 1f
+            val cropL = glLeft + (glRight - glLeft) * cropRegion.left
+            val cropR = glLeft + (glRight - glLeft) * cropRegion.right
+            val cropT = glTop - (glTop - glBottom) * cropRegion.top
+            val cropB = glTop - (glTop - glBottom) * cropRegion.bottom
+            val halfW = (cropR - cropL) / 2f
+            val halfH = (cropT - cropB) / 2f
+            buf.rewind()
+            buf.get(quadScratch)
+            buf.position(0)
+            val q = croppedQuad
+            q.rewind()
+            for (i in 0 until 4) {
+                val x = quadScratch[i * 4]
+                val y = quadScratch[i * 4 + 1]
+                val u = quadScratch[i * 4 + 2]
+                val v = quadScratch[i * 4 + 3]
+                val nx = if (halfW != 0f) (x - cropL) / halfW - 1f else x
+                val ny = if (halfH != 0f) (y - cropB) / halfH - 1f else y
+                q.put(nx); q.put(ny); q.put(u); q.put(v)
+            }
+            q.position(0)
+            drawBuf = q
+        } else {
+            drawBuf = buf
+        }
+
+        drawBuf.position(0)
+        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 16, drawBuf)
         GLES20.glEnableVertexAttribArray(aPos)
-        buf.position(2)
-        GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 16, buf)
+        drawBuf.position(2)
+        GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 16, drawBuf)
         GLES20.glEnableVertexAttribArray(aTex)
         GLES20.glUniformMatrix4fv(uST, 1, false, stMatrix, 0)
         GLES20.glUniform1f(uMirror, if (mirror) 1f else 0f)

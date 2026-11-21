@@ -31,6 +31,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🛰️ Optional ONVIF camera mode with WS-Discovery, snapshots and motion events for UniFi Protect, Home Assistant and other NVRs
 * 🤳 Switch between the main or selfie camera
 * 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure, contrast and optional GPU noise reduction
+* ✂️ Crop the live stream (and snapshots) to a rectangle drawn over the preview; the crop is applied on the phone
 * ☁️ Optionally connect your device to a hosted or [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server) cloud [OpenTunnel](https://github.com/anomalyco/opentunnel) server for remote access when you're not on your home/work network
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
 * 🛂 Username and password protection
@@ -322,6 +323,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `motion_record_stop_delay=<0..300>`: Seconds to keep a motion clip after motion clears.
   * `rotate=<degrees>`: Rotate video stream/snapshot (persisted per-camera).
   * `mirror=<true|false>`: Mirror the video.
+  * `crop=<left,top,right,bottom|reset>`: Crop the stream and snapshots to a normalised rectangle (0..1) of the rotated frame, persisted per-camera. `reset` removes the crop and restores the full frame. Changes restart the camera so the H.264 encoder follows the crop's aspect ratio. In the web control panel, open **Settings → Crop** and drag a rectangle over the video preview; cropping is applied on the phone and can only be changed from a desktop browser.
   * `api=<auto|camerax|camera1>`: Prefer capture API implementation.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
 

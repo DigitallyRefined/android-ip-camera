@@ -67,8 +67,19 @@ class H264StreamingEncoder(
             // arbitrary-angle rotation would require a full software resample per frame).
             val rotation = ((totalRotation + 45) / 90 * 90) % 360
             val swap = rotation == 90 || rotation == 270
-            val outW = if (swap) image.height else image.width
-            val outH = if (swap) image.width else image.height
+            val rotatedW = if (swap) image.height else image.width
+            val rotatedH = if (swap) image.width else image.height
+            val crop = CropRegion.read(prefs, camId)?.takeUnless { it.isFullFrame() }
+            val outW: Int
+            val outH: Int
+            if (crop != null) {
+                val bounds = crop.outputSize(rotatedW, rotatedH)
+                outW = bounds.width
+                outH = bounds.height
+            } else {
+                outW = rotatedW
+                outH = rotatedH
+            }
             if (encMutable == null || encMutable.width != outW || encMutable.height != outH) {
                 invalidatePendingWrites()
                 encMutable?.stop()
@@ -96,7 +107,7 @@ class H264StreamingEncoder(
                     else -> false
                 }
             }
-            encMutable.feed(image, image.imageInfo.timestamp / 1000, mirror, rotation)
+            encMutable.feed(image, image.imageInfo.timestamp / 1000, mirror, rotation, crop)
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "processFrame OOM: ${e.message}")
             invalidatePendingWrites()

@@ -1288,7 +1288,7 @@ class StreamingServerHelper(
 
     /**
      * Reset stored per-camera preferences for a given camera id.
-     * This will remove stored zoom/exposure/focus/rotate/scale/contrast prefs
+     * This will remove stored zoom/exposure/focus/rotate/scale/contrast/crop prefs
      * for the camera token and its physical fallback, so the server will
      * return defaults (which now prefer the camera-reported `minZoom`).
      */
@@ -1306,7 +1306,8 @@ class StreamingServerHelper(
                 "stream_scale_$cameraId", "stream_scale_$physical",
                 "camera_contrast_$cameraId", "camera_contrast_$physical",
                 "mirror_$cameraId", "mirror_$physical",
-                "snapshot_res_$cameraId", "snapshot_res_$physical"
+                "snapshot_res_$cameraId", "snapshot_res_$physical",
+                "${CropRegion.PREF_PREFIX}$cameraId", "${CropRegion.PREF_PREFIX}$physical"
             )
             keys.forEach { k -> if (prefs.contains(k)) editor.remove(k) }
             editor.apply()
@@ -1334,7 +1335,8 @@ class StreamingServerHelper(
                     StreamEncoding.PREF_BITRATE_MODE to StreamEncoding.MODE_VBR,
                     StreamEncoding.PREF_KEYFRAME_INTERVAL to StreamEncoding.DEFAULT_KEYFRAME_INTERVAL_SEC.toString(),
                     NoiseReduction.PREF to NoiseReduction.DEFAULT_LEVEL.toString(),
-                    "rotate" to "0"
+                    "rotate" to "0",
+                    "crop" to "reset"
                 )
 
                 // Dispatch each control through the central handler so prefs are re-written
@@ -1685,6 +1687,9 @@ class StreamingServerHelper(
 
             // Snapshot resolution optional (per-camera)
             storedPrefString(null, "snapshot_res_")?.let { map["snapshotRes"] = it }
+
+            // Crop rectangle (normalised left,top,right,bottom); empty means the full frame.
+            map["crop"] = storedPrefString("", CropRegion.PREF_PREFIX) ?: ""
 
             id to map
         }

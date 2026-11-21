@@ -1062,9 +1062,14 @@ class StreamingService : LifecycleService() {
         id?.let { cm.getCameraCharacteristics(it).get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) }
     } catch (_: Exception) { null }
 
-    /** Encoder frame for a surface path: [want] turned only by the manual rotate= control. */
+    /** Encoder frame for a surface path: [want] turned by the manual rotate= control, then cropped. */
     private fun surfaceEncoderSize(want: Size): Size {
         val (w, h) = CameraGlPipe.frameSize(want.width, want.height, quantizedRotation(readRotatePref()))
+        val crop = readCropPref()
+        if (crop != null) {
+            val bounds = crop.outputSize(w, h)
+            return Size(bounds.width, bounds.height)
+        }
         return Size(w, h)
     }
 
@@ -1457,6 +1462,7 @@ class StreamingService : LifecycleService() {
                     it.mirror = readMirrorPref()
                     it.rotation = quantizedRotation(readRotatePref())
                     it.denoise = readDenoisePref()
+                    it.crop = readCropPref()
                     it.start()
                     cameraXGlPipe = it
                 }
@@ -1648,6 +1654,12 @@ class StreamingService : LifecycleService() {
         }
     }
 
+    /** Per-camera crop rectangle in displayed (rotated) frame coordinates, or null for full frame. */
+    private fun readCropPref(): CropRegion? {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        return CropRegion.read(prefs, camId())
+    }
+
     /** Quantise a rotation to the nearest 90°, matching the H.264 byte-buffer encoder's snapping
      *  (the raw value is persisted verbatim for the MJPEG pipeline, which rotates arbitrary angles). */
     private fun quantizedRotation(angle: Int): Int {
@@ -1678,6 +1690,7 @@ class StreamingService : LifecycleService() {
             it.mirror = readMirrorPref()
             it.rotation = quantizedRotation(readRotatePref())
             it.denoise = readDenoisePref()
+            it.crop = readCropPref()
             it.start()
             // Camera1 renders at [cameraSize]; the pipe turns that frame into [frame].
             it.setCameraBufferSize(cameraSize.width, cameraSize.height)
@@ -1992,7 +2005,7 @@ class StreamingService : LifecycleService() {
             launchMain { target.captureStill { out[0] = it; latch.countDown() } }
             val remaining = (deadlineMs - System.currentTimeMillis()).coerceAtLeast(100L)
             try { latch.await(remaining, TimeUnit.MILLISECONDS) } catch (_: Exception) {}
-            result = out[0]?.let { rotateSnapshot(it, readRotatePref()) }
+            result = out[0]?.let { transformSnapshot(it, readRotatePref(), readMirrorPref(), readCropPref()) }
             if (result != null) break
             try { Thread.sleep(150) } catch (_: Exception) {}
         }
@@ -2008,32 +2021,58 @@ class StreamingService : LifecycleService() {
     }
 
     /**
-     * Turn a still's pixels by the manual rotate= setting. EXIF is not touched, so the image
-     * carries no orientation tag telling a viewer to rotate it on top of the manual angle.
+     * Turn a still's pixels by the manual rotate=/mirror settings, then crop it to the selected
+     * region. EXIF is not touched, so the image carries no orientation tag telling a viewer to
+     * rotate it on top of the manual angle.
      */
-    private fun rotateSnapshot(jpeg: ByteArray, degrees: Int): ByteArray {
+    private fun transformSnapshot(jpeg: ByteArray, degrees: Int, mirror: Boolean, crop: CropRegion?): ByteArray {
         val angle = ((degrees % 360) + 360) % 360
-        if (angle == 0) return jpeg
+        if (angle == 0 && !mirror && crop == null) return jpeg
         return try {
-            val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
+            val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
+            val allocated = LinkedHashSet<Bitmap>()
+            allocated.add(decoded)
+            var current = decoded
             try {
-                val matrix = Matrix().apply { postRotate(angle.toFloat()) }
-                val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+                if (angle != 0 || mirror) {
+                    val matrix = Matrix().apply {
+                        if (mirror) {
+                            postScale(-1f, 1f)
+                            postTranslate(current.width.toFloat(), 0f)
+                        }
+                        if (angle != 0) postRotate(angle.toFloat())
+                    }
+                    val transformed = Bitmap.createBitmap(current, 0, 0, current.width, current.height, matrix, true)
+                    if (transformed !== current) {
+                        allocated.add(transformed)
+                        current = transformed
+                    }
+                }
+                if (crop != null) {
+                    val bounds = crop.pixelBounds(current.width, current.height)
+                    if (bounds.width < current.width || bounds.height < current.height) {
+                        val cropped = Bitmap.createBitmap(current, bounds.left, bounds.top, bounds.width, bounds.height)
+                        if (cropped !== current) {
+                            allocated.add(cropped)
+                            current = cropped
+                        }
+                    }
+                }
+                if (current === decoded) return jpeg
+                val out = ByteArrayOutputStream(jpeg.size)
                 try {
-                    if (rotated === bmp) return jpeg
-                    val out = ByteArrayOutputStream(jpeg.size)
-                    try {
-                        rotated.compress(Bitmap.CompressFormat.JPEG, 95, out)
-                        out.toByteArray()
-                    } finally { out.close() }
-                } finally { if (rotated !== bmp) rotated.recycle() }
-            } finally { bmp.recycle() }
+                    current.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                    out.toByteArray()
+                } finally { out.close() }
+            } finally {
+                allocated.forEach { bmp -> try { bmp.recycle() } catch (_: Exception) {} }
+            }
         } catch (e: OutOfMemoryError) {
-            Log.e(TAG, "snapshot rotate OOM")
+            Log.e(TAG, "snapshot transform OOM")
             try { System.gc() } catch (_: Exception) {}
             jpeg
         } catch (e: Exception) {
-            Log.e(TAG, "snapshot rotate: ${e.message}")
+            Log.e(TAG, "snapshot transform: ${e.message}")
             jpeg
         }
     }
@@ -2307,6 +2346,21 @@ class StreamingService : LifecycleService() {
                     glPipe?.mirror = enabled
                     cameraXGlPipe?.mirror = enabled
                 }
+            }
+            "crop" -> {
+                val raw = value.trim()
+                val region = if (raw.equals("reset", true) || raw.equals("none", true) || raw.isEmpty()) {
+                    null
+                } else {
+                    CropRegion.parse(raw) ?: return
+                }
+                CropRegion.write(prefs, id, region)
+                glPipe?.crop = region
+                cameraXGlPipe?.crop = region
+                // The surface encoder frame follows the crop's aspect ratio, so it needs rebuilding;
+                // MJPEG and the byte-buffer H.264 path pick the new region up on the next frame.
+                // Never restart while recording — that would end the clip.
+                if (localRecorder?.isRecording != true) debouncedStartCamera()
             }
             "api" -> {
                 if (value in listOf("auto", "camerax", "camera1")) {
