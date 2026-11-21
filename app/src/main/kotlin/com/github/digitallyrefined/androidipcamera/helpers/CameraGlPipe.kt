@@ -61,8 +61,8 @@ class CameraGlPipe(
     private var aPos = 0; private var aTex = 0; private var uST = 0; private var uMirror = 0
     private var uDenoise = 0; private var uTexel = 0
     @Volatile var mirror = false
-    /** Spatial noise-reduction strength, 0 (off) to 2 (strongest). Read on every frame, so the
-     *  slider takes effect without restarting the camera or rebuilding the encoder. */
+    /** Spatial noise-reduction strength, 0 (off) to 1 (widest radius). Read on every frame, so
+     *  the slider takes effect without restarting the camera or rebuilding the encoder. */
     @Volatile var denoise: Float = 0f
     /** Clockwise rotation (degrees) applied to the camera frame. This is the only rotation source:
      *  the surface transform's sensor orientation is deliberately ignored (quantised to 90° steps). */
@@ -250,7 +250,7 @@ class CameraGlPipe(
         GLES20.glEnableVertexAttribArray(aTex)
         GLES20.glUniformMatrix4fv(uST, 1, false, stMatrix, 0)
         GLES20.glUniform1f(uMirror, if (mirror) 1f else 0f)
-        GLES20.glUniform1f(uDenoise, denoise.coerceIn(0f, 2f))
+        GLES20.glUniform1f(uDenoise, denoise.coerceIn(0f, 1f))
         // One texel in the camera buffer's own resolution; SurfaceTexture may differ from the
         // encoder surface size (CameraX negotiates its own buffer).
         val texW = if (frameWidth > 0) frameWidth else width
@@ -295,9 +295,9 @@ class CameraGlPipe(
                  "void main(){ gl_Position = aPos; vTex = (uST * aTex).xy; }"
         // Optional edge-preserving (bilateral) filter. It only runs when uDenoise > 0, so the
         // default pipeline keeps its single texture fetch. The GL thread updates uDenoise and
-        // uTexel per frame, letting the web slider change strength without a camera restart.
-        // Levels above 10 add a second, wider sampling ring: at 1080p a 3x3 kernel only touches
-        // one-pixel grain, which is why the original top level looked subtle.
+        // uTexel per frame, letting the web slider change the radius without a camera restart.
+        // A fixed 5x5 grid is sampled with a radius that grows with the slider, so higher levels
+        // reach noise that spans more than one pixel (the old 3x3 kernel only touched fine grain).
         val fs = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
@@ -324,45 +324,47 @@ class CameraGlPipe(
                 // A wider colour tolerance smooths more of the sensor grain at higher levels.
                 float sigma = 0.03 + 0.12 * uDenoise;
                 float k = 1.0 / (2.0 * sigma * sigma);
-                vec2 o = uTexel;
-                vec4 sum = vec4(c, 1.0);
-                sum += tap(tc + vec2(-o.x, -o.y), c, k);
-                sum += tap(tc + vec2( 0.0, -o.y), c, k);
-                sum += tap(tc + vec2( o.x, -o.y), c, k);
-                sum += tap(tc + vec2(-o.x,  0.0), c, k);
-                sum += tap(tc + vec2( o.x,  0.0), c, k);
-                sum += tap(tc + vec2(-o.x,  o.y), c, k);
-                sum += tap(tc + vec2( 0.0,  o.y), c, k);
-                sum += tap(tc + vec2( o.x,  o.y), c, k);
-
-                // Above level 10, blend in a ring at twice the radius so noise that spans more
-                // than one pixel is smoothed too. Its weight grows with the slider.
-                if (uDenoise > 0.5) {
-                    float w = 0.5 * clamp((uDenoise - 0.5) / 1.5, 0.0, 1.0);
-                    vec2 o2 = o * 2.0;
-                    sum += tap(tc + vec2(-o2.x, -o2.y), c, k) * w;
-                    sum += tap(tc + vec2( 0.0,  -o2.y), c, k) * w;
-                    sum += tap(tc + vec2( o2.x, -o2.y), c, k) * w;
-                    sum += tap(tc + vec2(-o2.x,  0.0), c, k) * w;
-                    sum += tap(tc + vec2( o2.x,  0.0), c, k) * w;
-                    sum += tap(tc + vec2(-o2.x,  o2.y), c, k) * w;
-                    sum += tap(tc + vec2( 0.0,   o2.y), c, k) * w;
-                    sum += tap(tc + vec2( o2.x,  o2.y), c, k) * w;
+                // The slider scales the spacing of the 5x5 taps from half a texel to five texels.
+                float radius = 0.5 + 4.5 * uDenoise;
+                vec2 spacing = uTexel * radius;
+                vec4 sum = vec4(0.0);
+                for (int y = 0; y < 5; y++) {
+                    for (int x = 0; x < 5; x++) {
+                        sum += tap(tc + vec2(float(x - 2), float(y - 2)) * spacing, c, k);
+                    }
                 }
 
                 gl_FragColor = vec4(sum.rgb / sum.a, 1.0);
             }
         """.trimIndent()
-        val p = GLES20.glCreateProgram()
-        GLES20.glAttachShader(p, compile(GLES20.GL_VERTEX_SHADER, vs))
-        GLES20.glAttachShader(p, compile(GLES20.GL_FRAGMENT_SHADER, fs))
-        GLES20.glLinkProgram(p)
+        var p = linkProgram(vs, fs)
+        if (p == 0) {
+            // A driver that cannot compile the 25-tap kernel must still stream. Fall back to the
+            // original passthrough shader; the denoise uniforms are then absent (-1) and ignored.
+            Log.w(TAG, "noise-reduction shader rejected by the driver; using passthrough")
+            p = linkProgram(vs, PASSTHROUGH_FS)
+        }
         aPos = GLES20.glGetAttribLocation(p, "aPos")
         aTex = GLES20.glGetAttribLocation(p, "aTex")
         uST = GLES20.glGetUniformLocation(p, "uST")
         uMirror = GLES20.glGetUniformLocation(p, "uMirror")
         uDenoise = GLES20.glGetUniformLocation(p, "uDenoise")
         uTexel = GLES20.glGetUniformLocation(p, "uTexel")
+        return p
+    }
+
+    private fun linkProgram(vs: String, fs: String): Int {
+        val p = GLES20.glCreateProgram()
+        GLES20.glAttachShader(p, compile(GLES20.GL_VERTEX_SHADER, vs))
+        GLES20.glAttachShader(p, compile(GLES20.GL_FRAGMENT_SHADER, fs))
+        GLES20.glLinkProgram(p)
+        val ok = IntArray(1)
+        GLES20.glGetProgramiv(p, GLES20.GL_LINK_STATUS, ok, 0)
+        if (ok[0] == 0) {
+            Log.e(TAG, "program: " + GLES20.glGetProgramInfoLog(p))
+            GLES20.glDeleteProgram(p)
+            return 0
+        }
         return p
     }
 
@@ -425,6 +427,14 @@ class CameraGlPipe(
             0f, 0f, 1f, 0f,
             0f, 1f, 0f, 1f
         )
+
+        /** Minimal shader for drivers that reject the optional denoise kernel. */
+        private const val PASSTHROUGH_FS =
+            "#extension GL_OES_EGL_image_external : require\n" +
+            "precision mediump float; varying vec2 vTex; uniform samplerExternalOES sTex;" +
+            " uniform float uMirror;\n" +
+            "void main(){ vec2 tc = vec2(mix(vTex.x, 1.0 - vTex.x, uMirror), vTex.y);" +
+            " gl_FragColor = texture2D(sTex, tc); }"
 
         /**
          * Shape of the picture this pipe draws for a camera output of [cameraWidth]×[cameraHeight].

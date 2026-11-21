@@ -9,14 +9,14 @@ class NoiseReductionTest {
     fun `parses levels inside the slider range`() {
         assertEquals(0, NoiseReduction.parse("0"))
         assertEquals(7, NoiseReduction.parse(" 7 "))
-        assertEquals(10, NoiseReduction.parse("10"))
-        assertEquals(20, NoiseReduction.parse("20"))
+        assertEquals(50, NoiseReduction.parse("50"))
+        assertEquals(100, NoiseReduction.parse("100"))
     }
 
     @Test
     fun `clamps values outside the slider range`() {
         assertEquals(0, NoiseReduction.parse("-3"))
-        assertEquals(20, NoiseReduction.parse("99"))
+        assertEquals(100, NoiseReduction.parse("999"))
     }
 
     @Test
@@ -27,10 +27,10 @@ class NoiseReductionTest {
     }
 
     @Test
-    fun `maps levels to GL strength`() {
+    fun `maps levels to normalised GL strength`() {
         assertEquals(0f, NoiseReduction.strength(0), 0f)
-        assertEquals(0.5f, NoiseReduction.strength(5), 0f)
-        assertEquals(1f, NoiseReduction.strength(10), 0f)
-        assertEquals(2f, NoiseReduction.strength(20), 0f)
+        assertEquals(0.25f, NoiseReduction.strength(25), 0f)
+        assertEquals(0.5f, NoiseReduction.strength(50), 0f)
+        assertEquals(1f, NoiseReduction.strength(100), 0f)
     }
 }

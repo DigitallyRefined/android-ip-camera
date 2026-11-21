@@ -306,7 +306,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `stream_bitrate=<auto|500..8000>`: Main stream target bitrate in kbps. `auto` scales ~0.2 bits per pixel per frame with resolution and frame rate.
   * `stream_bitrate_mode=<vbr|cbr>`: Main stream rate control mode (falls back to VBR when unsupported).
   * `stream_keyframe_interval=<1..120>`: Seconds between main stream keyframes.
-  * `stream_denoise=<0..20>`: Spatial noise reduction on the phone's GPU before H.264 encoding. `0` disables it, `10` is the original maximum and `20` is the strongest. Applies live to the GPU H.264 path (not MJPEG, the front camera or the software YUV fallback) and is reported as `streamDenoise` in `/info.json`.
+  * `stream_denoise=<0..100>`: **Noise Reduction** slider. Spatial noise reduction runs on the phone's GPU before H.264 encoding; `0` disables it and each step widens the 5×5 filter radius up to `100`. It applies live only to the back camera's GPU H.264 path, so MJPEG, front-camera and software YUV streams are not filtered. When the web panel's preview is MJPEG, switch to H.264 to see the effect live; RTSP and recordings still use it. The current value is reported as `streamDenoise` in `/info.json`.
   * `zoom=<value>`: Adjusts digital zoom (e.g., `1.0`, `2.5`).
   * `scale=<value>`: Adjusts preview stream scale (per-camera; e.g., `0.5`, `1.0`).
   * `exposure=<value>`: Adjusts exposure value (per-camera).
