@@ -412,6 +412,29 @@
       text-align: center;
     }
 
+    .docs-link {
+      position: fixed;
+      bottom: max(12px, env(safe-area-inset-bottom));
+      left: max(12px, env(safe-area-inset-left));
+      z-index: 50;
+      background: rgba(30, 30, 30, 0.75);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #e0e0e0;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+
+    .docs-link:hover {
+      color: #fff;
+      text-decoration: none;
+      background: rgba(45, 45, 45, 0.9);
+    }
+
     .stream-container:fullscreen,
     .stream-container:-webkit-full-screen {
       width: 100vw;
@@ -836,6 +859,8 @@
       </div>
     </div>
   </div>
+
+  <a class="docs-link" href="https://ip-cam.app" target="_blank" rel="noopener">Docs</a>
 
   <script>
     const getElById = (id) => document.getElementById(id);

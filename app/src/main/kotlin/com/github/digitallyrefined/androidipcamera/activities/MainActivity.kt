@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -189,6 +190,10 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<ImageButton>(R.id.hidePreviewButton).setOnClickListener {
             hideShowPreview()
+        }
+
+        findViewById<ImageButton>(R.id.helpButton).setOnClickListener {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ip-cam.app")))
         }
 
         findViewById<ImageButton>(R.id.exitButton).setOnClickListener {
@@ -521,6 +526,7 @@ class MainActivity : AppCompatActivity() {
         val urlBar = findViewById<View>(R.id.urlBar)
         val settingsButton = findViewById<ImageButton>(R.id.settingsButton)
         val hidePreviewButton = findViewById<ImageButton>(R.id.hidePreviewButton)
+        val helpButton = findViewById<ImageButton>(R.id.helpButton)
         val exitButton = findViewById<ImageButton>(R.id.exitButton)
 
         if (!userHiddenPreview) {
@@ -534,6 +540,7 @@ class MainActivity : AppCompatActivity() {
             settingsButton.visibility = View.GONE
             noClientMessage.visibility = View.GONE
             hidePreviewButton.visibility = View.GONE
+            helpButton.visibility = View.GONE
             exitButton.visibility = View.GONE
             rootView.setBackgroundColor(android.graphics.Color.BLACK)
             userHiddenPreview = true
@@ -555,6 +562,7 @@ class MainActivity : AppCompatActivity() {
             urlBar.visibility = View.VISIBLE
             settingsButton.visibility = View.VISIBLE
             hidePreviewButton.visibility = View.VISIBLE
+            helpButton.visibility = View.VISIBLE
             exitButton.visibility = View.VISIBLE
             updateOpenTunnelText()
 

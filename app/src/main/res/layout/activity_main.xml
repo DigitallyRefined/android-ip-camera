@@ -50,6 +50,13 @@
             android:src="@android:drawable/ic_menu_view"
             android:contentDescription="Toggle Preview" />
         <ImageButton
+            android:id="@+id/helpButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_help"
+            android:contentDescription="Help" />
+        <ImageButton
             android:id="@+id/exitButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
