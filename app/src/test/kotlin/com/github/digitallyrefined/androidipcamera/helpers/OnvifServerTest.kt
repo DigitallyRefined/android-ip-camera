@@ -205,28 +205,41 @@ class OnvifServerTest {
         try {
             val s = newServer()
             val consumer = sink.url
+            val msgId = "urn:uuid:73c355d2-3148-257b-69cd-684756b7f12e"
+            val replyTo = "http://www.w3.org/2005/08/addressing/anonymous"
             val r = call(
                 s,
                 "<wsnt:Subscribe><wsnt:ConsumerReference><wsa:Address>$consumer</wsa:Address></wsnt:ConsumerReference>" +
                     "<wsnt:InitialTerminationTime>PT60S</wsnt:InitialTerminationTime></wsnt:Subscribe>",
-                "/onvif/events_service"
+                "/onvif/events_service",
+                header = usernameToken() +
+                    "<wsa:MessageID>$msgId</wsa:MessageID>" +
+                    "<wsa:ReplyTo><wsa:Address>$replyTo</wsa:Address></wsa:ReplyTo>"
             )
             val response = parseOk(r)
             assertEquals(
                 "http://docs.oasis-open.org/wsn/bw-2/NotificationProducer/SubscribeResponse",
                 OnvifXml.text(response.documentElement, "Action")
             )
+            // Match the reference camera: echo the request MessageID and reply to its ReplyTo.
+            assertEquals(msgId, OnvifXml.text(response.documentElement, "MessageID"))
+            assertEquals(replyTo, OnvifXml.text(response.documentElement, "To"))
             val address = OnvifXml.text(response.documentElement, "Address")!!
             assertTrue(address, address.contains("/onvif/subscription/"))
             assertNotNull(OnvifXml.text(response.documentElement, "TerminationTime"))
 
-            // The producer seeds the consumer with the current state after Subscribe.
+            // The producer seeds the consumer with the current state after Subscribe, one
+            // topic per POST like the reference cameras.
             val initial = sink.poll(5, TimeUnit.SECONDS)
             assertNotNull("initial notification must be pushed", initial)
             assertTrue(initial!!.contains("<wsnt:Notify>"))
             assertTrue(initial.contains("Initialized"))
             assertTrue(initial.contains("tns1:RuleEngine/CellMotionDetector/Motion"))
-            assertTrue(initial.contains("http://docs.oasis-open.org/wsn/bw-2/NotificationProducer/Notify"))
+            assertTrue(initial.contains("http://docs.oasis-open.org/wsn/bw-2/NotificationConsumer/Notify"))
+            assertFalse(initial.contains("tns1:VideoSource/MotionAlarm"))
+            val initialAlarm = sink.poll(5, TimeUnit.SECONDS)
+            assertNotNull("each topic gets its own Notify POST", initialAlarm)
+            assertTrue(initialAlarm!!.contains("tns1:VideoSource/MotionAlarm"))
 
             // Motion changes are pushed as wsnt:Notify to the ConsumerReference.
             s.setMotion(true)
@@ -234,8 +247,11 @@ class OnvifServerTest {
             assertNotNull("motion notification must be pushed", changed)
             assertTrue(changed!!.contains("PropertyOperation=\"Changed\""))
             assertTrue(changed.contains("Name=\"IsMotion\" Value=\"true\""))
-            assertTrue(changed.contains("tns1:VideoSource/MotionAlarm"))
             assertTrue(changed.contains("<wsa:To>$consumer</wsa:To>"))
+            val changedAlarm = sink.poll(5, TimeUnit.SECONDS)
+            assertNotNull(changedAlarm)
+            assertTrue(changedAlarm!!.contains("tns1:VideoSource/MotionAlarm"))
+            assertTrue(changedAlarm.contains("Name=\"State\" Value=\"true\""))
 
             // Renew and Unsubscribe address the returned SubscriptionReference.
             val path = address.substringAfter("192.168.3.194:${s.localPort}")

@@ -340,15 +340,30 @@ class OnvifServer(
         }
         if (result == null) onLog("ONVIF unsupported action $action ($ns) from $who")
         return if (result == null) soapFault("ter:ActionNotSupported", "Action $action not supported", 400)
-        else HttpResponse(200, OnvifXml.envelope(result, wsntResponseHeader(action)).toByteArray(Charsets.UTF_8))
+        else HttpResponse(200, OnvifXml.envelope(result, wsntResponseHeader(action, header)).toByteArray(Charsets.UTF_8))
     }
 
-    /** WS-BaseNotification clients (hardware NVRs) expect the response's `wsa:Action`. */
-    private fun wsntResponseHeader(action: String): String = when (action) {
-        "Subscribe" -> "<wsa:Action>$WSNT_BW/NotificationProducer/SubscribeResponse</wsa:Action>"
-        "Renew" -> "<wsa:Action>$WSNT_BW/SubscriptionManager/RenewResponse</wsa:Action>"
-        "Unsubscribe" -> "<wsa:Action>$WSNT_BW/SubscriptionManager/UnsubscribeResponse</wsa:Action>"
-        else -> ""
+    /**
+     * WS-BaseNotification clients (hardware NVRs) expect the response's `wsa:Action`, and the
+     * reference devices echo the request `wsa:MessageID` back while addressing the reply to the
+     * requester's `wsa:ReplyTo` address.
+     */
+    private fun wsntResponseHeader(action: String, requestHeader: Element?): String {
+        val actionUri = when (action) {
+            "Subscribe" -> "$WSNT_BW/NotificationProducer/SubscribeResponse"
+            "Renew" -> "$WSNT_BW/SubscriptionManager/RenewResponse"
+            "Unsubscribe" -> "$WSNT_BW/SubscriptionManager/UnsubscribeResponse"
+            else -> return ""
+        }
+        val sb = StringBuilder()
+        val messageId = OnvifXml.text(requestHeader, "MessageID")?.takeIf { it.isNotEmpty() }
+            ?: "urn:uuid:${UUID.randomUUID()}"
+        sb.append("<wsa:MessageID>${e(messageId)}</wsa:MessageID>")
+        OnvifXml.find(requestHeader, "ReplyTo")?.let { OnvifXml.text(it, "Address") }?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { sb.append("<wsa:To>${e(it)}</wsa:To>") }
+        sb.append("<wsa:Action>$actionUri</wsa:Action>")
+        return sb.toString()
     }
 
     private fun fault(code: String, msg: String) = "FAULT:$code|$msg"
@@ -762,15 +777,22 @@ class OnvifServer(
         }
     }
 
-    private fun notifyXml(to: String, msgs: List<String>): String {
-        val header = "<wsa:Action>$WSNT_BW/NotificationProducer/Notify</wsa:Action>" +
+    private fun notifyXml(to: String, msg: String): String {
+        // The Notify is delivered to a NotificationConsumer, not produced by the
+        // NotificationProducer; strict NVRs drop notifications whose action says otherwise.
+        val header = "<wsa:Action>$WSNT_BW/NotificationConsumer/Notify</wsa:Action>" +
             "<wsa:MessageID>urn:uuid:${UUID.randomUUID()}</wsa:MessageID>" +
             "<wsa:To>${e(to)}</wsa:To>"
-        return OnvifXml.envelope("<wsnt:Notify>${msgs.joinToString("")}</wsnt:Notify>", header)
+        return OnvifXml.envelope("<wsnt:Notify>$msg</wsnt:Notify>", header)
     }
 
     private fun deliverNotify(url: String, msgs: List<String>) {
-        val xml = notifyXml(url, msgs)
+        // Reference cameras send one NotificationMessage per POST; lightweight NVR SOAP parsers
+        // can miss events when several topics are combined into a single Notify.
+        for (msg in msgs) deliverOne(url, notifyXml(url, msg))
+    }
+
+    private fun deliverOne(url: String, xml: String) {
         try {
             val conn = URL(url).openConnection() as HttpURLConnection
             try {
