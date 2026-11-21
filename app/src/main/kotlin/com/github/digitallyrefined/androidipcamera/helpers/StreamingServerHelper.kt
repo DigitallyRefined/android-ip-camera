@@ -407,7 +407,7 @@ class StreamingServerHelper(
                               lastConnectionCleanupMs = now
                           }
                           val socket = createdServerSocket.accept()
-                          val clientIp = socket.inetAddress.hostAddress
+                          val clientIp = socket.inetAddress.hostAddress ?: "unknown"
 
                           // Handle each connection in a separate coroutine to avoid blocking the accept loop
                           CoroutineScope(Dispatchers.IO).launch {
@@ -518,7 +518,7 @@ class StreamingServerHelper(
             var line: String?
             while (reader.readLine().also { line = it } != null) {
                 if (line.isNullOrEmpty()) break
-                headers.add(line!!)
+                headers.add(line)
             }
 
             // SECURITY: Require Basic Authentication header for all requests (when auth is enabled)
@@ -1640,7 +1640,7 @@ class StreamingServerHelper(
                     (storedCamId == "front" && cam.facing == "front")
             }
             val prefBases = buildList {
-                if (isStoredCamera && storedCamId != null) {
+                if (isStoredCamera) {
                     add(storedCamId)
                     if (storedPhysical != null && storedPhysical != storedCamId) add(storedPhysical)
                 }
@@ -2036,7 +2036,7 @@ class StreamingServerHelper(
                     val computedMax: Float? = try {
                         when {
                             // If the scaler reports a max digital zoom, trust it directly (no artificial cap)
-                            scalerMaxRaw != null -> try { (scalerMaxRaw).toFloat() } catch (_: Exception) { null }
+                            scalerMaxRaw != null -> try { scalerMaxRaw } catch (_: Exception) { null }
                             // Otherwise derive from the same sensor-normalized ratio, inverted
                             thisEffectiveFocal != null && groupMaxEff != null && thisEffectiveFocal > 0f ->
                                 (groupMaxEff / thisEffectiveFocal).coerceAtLeast(1.0f)
@@ -2056,12 +2056,12 @@ class StreamingServerHelper(
                     try {
                         val focalStr = focalLensRaw?.joinToString(",") ?: "<none>"
                         roundedMin = computedMin?.let { roundDown1(it) }
-                        roundedMax = computedMax?.let { roundUp1(it) } ?: scalerMaxRaw?.let { try { roundUp1((it).toFloat()) } catch (_: Exception) { null } }
+                        roundedMax = computedMax?.let { roundUp1(it) } ?: scalerMaxRaw?.let { try { roundUp1(it) } catch (_: Exception) { null } }
 
                         val minStr = roundedMin?.toString() ?: "<unknown>"
                         val maxStr = roundedMax?.toString() ?: "<none>"
-                        val reportedLower = try { rangeRaw?.lower?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
-                        val reportedUpper = try { rangeRaw?.upper?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
+                        val reportedLower = try { rangeRaw?.lower?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
+                        val reportedUpper = try { rangeRaw?.upper?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
 
                         onLog("Camera ${source.id} zoom info: CONTROL_ZOOM_RATIO_RANGE=[$reportedLower,$reportedUpper], LENS_INFO_AVAILABLE_FOCAL_LENGTHS=$focalStr, effectiveFocal=${thisEffectiveFocal ?: "<none>"}, groupMaxEffectiveFocal=${groupMaxEff ?: "<none>"}, focalDerivedMin=${focalDerivedMin ?: "<none>"}, computedMinZoom=$minStr, computedMaxZoom=$maxStr")
                     } catch (_: Exception) {}
@@ -2167,8 +2167,7 @@ class StreamingServerHelper(
         if (!hasWifiPermission) {
             -1
         } else {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
-            val rssi = wifiManager?.connectionInfo?.rssi ?: -127
+            val rssi = currentWifiInfo()?.rssi ?: -127
             when {
                 rssi == -127 -> -1
                 rssi <= -100 -> 0
@@ -2179,6 +2178,21 @@ class StreamingServerHelper(
     } catch (_: Exception) {
         -1
     }
+
+    /** Current Wi-Fi connection info; Android 10+ exposes it through the active network's capabilities. */
+    private fun currentWifiInfo(): android.net.wifi.WifiInfo? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE)
+                as? android.net.ConnectivityManager
+            return cm?.getNetworkCapabilities(cm.activeNetwork)?.transportInfo as? android.net.wifi.WifiInfo
+        }
+        return legacyWifiInfo()
+    }
+
+    @Suppress("DEPRECATION") // WifiManager.connectionInfo is the only option below API 29.
+    private fun legacyWifiInfo(): android.net.wifi.WifiInfo? =
+        (context.applicationContext.getSystemService(Context.WIFI_SERVICE)
+            as? android.net.wifi.WifiManager)?.connectionInfo
 
     private fun cleanupExpiredConnections() {
         val now = System.currentTimeMillis()

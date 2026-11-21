@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.text.InputType
 import android.view.View
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -63,9 +64,23 @@ class SettingsActivity : AppCompatActivity() {
     class SettingsFragment : PreferenceFragmentCompat() {
         private var openTunnelPollJob: Job? = null
 
+        private val pickCertificateFile = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                handleCertificateResult(result.data)
+            }
+        }
+
+        private val pickRecordingFolder = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                handleRecordingFolderResult(result.data)
+            }
+        }
+
         companion object {
-            private const val PICK_CERTIFICATE_FILE = 1
-            private const val PICK_RECORDING_FOLDER = 2
             private const val PREF_ONVIF_NAME = "onvif_name"
             private const val PREF_ONVIF_PORT = "onvif_port"
         }
@@ -95,9 +110,8 @@ class SettingsActivity : AppCompatActivity() {
                         putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/x-pkcs12", "application/pkcs12", "*/*"))
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                     }
-                    startActivityForResult(
-                        Intent.createChooser(intent, "Select TLS Certificate"),
-                        PICK_CERTIFICATE_FILE
+                    pickCertificateFile.launch(
+                        Intent.createChooser(intent, "Select TLS Certificate")
                     )
                     true
                 }
@@ -416,9 +430,8 @@ class SettingsActivity : AppCompatActivity() {
                                 Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                         )
                     }
-                    startActivityForResult(
-                        Intent.createChooser(intent, "Select recording folder"),
-                        PICK_RECORDING_FOLDER
+                    pickRecordingFolder.launch(
+                        Intent.createChooser(intent, "Select recording folder")
                     )
                     true
                 }
@@ -724,9 +737,9 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-            if (requestCode == PICK_CERTIFICATE_FILE && resultCode == Activity.RESULT_OK) {
-                data?.data?.let { uri ->
+        private fun handleCertificateResult(data: Intent?) {
+            if (data != null) {
+                data.data?.let { uri ->
                     val certificatePath = uri.toString()
 
                     // Enhanced certificate validation
@@ -804,9 +817,11 @@ class SettingsActivity : AppCompatActivity() {
                     }
                 }
             }
+        }
 
-            if (requestCode == PICK_RECORDING_FOLDER && resultCode == Activity.RESULT_OK) {
-                data?.data?.let { uri ->
+        private fun handleRecordingFolderResult(data: Intent?) {
+            if (data != null) {
+                data.data?.let { uri ->
                     try {
                         requireContext().contentResolver.takePersistableUriPermission(
                             uri,
@@ -825,7 +840,6 @@ class SettingsActivity : AppCompatActivity() {
                     }
                 }
             }
-            super.onActivityResult(requestCode, resultCode, data)
         }
 
         /** Summary for the storage preference: the chosen folder name or the default path. */

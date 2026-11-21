@@ -300,6 +300,7 @@ class MjpegStreamingEncoder(
     }
 
     /** Called by [StreamingService] when Android reports low memory. */
+    @Suppress("DEPRECATION") // TRIM_MEMORY_RUNNING_CRITICAL still arrives on older devices (< API 34).
     fun onMemoryPressure(severe: Boolean) {
         invalidatePendingWrites()
         lastJpeg = null

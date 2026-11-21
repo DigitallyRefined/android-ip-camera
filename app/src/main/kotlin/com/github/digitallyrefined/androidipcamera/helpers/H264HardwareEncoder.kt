@@ -133,6 +133,8 @@ class H264HardwareEncoder(
     }
 
     /** ponytail: NV12 vs I420 is the classic cross-device MediaCodec gotcha — ask the codec which it takes. */
+    @Suppress("DEPRECATION") // Planar/semi-planar are deprecated for flexible YUV, but still the only
+    // way to tell the two codec buffer layouts apart when feeding byte buffers.
     private fun pickYuvFormat(): Int {
         val supported = try { codec.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).colorFormats.toSet() }
                         catch (_: Exception) { emptySet<Int>() }

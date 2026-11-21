@@ -119,7 +119,7 @@ class CameraXCapture(
         ?.substringAfter(':', "")
         ?.takeIf { it.isNotBlank() }
 
-    @OptIn(ExperimentalCamera2Interop::class)
+    @ExperimentalCamera2Interop
     fun start() {
         val future = ProcessCameraProvider.getInstance(ctx)
         future.addListener({
@@ -409,7 +409,7 @@ class CameraXCapture(
     }
     override fun setExposure(ev: Int) { exposureIndex = ev; try { camera?.cameraControl?.setExposureCompensationIndex(ev) } catch (_: Exception) {} }
     override fun setZoom(ratio: Float) { zoomRatio = ratio; applyZoomWithRetry(ratio) }
-    @OptIn(ExperimentalCamera2Interop::class)
+    @ExperimentalCamera2Interop
     override fun triggerAutoFocus() {
         try {
             val cam = camera ?: return
@@ -429,7 +429,7 @@ class CameraXCapture(
      * in diopters (0f = infinity, 1f = the lens' minimum focus distance / nearest). A negative
      * value clears the override and restores continuous autofocus.
      */
-    @OptIn(ExperimentalCamera2Interop::class)
+    @ExperimentalCamera2Interop
     override fun setManualFocus(distance: Float) {
         val cam = camera ?: run { manualFocus = distance.takeIf { it >= 0f }; return }
         try {

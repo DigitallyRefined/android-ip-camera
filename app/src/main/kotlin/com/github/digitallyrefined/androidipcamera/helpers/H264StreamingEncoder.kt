@@ -49,6 +49,7 @@ class H264StreamingEncoder(
         { runnable -> Thread(runnable, "H264NetworkWriter").apply { isDaemon = true } }
     ).apply { allowCoreThreadTimeOut(true) }
 
+    @Suppress("DEPRECATION") // TRIM_MEMORY_RUNNING_CRITICAL still arrives on older devices (< API 34).
     override fun processFrame(image: ImageProxy) {
         val enc = h264HardwareEncoder
         if (enc != null && enc.useSurface) {

@@ -1,6 +1,7 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -35,7 +36,7 @@ class SecureStorage(context: Context) {
         const val KEY_JWT_SECRET = "secure_jwt_secret"
     }
 
-    private fun createEncryptedPreferences(context: Context) = synchronized(initializationLock) {
+    private fun createEncryptedPreferences(context: Context): SharedPreferences = synchronized(initializationLock) {
         try {
             // Use AndroidX Security library for modern encryption
             val masterKey = MasterKey.Builder(context)

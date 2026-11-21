@@ -1518,7 +1518,7 @@ class StreamingService : LifecycleService() {
 
                 h264SurfaceProvider = Preview.SurfaceProvider { request ->
                     val surface = pipe.inputSurface
-                    if (surface != null && surface.isValid) {
+                    if (surface.isValid) {
                         // Render at the resolution CameraX negotiated rather than the pipe's
                         // placeholder buffer size, so the selected resolution is what gets captured.
                         pipe.setCameraBufferSize(request.resolution.width, request.resolution.height)
@@ -1674,7 +1674,6 @@ class StreamingService : LifecycleService() {
     private fun readMirrorPref(): Boolean {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val id = camId()
-        if (id == null) return false
         val phys = id.substringAfter(':', id)
         return when {
             prefs.contains("mirror_$id") -> prefs.getString("mirror_$id", null)?.toBoolean() ?: false
@@ -1694,7 +1693,7 @@ class StreamingService : LifecycleService() {
      *  only acts on 90° multiples. Returns the raw stored angle. */
     private fun readRotatePref(): Int {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val id = camId() ?: return 0
+        val id = camId()
         val phys = id.substringAfter(':', id)
         return when {
             prefs.contains("camera_rotate_$id") -> prefs.getInt("camera_rotate_$id", 0)
@@ -1758,7 +1757,6 @@ class StreamingService : LifecycleService() {
             if (!b.hasFlashUnit) setDeviceTorch(true)
         }
         val id = camId()
-        if (id == null) return
         val phys = id.substringAfter(':', id)
         // Prefer token-specific prefs, fallback to physical id prefs
         val exposure = when {
@@ -2170,7 +2168,7 @@ class StreamingService : LifecycleService() {
         val storedCameraPref = prefs.getString(PREF_CAMERA_ID, null)
         val id = storedCameraPref ?: camId()
         // physical id fallback (if id is "logical:physical" this extracts physical)
-        val physicalId = id?.substringAfter(':', id ?: "") ?: ""
+        val physicalId = id.substringAfter(':', id)
         when (key) {
             "torch" -> {
                 val current = backend?.getTorch()
@@ -2233,11 +2231,9 @@ class StreamingService : LifecycleService() {
                 if (value == "max" || value == "stream") {
                     val prefs = PreferenceManager.getDefaultSharedPreferences(this)
                     val sid = camId()
-                    if (sid != null) {
-                        prefs.edit().putString("snapshot_res_$sid", value).apply()
-                        val phys = sid.substringAfter(':', sid)
-                        if (phys.isNotBlank() && phys != sid) prefs.edit().putString("snapshot_res_$phys", value).apply()
-                    }
+                    prefs.edit().putString("snapshot_res_$sid", value).apply()
+                    val phys = sid.substringAfter(':', sid)
+                    if (phys.isNotBlank() && phys != sid) prefs.edit().putString("snapshot_res_$phys", value).apply()
                 }
             }
             "camera" -> {
