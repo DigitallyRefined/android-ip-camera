@@ -59,7 +59,11 @@ class CameraGlPipe(
     private var texId = 0
     private var program = 0
     private var aPos = 0; private var aTex = 0; private var uST = 0; private var uMirror = 0
+    private var uDenoise = 0; private var uTexel = 0
     @Volatile var mirror = false
+    /** Spatial noise-reduction strength, 0 (off) to 2 (strongest). Read on every frame, so the
+     *  slider takes effect without restarting the camera or rebuilding the encoder. */
+    @Volatile var denoise: Float = 0f
     /** Clockwise rotation (degrees) applied to the camera frame. This is the only rotation source:
      *  the surface transform's sensor orientation is deliberately ignored (quantised to 90° steps). */
     @Volatile var rotation: Int = 0
@@ -246,6 +250,12 @@ class CameraGlPipe(
         GLES20.glEnableVertexAttribArray(aTex)
         GLES20.glUniformMatrix4fv(uST, 1, false, stMatrix, 0)
         GLES20.glUniform1f(uMirror, if (mirror) 1f else 0f)
+        GLES20.glUniform1f(uDenoise, denoise.coerceIn(0f, 2f))
+        // One texel in the camera buffer's own resolution; SurfaceTexture may differ from the
+        // encoder surface size (CameraX negotiates its own buffer).
+        val texW = if (frameWidth > 0) frameWidth else width
+        val texH = if (frameHeight > 0) frameHeight else height
+        GLES20.glUniform2f(uTexel, 1f / texW, 1f / texH)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -283,9 +293,66 @@ class CameraGlPipe(
     private fun buildProgram(): Int {
         val vs = "attribute vec4 aPos; attribute vec4 aTex; uniform mat4 uST; varying vec2 vTex;\n" +
                  "void main(){ gl_Position = aPos; vTex = (uST * aTex).xy; }"
-        val fs = "#extension GL_OES_EGL_image_external : require\n" +
-                 "precision mediump float; varying vec2 vTex; uniform samplerExternalOES sTex; uniform float uMirror;\n" +
-                 "void main(){ vec2 tc = vec2(mix(vTex.x, 1.0 - vTex.x, uMirror), vTex.y); gl_FragColor = texture2D(sTex, tc); }"
+        // Optional edge-preserving (bilateral) filter. It only runs when uDenoise > 0, so the
+        // default pipeline keeps its single texture fetch. The GL thread updates uDenoise and
+        // uTexel per frame, letting the web slider change strength without a camera restart.
+        // Levels above 10 add a second, wider sampling ring: at 1080p a 3x3 kernel only touches
+        // one-pixel grain, which is why the original top level looked subtle.
+        val fs = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            varying vec2 vTex;
+            uniform samplerExternalOES sTex;
+            uniform float uMirror;
+            uniform float uDenoise;
+            uniform vec2 uTexel;
+
+            vec4 tap(vec2 uv, vec3 c, float k) {
+                vec3 s = texture2D(sTex, uv).rgb;
+                vec3 d = s - c;
+                return vec4(s, 1.0) * exp(-dot(d, d) * k);
+            }
+
+            void main() {
+                vec2 tc = vec2(mix(vTex.x, 1.0 - vTex.x, uMirror), vTex.y);
+                vec3 c = texture2D(sTex, tc).rgb;
+                if (uDenoise <= 0.001) {
+                    gl_FragColor = vec4(c, 1.0);
+                    return;
+                }
+
+                // A wider colour tolerance smooths more of the sensor grain at higher levels.
+                float sigma = 0.03 + 0.12 * uDenoise;
+                float k = 1.0 / (2.0 * sigma * sigma);
+                vec2 o = uTexel;
+                vec4 sum = vec4(c, 1.0);
+                sum += tap(tc + vec2(-o.x, -o.y), c, k);
+                sum += tap(tc + vec2( 0.0, -o.y), c, k);
+                sum += tap(tc + vec2( o.x, -o.y), c, k);
+                sum += tap(tc + vec2(-o.x,  0.0), c, k);
+                sum += tap(tc + vec2( o.x,  0.0), c, k);
+                sum += tap(tc + vec2(-o.x,  o.y), c, k);
+                sum += tap(tc + vec2( 0.0,  o.y), c, k);
+                sum += tap(tc + vec2( o.x,  o.y), c, k);
+
+                // Above level 10, blend in a ring at twice the radius so noise that spans more
+                // than one pixel is smoothed too. Its weight grows with the slider.
+                if (uDenoise > 0.5) {
+                    float w = 0.5 * clamp((uDenoise - 0.5) / 1.5, 0.0, 1.0);
+                    vec2 o2 = o * 2.0;
+                    sum += tap(tc + vec2(-o2.x, -o2.y), c, k) * w;
+                    sum += tap(tc + vec2( 0.0,  -o2.y), c, k) * w;
+                    sum += tap(tc + vec2( o2.x, -o2.y), c, k) * w;
+                    sum += tap(tc + vec2(-o2.x,  0.0), c, k) * w;
+                    sum += tap(tc + vec2( o2.x,  0.0), c, k) * w;
+                    sum += tap(tc + vec2(-o2.x,  o2.y), c, k) * w;
+                    sum += tap(tc + vec2( 0.0,   o2.y), c, k) * w;
+                    sum += tap(tc + vec2( o2.x,  o2.y), c, k) * w;
+                }
+
+                gl_FragColor = vec4(sum.rgb / sum.a, 1.0);
+            }
+        """.trimIndent()
         val p = GLES20.glCreateProgram()
         GLES20.glAttachShader(p, compile(GLES20.GL_VERTEX_SHADER, vs))
         GLES20.glAttachShader(p, compile(GLES20.GL_FRAGMENT_SHADER, fs))
@@ -294,6 +361,8 @@ class CameraGlPipe(
         aTex = GLES20.glGetAttribLocation(p, "aTex")
         uST = GLES20.glGetUniformLocation(p, "uST")
         uMirror = GLES20.glGetUniformLocation(p, "uMirror")
+        uDenoise = GLES20.glGetUniformLocation(p, "uDenoise")
+        uTexel = GLES20.glGetUniformLocation(p, "uTexel")
         return p
     }
 

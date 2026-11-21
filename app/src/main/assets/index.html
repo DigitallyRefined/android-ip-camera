@@ -726,6 +726,20 @@
             <input id="contrast" type='range' min='-50' max='50' step='10' value='0' data-control='contrast'
               data-badge='contVal'>
 
+            <label for="streamDenoise">Noise Reduction
+              <span class='val-badge' id='denoiseVal'>Off</span></label>
+            <input id="streamDenoise" type='range' min='0' max='20' step='1' value='0'
+              data-control='stream_denoise' data-badge='denoiseVal' data-fmt='denoise'>
+            <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
+              Smooths sensor grain on the phone's GPU before H.264 encoding. 0 is off, 10 was the
+              original maximum and 20 is the strongest. Only the back camera's GPU H.264 path is
+              filtered; MJPEG, front-camera and software YUV streams are not.
+            </div>
+            <div class="hint" id="denoisePathHint" style="margin:4px 0 0; font-size:12px; color:#e0a040; display:none">
+              The preview is MJPEG right now. Switch to H.264 to see this filter live; RTSP and
+              recordings still use it.
+            </div>
+
             <div style="margin-top:12px;">
               <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
             </div>
@@ -1128,7 +1142,7 @@
         param === 'recording_segment_minutes' ||
         param === 'recording_storage_limit_percent' || param.startsWith('rtsp_') ||
         param === 'stream_bitrate' || param === 'stream_bitrate_mode' ||
-        param === 'stream_keyframe_interval') return null;
+        param === 'stream_keyframe_interval' || param === 'stream_denoise') return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -1167,6 +1181,10 @@
         case 'focus': {
           const n = parseFloat(v);
           return n < 0 ? 'Auto' : n.toFixed(2);
+        }
+        case 'denoise': {
+          const n = parseInt(v, 10) || 0;
+          return n <= 0 ? 'Off' : n + ' / 20';
         }
         default:
           return v;
@@ -1512,6 +1530,7 @@
       // Bitrate estimates only apply to H.264: relabel the resolution options and summary.
       populateResolutions();
       updateStreamSummary();
+      updateDenoisePathHint();
 
       if (avDelay && avDelayVal) {
         const currentVal = avDelay.value;
@@ -1855,6 +1874,12 @@
         sel.appendChild(opt);
       }
       sel.value = v;
+    }
+
+    // Explain why dragging the noise slider may look inert while the preview uses MJPEG.
+    function updateDenoisePathHint() {
+      const el = getElById('denoisePathHint');
+      if (el) el.style.display = streamMode === 'mjpeg' ? '' : 'none';
     }
 
     // Explicit sizes already carry their estimate in the option label, so this line exists only to

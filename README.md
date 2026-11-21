@@ -30,7 +30,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 📡 Optional RTSP stream (H.264 video + AAC audio) for mpv, Frigate/go2rtc, NVRs and other RTSP clients (using `rtsps://[ip_address]:8554/live`, plus a lighter sub stream at `/live/sub`)
 * 🛰️ Optional ONVIF camera mode with WS-Discovery, snapshots and motion events for UniFi Protect, Home Assistant and other NVRs
 * 🤳 Switch between the main or selfie camera
-* 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure and contrast
+* 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure, contrast and optional GPU noise reduction
 * ☁️ Optionally connect your device to a hosted or [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server) cloud [OpenTunnel](https://github.com/anomalyco/opentunnel) server for remote access when you're not on your home/work network
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
 * 🛂 Username and password protection
@@ -239,7 +239,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Query Parameter:** `?camera=<id|front|back|toggle>` to query a specific camera sensor.
     * *Example:* `https://[ip_address]:[port]/video/snapshot?camera=back`
 * **Device Info and Capabilities JSON (`/info.json`)**
-  * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, Wi-Fi signal strength and individual camera len settings.
+  * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, Wi-Fi signal strength, individual camera lens settings and the current main-stream encoder settings (including `streamDenoise`).
   * **Format:** `application/json`
 * **Start Recording (`/record/start`, POST)**
   * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Manual recordings are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS-manual.mp4` inside the recordings folder. Recordings started by **Motion clips** use the same folder layout with a `-motion.mp4` suffix, and **Continuous recording** segments use `-continuous.mp4`.
@@ -286,7 +286,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
 
 The RTSP endpoints are `rtsps://[username]:[password]@[ip_address]:8554/live` and `.../live/sub` (use `rtsp://` when TLS is disabled).
 
-* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, target bitrate, bitrate mode, keyframe interval, rotation and mirror follow the web controls). Each client starts at a keyframe.
+* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, target bitrate, bitrate mode, keyframe interval, rotation, mirror and noise reduction follow the web controls; noise reduction only affects the GPU H.264 path). Each client starts at a keyframe.
 * **Sub stream:** `/live/sub` is a smaller version of the same picture for slow links such as 4G, and can be watched alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled); changes apply the next time a viewer connects. The phone encodes it in addition to the main stream only while someone watches it. Where the picture does not go through the GPU path (front camera, devices whose camera is not FULL level), the sub stream carries the main stream instead.
 * **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
 * **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
@@ -306,6 +306,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `stream_bitrate=<auto|500..8000>`: Main stream target bitrate in kbps. `auto` scales ~0.2 bits per pixel per frame with resolution and frame rate.
   * `stream_bitrate_mode=<vbr|cbr>`: Main stream rate control mode (falls back to VBR when unsupported).
   * `stream_keyframe_interval=<1..120>`: Seconds between main stream keyframes.
+  * `stream_denoise=<0..20>`: Spatial noise reduction on the phone's GPU before H.264 encoding. `0` disables it, `10` is the original maximum and `20` is the strongest. Applies live to the GPU H.264 path (not MJPEG, the front camera or the software YUV fallback) and is reported as `streamDenoise` in `/info.json`.
   * `zoom=<value>`: Adjusts digital zoom (e.g., `1.0`, `2.5`).
   * `scale=<value>`: Adjusts preview stream scale (per-camera; e.g., `0.5`, `1.0`).
   * `exposure=<value>`: Adjusts exposure value (per-camera).

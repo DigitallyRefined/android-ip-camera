@@ -1456,6 +1456,7 @@ class StreamingService : LifecycleService() {
                 val pipe = CameraGlPipe(enc.inputSurface!!, enc.width, enc.height, fpsCoerced, standardBuffer = true).also {
                     it.mirror = readMirrorPref()
                     it.rotation = quantizedRotation(readRotatePref())
+                    it.denoise = readDenoisePref()
                     it.start()
                     cameraXGlPipe = it
                 }
@@ -1627,6 +1628,12 @@ class StreamingService : LifecycleService() {
         }
     }
 
+    /** Global spatial denoise strength (0..1) for the GL pipe; off when unset. */
+    private fun readDenoisePref(): Float {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        return NoiseReduction.strength(NoiseReduction.stored(prefs))
+    }
+
     /** Per-camera rotate= knob (token then physical id fallback). Consumers apply their own
      *  quantisation: the byte-buffer H.264 encoder snaps to 90° (YUV rotate cost) and the GL pipe
      *  only acts on 90° multiples. Returns the raw stored angle. */
@@ -1670,6 +1677,7 @@ class StreamingService : LifecycleService() {
         return CameraGlPipe(enc.inputSurface!!, frame.width, frame.height, fpsCoerced).also {
             it.mirror = readMirrorPref()
             it.rotation = quantizedRotation(readRotatePref())
+            it.denoise = readDenoisePref()
             it.start()
             // Camera1 renders at [cameraSize]; the pipe turns that frame into [frame].
             it.setCameraBufferSize(cameraSize.width, cameraSize.height)
@@ -2216,6 +2224,15 @@ class StreamingService : LifecycleService() {
                     ?: return
                 prefs.edit().putString(StreamEncoding.PREF_KEYFRAME_INTERVAL, sec.toString()).apply()
                 debouncedStartCamera()
+            }
+            // Spatial denoising runs in the GL pipe, so it applies live without restarting the
+            // camera or rebuilding the encoder. The level is persisted and exposed in /info.json.
+            "stream_denoise" -> {
+                val level = NoiseReduction.parse(value) ?: return
+                prefs.edit().putString(NoiseReduction.PREF, level.toString()).apply()
+                val strength = NoiseReduction.strength(level)
+                glPipe?.denoise = strength
+                cameraXGlPipe?.denoise = strength
             }
             // RTSP sub stream and audio settings. The RTSP server reads them when a viewer
             // connects, so a change applies to the next connection (as the old Settings screen did).

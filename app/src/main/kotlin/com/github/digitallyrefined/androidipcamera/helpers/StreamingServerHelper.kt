@@ -1333,6 +1333,7 @@ class StreamingServerHelper(
                     StreamEncoding.PREF_BITRATE to StreamEncoding.AUTO,
                     StreamEncoding.PREF_BITRATE_MODE to StreamEncoding.MODE_VBR,
                     StreamEncoding.PREF_KEYFRAME_INTERVAL to StreamEncoding.DEFAULT_KEYFRAME_INTERVAL_SEC.toString(),
+                    NoiseReduction.PREF to NoiseReduction.DEFAULT_LEVEL.toString(),
                     "rotate" to "0"
                 )
 
@@ -1481,6 +1482,8 @@ class StreamingServerHelper(
         val streamBitrateMode: String,
         /** Seconds between main-stream keyframes. */
         val streamKeyframeInterval: String,
+        /** Spatial GPU denoise strength, 0 (off) to 10. */
+        val streamDenoise: String,
         /** Effective H.264 frame size for the current selection/Auto, e.g. "1280x720". */
         val effectiveResolution: String,
         /** Estimated H.264 and MJPEG bitrates for [effectiveResolution], in kbps. */
@@ -1569,6 +1572,7 @@ class StreamingServerHelper(
                 put("streamBitrate", settings.streamBitrate)
                 put("streamBitrateMode", settings.streamBitrateMode)
                 put("streamKeyframeInterval", settings.streamKeyframeInterval)
+                put("streamDenoise", settings.streamDenoise)
                 put("effectiveResolution", settings.effectiveResolution)
                 put("streamBitrateKbps", JSONObject().apply {
                     put("h264", settings.streamBitrateKbps.h264)
@@ -1769,6 +1773,7 @@ class StreamingServerHelper(
             streamBitrate = manualKbps?.toString() ?: StreamEncoding.AUTO,
             streamBitrateMode = bitrateMode,
             streamKeyframeInterval = keyframeIntervalSec.toString(),
+            streamDenoise = NoiseReduction.stored(prefs).toString(),
             effectiveResolution = "${effectiveW}x${effectiveH}",
             streamBitrateKbps = Bitrates(
                 h264 = h264Bps / 1000,
