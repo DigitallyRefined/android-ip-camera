@@ -1,6 +1,7 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import androidx.core.content.edit
 import androidx.preference.PreferenceManager
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -23,7 +24,7 @@ object ListenInterface {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
         val raw = prefs.getString(PREF, DEFAULT)?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT
         val normalized = normalize(raw)
-        if (normalized != raw) prefs.edit().putString(PREF, normalized).apply()
+        if (normalized != raw) prefs.edit { putString(PREF, normalized) }
         return normalized
     }
 

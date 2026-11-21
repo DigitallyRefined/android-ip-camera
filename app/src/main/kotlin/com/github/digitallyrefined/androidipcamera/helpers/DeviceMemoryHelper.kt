@@ -25,9 +25,11 @@ object DeviceMemoryHelper {
         return am.isLowRamDevice || am.memoryClass <= 128
     }
 
+    @Suppress("DEPRECATION") // The RUNNING_* trim levels still arrive on older devices (< API 34).
     fun isUnderMemoryPressure(): Boolean =
         memoryPressureLevel >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE
 
+    @Suppress("DEPRECATION") // The RUNNING_* trim levels still arrive on older devices (< API 34).
     fun isSevereMemoryPressure(): Boolean =
         memoryPressureLevel >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
 

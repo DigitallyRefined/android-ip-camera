@@ -1,6 +1,7 @@
 package com.github.digitallyrefined.androidipcamera
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -29,10 +30,12 @@ import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import android.widget.Toast
+import androidx.annotation.RequiresApi
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
@@ -286,7 +289,7 @@ class StreamingService : LifecycleService() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         // Earlier versions kept "camera2_unusable" forever after one CameraX start without frames, which
         // pinned capable phones to Camera1. Drop it so the next frame-needing start tests CameraX again.
-        if (prefs.contains(CameraXFallback.LEGACY_PREF)) prefs.edit().remove(CameraXFallback.LEGACY_PREF).apply()
+        if (prefs.contains(CameraXFallback.LEGACY_PREF)) prefs.edit { remove(CameraXFallback.LEGACY_PREF) }
         val savedCameraId = prefs.getString(PREF_CAMERA_ID, null)
         if (savedCameraId != null) {
             // resolveCamera maps "1:3" → the openable camera ID (e.g. "3") and correct facing
@@ -310,6 +313,7 @@ class StreamingService : LifecycleService() {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun startNotificationChannelCheckFallback() {
         lifecycleScope.launch(Dispatchers.Main) {
             while (isActive) {
@@ -354,7 +358,9 @@ class StreamingService : LifecycleService() {
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(NotificationChannel(CHANNEL_ID, "Streaming Service", NotificationManager.IMPORTANCE_LOW))
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        // The camera/microphone type constants (and the ability to claim them) arrived in API 30;
+        // API 29 only has the plain two-argument startForeground().
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 startForeground(
                     NOTIFICATION_ID,
@@ -403,7 +409,7 @@ class StreamingService : LifecycleService() {
      */
     fun ensureForegroundTypes(): Boolean {
         if (whileInUseForegroundAllowed) return true
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             whileInUseForegroundAllowed = true
             return true
         }
@@ -507,9 +513,9 @@ class StreamingService : LifecycleService() {
     fun hasActiveClients() = encoders.any { it.hasClients() } || localRecorder?.isRecording == true || motionEnabled()
     fun switchCamera() {
         selectCamera(!frontFacing, null)
-        PreferenceManager.getDefaultSharedPreferences(this).edit()
-            .putString(PREF_CAMERA_ID, camId())
-            .apply()
+        PreferenceManager.getDefaultSharedPreferences(this).edit {
+            putString(PREF_CAMERA_ID, camId())
+        }
         launchMain {
             awaitCameraSettled()
             if (captureRunning) debouncedStartCamera(force = true)
@@ -550,7 +556,7 @@ class StreamingService : LifecycleService() {
             val certFile = CertificateHelper.generateCertificate(this@StreamingService, pw)
             if (certFile != null) {
                 SecureStorage(this@StreamingService).putSecureString(SecureStorage.KEY_CERT_PASSWORD, pw)
-                PreferenceManager.getDefaultSharedPreferences(this@StreamingService).edit().remove("certificate_path").apply()
+                PreferenceManager.getDefaultSharedPreferences(this@StreamingService).edit { remove("certificate_path") }
                 kotlinx.coroutines.delay(100)
                 initServer()
             } else launch(Dispatchers.Main) {
@@ -854,6 +860,9 @@ class StreamingService : LifecycleService() {
         PreferenceManager.getDefaultSharedPreferences(this).getString(key, null)?.toIntOrNull()?.takeIf { it in 1..65535 } ?: def
 
     /** Stable pseudo-MAC/serial from ANDROID_ID (Android hides the real Wi-Fi MAC from apps). */
+    // A per-app stable ID is exactly what the ONVIF serial and the virtual MAC need; it never
+    // leaves the device and is not used for advertising or analytics.
+    @SuppressLint("HardwareIds")
     private fun deviceId(): String =
         android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "0000000000000000"
 
@@ -864,6 +873,9 @@ class StreamingService : LifecycleService() {
     }
 
     /** Keeps the CPU and camera pipeline running while a viewer is connected. */
+    // The lock is intentionally held for the whole streaming session (not a fixed timeout):
+    // releaseStreamingWakeLock() drops it when the last viewer leaves or the service stops.
+    @SuppressLint("WakelockTimeout")
     private fun acquireStreamingWakeLock() {
         val lock = streamingWakeLock ?: run {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -1314,7 +1326,7 @@ class StreamingService : LifecycleService() {
             if (selectedCameraId == null) {
                 firstCameraIdForFacing(frontFacing)?.let { resolved ->
                     selectedCameraId = resolved
-                    prefs.edit().putString(PREF_CAMERA_ID, camId()).apply()
+                    prefs.edit { putString(PREF_CAMERA_ID, camId()) }
                 }
             }
             val demand = cameraDemand()
@@ -1352,7 +1364,7 @@ class StreamingService : LifecycleService() {
             }
             // Persist the active camera id so encoders and helpers can read per-camera prefs
             try {
-                prefs.edit().putString(PREF_CAMERA_ID, camId()).apply()
+                prefs.edit { putString(PREF_CAMERA_ID, camId()) }
             } catch (_: Exception) {}
 
             // Settings changed while this start ran (a Camera1 open can take seconds): it is not reusable.
@@ -1419,22 +1431,23 @@ class StreamingService : LifecycleService() {
         val missesKey = CameraXFallback.missesKey(camera)
         val missedAtKey = CameraXFallback.missedAtKey(camera)
         if (framed) {
-            if (prefs.contains(missesKey)) prefs.edit().remove(missesKey).remove(missedAtKey).apply()
+            if (prefs.contains(missesKey)) prefs.edit { remove(missesKey); remove(missedAtKey) }
             return
         }
         val misses = prefs.getInt(missesKey, 0) + 1
-        prefs.edit()
-            .putInt(missesKey, misses)
-            .putLong(missedAtKey, System.currentTimeMillis())
-            .apply()
+        prefs.edit {
+            putInt(missesKey, misses)
+            putLong(missedAtKey, System.currentTimeMillis())
+        }
         Log.w(TAG, "CameraX bound without frames on camera $camera ($misses in a row), frame-needing starts use Camera1 for the next ${CameraXFallback.holdMs(misses) / 60_000} min")
     }
 
     /** Ends the Camera1 hold on every camera, so the next frame-needing start tests CameraX again. */
     private fun forgetCameraXMisses(prefs: SharedPreferences) {
-        val edit = prefs.edit().remove(CameraXFallback.LEGACY_PREF)
-        prefs.all.keys.filter { CameraXFallback.isRecordKey(it) }.forEach { edit.remove(it) }
-        edit.apply()
+        prefs.edit {
+            remove(CameraXFallback.LEGACY_PREF)
+            prefs.all.keys.filter { CameraXFallback.isRecordKey(it) }.forEach { remove(it) }
+        }
     }
 
     private suspend fun startCamera1Backend(want: Size, demand: CameraDemand) {
@@ -1518,7 +1531,7 @@ class StreamingService : LifecycleService() {
 
                 h264SurfaceProvider = Preview.SurfaceProvider { request ->
                     val surface = pipe.inputSurface
-                    if (surface != null && surface.isValid) {
+                    if (surface.isValid) {
                         // Render at the resolution CameraX negotiated rather than the pipe's
                         // placeholder buffer size, so the selected resolution is what gets captured.
                         pipe.setCameraBufferSize(request.resolution.width, request.resolution.height)
@@ -1674,7 +1687,6 @@ class StreamingService : LifecycleService() {
     private fun readMirrorPref(): Boolean {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val id = camId()
-        if (id == null) return false
         val phys = id.substringAfter(':', id)
         return when {
             prefs.contains("mirror_$id") -> prefs.getString("mirror_$id", null)?.toBoolean() ?: false
@@ -1694,7 +1706,7 @@ class StreamingService : LifecycleService() {
      *  only acts on 90° multiples. Returns the raw stored angle. */
     private fun readRotatePref(): Int {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val id = camId() ?: return 0
+        val id = camId()
         val phys = id.substringAfter(':', id)
         return when {
             prefs.contains("camera_rotate_$id") -> prefs.getInt("camera_rotate_$id", 0)
@@ -1758,7 +1770,6 @@ class StreamingService : LifecycleService() {
             if (!b.hasFlashUnit) setDeviceTorch(true)
         }
         val id = camId()
-        if (id == null) return
         val phys = id.substringAfter(':', id)
         // Prefer token-specific prefs, fallback to physical id prefs
         val exposure = when {
@@ -2170,7 +2181,7 @@ class StreamingService : LifecycleService() {
         val storedCameraPref = prefs.getString(PREF_CAMERA_ID, null)
         val id = storedCameraPref ?: camId()
         // physical id fallback (if id is "logical:physical" this extracts physical)
-        val physicalId = id?.substringAfter(':', id ?: "") ?: ""
+        val physicalId = id.substringAfter(':', id)
         when (key) {
             "torch" -> {
                 val current = backend?.getTorch()
@@ -2184,7 +2195,7 @@ class StreamingService : LifecycleService() {
                 // Persist before opening the camera: applyStored() reads this pref while the
                 // backend is being set up, which is what makes the torch survive the camera
                 // restarts that happen every time a stream starts or stops.
-                prefs.edit().putString(PREF_CAMERA_TORCH, if (next) "on" else "off").apply()
+                prefs.edit { putString(PREF_CAMERA_TORCH, if (next) "on" else "off") }
                 launchMain {
                     awaitCameraSettled()
                     if (next && !captureRunning) {
@@ -2207,25 +2218,25 @@ class StreamingService : LifecycleService() {
             }
             "exposure" -> {
                 val ev = value.toIntOrNull() ?: return
-                prefs.edit().putString("exposure_$id", ev.toString()).apply()
-                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("exposure_$physicalId", ev.toString()).apply()
+                prefs.edit { putString("exposure_$id", ev.toString()) }
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit { putString("exposure_$physicalId", ev.toString()) }
                 launchMain { backend?.setExposure(ev) }
             }
             "zoom" -> {
                 val z = value.toFloatOrNull() ?: return
                 val zStr = String.format(Locale.US, "%.1f", z)
-                prefs.edit().putString("zoom_$id", zStr).apply()
-                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("zoom_$physicalId", zStr).apply()
+                prefs.edit { putString("zoom_$id", zStr) }
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit { putString("zoom_$physicalId", zStr) }
                 launchMain { backend?.setZoom(z) }
             }
             "focus_distance" -> {
                 val f = value.toFloatOrNull() ?: return
                 if (f < 0f) {
-                    prefs.edit().remove("focus_$id").apply()
-                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit().remove("focus_$physicalId").apply()
+                    prefs.edit { remove("focus_$id") }
+                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit { remove("focus_$physicalId") }
                 } else {
-                    prefs.edit().putString("focus_$id", f.coerceIn(0f, 1f).toString()).apply()
-                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("focus_$physicalId", f.coerceIn(0f, 1f).toString()).apply()
+                    prefs.edit { putString("focus_$id", f.coerceIn(0f, 1f).toString()) }
+                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit { putString("focus_$physicalId", f.coerceIn(0f, 1f).toString()) }
                 }
                 launchMain { backend?.setManualFocus(f) }
             }
@@ -2233,11 +2244,9 @@ class StreamingService : LifecycleService() {
                 if (value == "max" || value == "stream") {
                     val prefs = PreferenceManager.getDefaultSharedPreferences(this)
                     val sid = camId()
-                    if (sid != null) {
-                        prefs.edit().putString("snapshot_res_$sid", value).apply()
-                        val phys = sid.substringAfter(':', sid)
-                        if (phys.isNotBlank() && phys != sid) prefs.edit().putString("snapshot_res_$phys", value).apply()
-                    }
+                    prefs.edit { putString("snapshot_res_$sid", value) }
+                    val phys = sid.substringAfter(':', sid)
+                    if (phys.isNotBlank() && phys != sid) prefs.edit { putString("snapshot_res_$phys", value) }
                 }
             }
             "camera" -> {
@@ -2248,9 +2257,9 @@ class StreamingService : LifecycleService() {
                 // selectedCameraId may be the bare physical ID (e.g. "3") used by CameraX.
                 // Persist the canonical camera id (what camId() will return) so per-camera
                 // preferences are stored/loaded under the same key format.
-                prefs.edit()
-                    .putString(PREF_CAMERA_ID, camId())
-                    .apply()
+                prefs.edit {
+                    putString(PREF_CAMERA_ID, camId())
+                }
                 launchMain {
                     awaitCameraSettled()
                     if (captureRunning) {
@@ -2264,14 +2273,14 @@ class StreamingService : LifecycleService() {
                     value in listOf("low", "medium", "high") -> {
                         // A preset only takes effect when no explicit size is selected, so clear
                         // any saved WxH; otherwise desiredSize() would keep using the old size.
-                        prefs.edit()
-                            .putString("camera_resolution", value)
-                            .putString("stream_res", "auto")
-                            .apply()
+                        prefs.edit {
+                            putString("camera_resolution", value)
+                            putString("stream_res", "auto")
+                        }
                         debouncedStartCamera()
                     }
                     value == "auto" || value == "max" -> {
-                        prefs.edit().putString("stream_res", "auto").apply()
+                        prefs.edit { putString("stream_res", "auto") }
                         debouncedStartCamera()
                     }
                     else -> {
@@ -2281,7 +2290,7 @@ class StreamingService : LifecycleService() {
                         if (w == null || h == null || w <= 0 || h <= 0) return
                         // Store the normalised size the stream will actually use, so /info.json
                         // reports exactly what the user selected.
-                        prefs.edit().putString("stream_res", "${w}x${h}").apply()
+                        prefs.edit { putString("stream_res", "${w}x${h}") }
                         debouncedStartCamera()
                     }
                 }
@@ -2291,33 +2300,33 @@ class StreamingService : LifecycleService() {
             "stream_bitrate" -> {
                 val raw = value.trim().lowercase()
                 if (raw == StreamEncoding.AUTO) {
-                    prefs.edit().putString(StreamEncoding.PREF_BITRATE, StreamEncoding.AUTO).apply()
+                    prefs.edit { putString(StreamEncoding.PREF_BITRATE, StreamEncoding.AUTO) }
                 } else {
                     val kbps = raw.toIntOrNull()
                         ?.takeIf { it in StreamEncoding.MIN_BITRATE_KBPS..StreamEncoding.MAX_BITRATE_KBPS }
                         ?: return
-                    prefs.edit().putString(StreamEncoding.PREF_BITRATE, kbps.toString()).apply()
+                    prefs.edit { putString(StreamEncoding.PREF_BITRATE, kbps.toString()) }
                 }
                 debouncedStartCamera()
             }
             "stream_bitrate_mode" -> {
                 val mode = value.trim().lowercase()
                 if (mode != StreamEncoding.MODE_VBR && mode != StreamEncoding.MODE_CBR) return
-                prefs.edit().putString(StreamEncoding.PREF_BITRATE_MODE, mode).apply()
+                prefs.edit { putString(StreamEncoding.PREF_BITRATE_MODE, mode) }
                 debouncedStartCamera()
             }
             "stream_keyframe_interval" -> {
                 val sec = value.toIntOrNull()
                     ?.takeIf { it in StreamEncoding.MIN_KEYFRAME_INTERVAL_SEC..StreamEncoding.MAX_KEYFRAME_INTERVAL_SEC }
                     ?: return
-                prefs.edit().putString(StreamEncoding.PREF_KEYFRAME_INTERVAL, sec.toString()).apply()
+                prefs.edit { putString(StreamEncoding.PREF_KEYFRAME_INTERVAL, sec.toString()) }
                 debouncedStartCamera()
             }
             // Spatial denoising runs in the GL pipe, so it applies live without restarting the
             // camera or rebuilding the encoder. The level is persisted and exposed in /info.json.
             "stream_denoise" -> {
                 val level = NoiseReduction.parse(value) ?: return
-                prefs.edit().putString(NoiseReduction.PREF, level.toString()).apply()
+                prefs.edit { putString(NoiseReduction.PREF, level.toString()) }
                 val strength = NoiseReduction.strength(level)
                 glPipe?.denoise = strength
                 cameraXGlPipe?.denoise = strength
@@ -2326,25 +2335,25 @@ class StreamingService : LifecycleService() {
             // connects, so a change applies to the next connection (as the old Settings screen did).
             "rtsp_audio" -> {
                 if (value.equals("true", true) || value.equals("false", true)) {
-                    prefs.edit().putBoolean(RtspServer.PREF_AUDIO, value.toBoolean()).apply()
+                    prefs.edit { putBoolean(RtspServer.PREF_AUDIO, value.toBoolean()) }
                 }
             }
             "rtsp_sub_size" -> {
                 val n = value.toIntOrNull()
                 if (n != null && n in listOf(240, 360, 480, 720)) {
-                    prefs.edit().putString(RtspServer.PREF_SUB_SIZE, n.toString()).apply()
+                    prefs.edit { putString(RtspServer.PREF_SUB_SIZE, n.toString()) }
                 }
             }
             "rtsp_sub_fps" -> {
                 val n = value.toIntOrNull()
                 if (n != null && n in listOf(10, 15, 20, 30)) {
-                    prefs.edit().putString(RtspServer.PREF_SUB_FPS, n.toString()).apply()
+                    prefs.edit { putString(RtspServer.PREF_SUB_FPS, n.toString()) }
                 }
             }
             "rtsp_sub_bitrate" -> {
                 val n = value.toIntOrNull()
                 if (n != null && n in listOf(300, 500, 800, 1200, 2000)) {
-                    prefs.edit().putString(RtspServer.PREF_SUB_BITRATE, n.toString()).apply()
+                    prefs.edit { putString(RtspServer.PREF_SUB_BITRATE, n.toString()) }
                 }
             }
             "rotate" -> {
@@ -2352,8 +2361,8 @@ class StreamingService : LifecycleService() {
                 // normalize to 0..359
                 val norm = ((angle % 360) + 360) % 360
                 // Persist rotate per-camera
-                prefs.edit().putInt("camera_rotate_$id", norm).apply()
-                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putInt("camera_rotate_$physicalId", norm).apply()
+                prefs.edit { putInt("camera_rotate_$id", norm) }
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit { putInt("camera_rotate_$physicalId", norm) }
                 // H.264 only supports 90° steps (the raw value is persisted verbatim for the MJPEG
                 // pipeline, which rotates arbitrary angles). Apply the quantised value live to the
                 // surface-mode GL pipes so they snap to the same steps the byte-buffer encoder uses.
@@ -2379,18 +2388,18 @@ class StreamingService : LifecycleService() {
             }
             "scale" -> {
                 // Persist scale per-camera (string like "1.0")
-                prefs.edit().putString("stream_scale_$id", value).apply()
-                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("stream_scale_$physicalId", value).apply()
+                prefs.edit { putString("stream_scale_$id", value) }
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit { putString("stream_scale_$physicalId", value) }
             }
             "contrast" -> {
                 // Persist contrast per-camera
-                prefs.edit().putString("camera_contrast_$id", value).apply()
-                if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("camera_contrast_$physicalId", value).apply()
+                prefs.edit { putString("camera_contrast_$id", value) }
+                if (physicalId.isNotBlank() && physicalId != id) prefs.edit { putString("camera_contrast_$physicalId", value) }
             }
             "mirror" -> {
                 if (value in listOf("true", "false")) {
-                    prefs.edit().putString("mirror_$id", value).apply()
-                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit().putString("mirror_$physicalId", value).apply()
+                    prefs.edit { putString("mirror_$id", value) }
+                    if (physicalId.isNotBlank() && physicalId != id) prefs.edit { putString("mirror_$physicalId", value) }
                     val enabled = value == "true"
                     glPipe?.mirror = enabled
                     cameraXGlPipe?.mirror = enabled
@@ -2413,7 +2422,7 @@ class StreamingService : LifecycleService() {
             }
             "api" -> {
                 if (value in listOf("auto", "camerax", "camera1")) {
-                    prefs.edit().putString("capture_api", value).apply()
+                    prefs.edit { putString("capture_api", value) }
                     // Explicitly choosing CameraX again re-tests the device (clears the remembered
                     // CameraX starts without frames).
                     if (value != "camera1") forgetCameraXMisses(prefs)
@@ -2429,41 +2438,41 @@ class StreamingService : LifecycleService() {
                     else -> return
                 }
                 val mode = if (enabled) MotionMonitor.MODE_MOTION else MotionMonitor.MODE_OFF
-                prefs.edit()
-                    .putBoolean(MotionMonitor.PREF_ENABLED, enabled)
-                    .putString(MotionMonitor.PREF_MODE, mode)
-                    .apply()
+                prefs.edit {
+                    putBoolean(MotionMonitor.PREF_ENABLED, enabled)
+                    putString(MotionMonitor.PREF_MODE, mode)
+                }
                 motionMonitor?.onSettingsChanged()
                 applyRecordingMode(mode)
             }
             MotionMonitor.PREF_MODE -> {
                 val mode = MotionMonitor.normalizeMode(value) ?: return
-                prefs.edit()
-                    .putString(MotionMonitor.PREF_MODE, mode)
-                    .putBoolean(MotionMonitor.PREF_ENABLED, mode != MotionMonitor.MODE_OFF)
-                    .apply()
+                prefs.edit {
+                    putString(MotionMonitor.PREF_MODE, mode)
+                    putBoolean(MotionMonitor.PREF_ENABLED, mode != MotionMonitor.MODE_OFF)
+                }
                 motionMonitor?.onSettingsChanged()
                 applyRecordingMode(mode)
             }
             MotionMonitor.PREF_SENSITIVITY -> {
                 val sensitivity = value.toIntOrNull()?.coerceIn(1, 10) ?: return
-                prefs.edit().putString(MotionMonitor.PREF_SENSITIVITY, sensitivity.toString()).apply()
+                prefs.edit { putString(MotionMonitor.PREF_SENSITIVITY, sensitivity.toString()) }
             }
             MotionMonitor.PREF_STOP_DELAY -> {
                 val delay = value.toIntOrNull()?.coerceIn(0, MotionMonitor.MAX_STOP_DELAY) ?: return
-                prefs.edit().putString(MotionMonitor.PREF_STOP_DELAY, delay.toString()).apply()
+                prefs.edit { putString(MotionMonitor.PREF_STOP_DELAY, delay.toString()) }
             }
             MotionMonitor.PREF_SEGMENT_MINUTES -> {
                 val minutes = value.toIntOrNull()
                     ?.coerceIn(MotionMonitor.MIN_SEGMENT_MINUTES, MotionMonitor.MAX_SEGMENT_MINUTES)
                     ?: return
-                prefs.edit().putString(MotionMonitor.PREF_SEGMENT_MINUTES, minutes.toString()).apply()
+                prefs.edit { putString(MotionMonitor.PREF_SEGMENT_MINUTES, minutes.toString()) }
             }
             MotionMonitor.PREF_STORAGE_LIMIT_PERCENT -> {
                 val percent = value.toIntOrNull()
                     ?.coerceIn(MotionMonitor.MIN_STORAGE_LIMIT_PERCENT, MotionMonitor.MAX_STORAGE_LIMIT_PERCENT)
                     ?: return
-                prefs.edit().putString(MotionMonitor.PREF_STORAGE_LIMIT_PERCENT, percent.toString()).apply()
+                prefs.edit { putString(MotionMonitor.PREF_STORAGE_LIMIT_PERCENT, percent.toString()) }
                 // Apply the new limit immediately instead of waiting for the next clip to finish.
                 lifecycleScope.launch(Dispatchers.IO) {
                     try {

@@ -1,11 +1,13 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
+import android.annotation.SuppressLint
 import android.content.Context
-import android.os.Build
+import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
+import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.io.File
@@ -17,12 +19,8 @@ import javax.crypto.spec.GCMParameterSpec
 
 class SecureStorage(context: Context) {
 
-    private val encryptedPrefs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        createEncryptedPreferences(context)
-    } else {
-        // Fallback for older Android versions
-        context.getSharedPreferences("secure_prefs", Context.MODE_PRIVATE)
-    }
+    // minSdk 24 means AndroidX Security (API 23+) is always available.
+    private val encryptedPrefs = createEncryptedPreferences(context)
 
     companion object {
         private const val TAG = "SecureStorage"
@@ -35,7 +33,7 @@ class SecureStorage(context: Context) {
         const val KEY_JWT_SECRET = "secure_jwt_secret"
     }
 
-    private fun createEncryptedPreferences(context: Context) = synchronized(initializationLock) {
+    private fun createEncryptedPreferences(context: Context): SharedPreferences = synchronized(initializationLock) {
         try {
             // Use AndroidX Security library for modern encryption
             val masterKey = MasterKey.Builder(context)
@@ -102,6 +100,8 @@ class SecureStorage(context: Context) {
     }
 
     // Store sensitive data securely
+    // KTX's edit() helper cannot surface commit()'s Boolean result, but callers depend on it.
+    @SuppressLint("UseKtx")
     fun putSecureString(key: String, value: String?): Boolean {
         // Use commit() to ensure synchronous write for critical data like certificate passwords
         return encryptedPrefs.edit().putString(key, value).commit()
@@ -118,7 +118,7 @@ class SecureStorage(context: Context) {
 
     // Remove sensitive data
     fun removeSecureString(key: String) {
-        encryptedPrefs.edit().remove(key).apply()
+        encryptedPrefs.edit { remove(key) }
     }
 
     // Check if secure storage contains a key

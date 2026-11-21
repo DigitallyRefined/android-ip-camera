@@ -2,6 +2,7 @@ package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
 import android.net.Uri
+import androidx.core.net.toUri
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -148,7 +149,7 @@ class FileManager(
     }
 
     private fun queryParameter(uri: String, name: String): String? = try {
-        Uri.parse(uri).getQueryParameter(name)
+        uri.toUri().getQueryParameter(name)
     } catch (_: Exception) {
         null
     }

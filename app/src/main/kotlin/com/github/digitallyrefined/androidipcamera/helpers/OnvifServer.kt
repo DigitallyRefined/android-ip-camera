@@ -103,6 +103,8 @@ class OnvifServer(
      */
     private class Subscription(val id: String, @Volatile var expiresAt: Long, val consumer: String? = null) {
         val queue = ArrayDeque<String>()
+        // java.lang.Object is required here for wait()/notifyAll() monitor calls.
+        @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
         val lock = Object()
     }
 

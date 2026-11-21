@@ -2,8 +2,7 @@
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="#000000">
+    android:layout_height="match_parent">
 
     <androidx.camera.view.PreviewView
         android:id="@+id/viewFinder"
@@ -17,7 +16,7 @@
         android:layout_margin="24dp"
         android:gravity="center"
         android:padding="16dp"
-        android:text="No users are connected, visit the URL below to start the camera"
+        android:text="@string/no_clients_message"
         android:textColor="#FFFFFF"
         android:textSize="18sp"
         android:background="#80000000"
@@ -41,28 +40,28 @@
             android:layout_height="48dp"
             android:background="@android:color/transparent"
             android:src="@android:drawable/ic_menu_preferences"
-            android:contentDescription="Settings" />
+            android:contentDescription="@string/settings" />
         <ImageButton
             android:id="@+id/hidePreviewButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="@android:color/transparent"
             android:src="@android:drawable/ic_menu_view"
-            android:contentDescription="Toggle Preview" />
+            android:contentDescription="@string/toggle_preview" />
         <ImageButton
             android:id="@+id/helpButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="@android:color/transparent"
             android:src="@android:drawable/ic_menu_help"
-            android:contentDescription="Help" />
+            android:contentDescription="@string/help" />
         <ImageButton
             android:id="@+id/exitButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="@android:color/transparent"
             android:src="@android:drawable/ic_menu_close_clear_cancel"
-            android:contentDescription="Exit App" />
+            android:contentDescription="@string/exit_app" />
     </LinearLayout>
 
     <LinearLayout

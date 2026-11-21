@@ -16,6 +16,7 @@ import android.os.Looper
 import android.util.Base64
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.preference.PreferenceManager
 import com.github.digitallyrefined.androidipcamera.helpers.SecureStorage
 import kotlinx.coroutines.CoroutineScope
@@ -175,8 +176,9 @@ class StreamingServerHelper(
      * would only apply to whoever connected next.
      */
     private fun setStreamingEnabled(enabled: Boolean) {
-        PreferenceManager.getDefaultSharedPreferences(context).edit()
-            .putBoolean(PREF_STREAMING_ENABLED, enabled).apply()
+        PreferenceManager.getDefaultSharedPreferences(context).edit {
+            putBoolean(PREF_STREAMING_ENABLED, enabled)
+        }
         onLog(if (enabled) "Streaming enabled" else "Streaming disabled")
         if (!enabled) closeClientConnection()
         onStreamingEnabledChanged(enabled)
@@ -407,7 +409,7 @@ class StreamingServerHelper(
                               lastConnectionCleanupMs = now
                           }
                           val socket = createdServerSocket.accept()
-                          val clientIp = socket.inetAddress.hostAddress
+                          val clientIp = socket.inetAddress.hostAddress ?: "unknown"
 
                           // Handle each connection in a separate coroutine to avoid blocking the accept loop
                           CoroutineScope(Dispatchers.IO).launch {
@@ -518,7 +520,7 @@ class StreamingServerHelper(
             var line: String?
             while (reader.readLine().also { line = it } != null) {
                 if (line.isNullOrEmpty()) break
-                headers.add(line!!)
+                headers.add(line)
             }
 
             // SECURITY: Require Basic Authentication header for all requests (when auth is enabled)
@@ -786,7 +788,7 @@ class StreamingServerHelper(
                     // UNPROCESSED is a hint; many HALs (especially on API 24-28) don't
                     // implement it and the AudioRecord ctor throws IllegalArgumentException.
                     // Fall back to the plain MIC source in that case.
-                    val audioRecord = if (rawAudio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    val audioRecord = if (rawAudio) {
                         try {
                             AudioRecord(
                                 MediaRecorder.AudioSource.UNPROCESSED,
@@ -1296,7 +1298,6 @@ class StreamingServerHelper(
     fun resetCameraPreferences(cameraId: String) {
         try {
             val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-            val editor = prefs.edit()
             val physical = cameraId.substringAfter(':', cameraId)
             // Known keys to remove for a camera
             val keys = listOf(
@@ -1310,8 +1311,9 @@ class StreamingServerHelper(
                 "snapshot_res_$cameraId", "snapshot_res_$physical",
                 "${CropRegion.PREF_PREFIX}$cameraId", "${CropRegion.PREF_PREFIX}$physical"
             )
-            keys.forEach { k -> if (prefs.contains(k)) editor.remove(k) }
-            editor.apply()
+            prefs.edit {
+                keys.forEach { k -> if (prefs.contains(k)) remove(k) }
+            }
             onLog("Reset preferences for camera $cameraId")
 
             // Apply canonical defaults immediately so the live camera reflects the reset
@@ -1640,7 +1642,7 @@ class StreamingServerHelper(
                     (storedCamId == "front" && cam.facing == "front")
             }
             val prefBases = buildList {
-                if (isStoredCamera && storedCamId != null) {
+                if (isStoredCamera) {
                     add(storedCamId)
                     if (storedPhysical != null && storedPhysical != storedCamId) add(storedPhysical)
                 }
@@ -2036,7 +2038,7 @@ class StreamingServerHelper(
                     val computedMax: Float? = try {
                         when {
                             // If the scaler reports a max digital zoom, trust it directly (no artificial cap)
-                            scalerMaxRaw != null -> try { (scalerMaxRaw).toFloat() } catch (_: Exception) { null }
+                            scalerMaxRaw != null -> try { scalerMaxRaw } catch (_: Exception) { null }
                             // Otherwise derive from the same sensor-normalized ratio, inverted
                             thisEffectiveFocal != null && groupMaxEff != null && thisEffectiveFocal > 0f ->
                                 (groupMaxEff / thisEffectiveFocal).coerceAtLeast(1.0f)
@@ -2056,12 +2058,12 @@ class StreamingServerHelper(
                     try {
                         val focalStr = focalLensRaw?.joinToString(",") ?: "<none>"
                         roundedMin = computedMin?.let { roundDown1(it) }
-                        roundedMax = computedMax?.let { roundUp1(it) } ?: scalerMaxRaw?.let { try { roundUp1((it).toFloat()) } catch (_: Exception) { null } }
+                        roundedMax = computedMax?.let { roundUp1(it) } ?: scalerMaxRaw?.let { try { roundUp1(it) } catch (_: Exception) { null } }
 
                         val minStr = roundedMin?.toString() ?: "<unknown>"
                         val maxStr = roundedMax?.toString() ?: "<none>"
-                        val reportedLower = try { rangeRaw?.lower?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
-                        val reportedUpper = try { rangeRaw?.upper?.toFloat()?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
+                        val reportedLower = try { rangeRaw?.lower?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
+                        val reportedUpper = try { rangeRaw?.upper?.toString() ?: "<none>" } catch (_: Exception) { "<err>" }
 
                         onLog("Camera ${source.id} zoom info: CONTROL_ZOOM_RATIO_RANGE=[$reportedLower,$reportedUpper], LENS_INFO_AVAILABLE_FOCAL_LENGTHS=$focalStr, effectiveFocal=${thisEffectiveFocal ?: "<none>"}, groupMaxEffectiveFocal=${groupMaxEff ?: "<none>"}, focalDerivedMin=${focalDerivedMin ?: "<none>"}, computedMinZoom=$minStr, computedMaxZoom=$maxStr")
                     } catch (_: Exception) {}
@@ -2132,6 +2134,9 @@ class StreamingServerHelper(
 
     private fun getZoomRatioRangeSafe(ch: CameraCharacteristics?): android.util.Range<Float>? {
         if (ch == null) return null
+        // The fallback CameraCharacteristics.Key constructor needs API 29; zoom ratio itself
+        // only exists from API 30, so older devices have no range to report.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         return try {
             @Suppress("UNCHECKED_CAST")
             val key = try {
@@ -2167,8 +2172,7 @@ class StreamingServerHelper(
         if (!hasWifiPermission) {
             -1
         } else {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
-            val rssi = wifiManager?.connectionInfo?.rssi ?: -127
+            val rssi = currentWifiInfo()?.rssi ?: -127
             when {
                 rssi == -127 -> -1
                 rssi <= -100 -> 0
@@ -2179,6 +2183,21 @@ class StreamingServerHelper(
     } catch (_: Exception) {
         -1
     }
+
+    /** Current Wi-Fi connection info; Android 10+ exposes it through the active network's capabilities. */
+    private fun currentWifiInfo(): android.net.wifi.WifiInfo? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE)
+                as? android.net.ConnectivityManager
+            return cm?.getNetworkCapabilities(cm.activeNetwork)?.transportInfo as? android.net.wifi.WifiInfo
+        }
+        return legacyWifiInfo()
+    }
+
+    @Suppress("DEPRECATION") // WifiManager.connectionInfo is the only option below API 29.
+    private fun legacyWifiInfo(): android.net.wifi.WifiInfo? =
+        (context.applicationContext.getSystemService(Context.WIFI_SERVICE)
+            as? android.net.wifi.WifiManager)?.connectionInfo
 
     private fun cleanupExpiredConnections() {
         val now = System.currentTimeMillis()

@@ -9,4 +9,11 @@
         <item>1.2</item>
     </string-array>
     <string name="streaming_active">🔴 Streaming active</string>
+    <string name="no_clients_message">No users are connected, visit the URL below to start the camera</string>
+    <string name="settings">Settings</string>
+    <string name="toggle_preview">Toggle Preview</string>
+    <string name="help">Help</string>
+    <string name="exit_app">Exit App</string>
+    <!-- protocol://ip:port followed by any additional RTSP/ONVIF lines -->
+    <string name="stream_urls" translatable="false">%1$s://%2$s:%3$d%4$s</string>
 </resources>

@@ -133,6 +133,8 @@ class H264HardwareEncoder(
     }
 
     /** ponytail: NV12 vs I420 is the classic cross-device MediaCodec gotcha — ask the codec which it takes. */
+    @Suppress("DEPRECATION") // Planar/semi-planar are deprecated for flexible YUV, but still the only
+    // way to tell the two codec buffer layouts apart when feeding byte buffers.
     private fun pickYuvFormat(): Int {
         val supported = try { codec.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).colorFormats.toSet() }
                         catch (_: Exception) { emptySet<Int>() }
@@ -653,7 +655,7 @@ class H264HardwareEncoder(
 
                             if (partialFlags == 0) partialPtsUs = info.presentationTimeUs
                             partialFlags = partialFlags or info.flags
-                            val isPartial = (info.flags and MediaCodec.BUFFER_FLAG_PARTIAL_FRAME) != 0
+                            val isPartial = (info.flags and BUFFER_FLAG_PARTIAL_FRAME) != 0
                             val accessUnit = accessUnitAssembler.append(data, isPartial)
                             if (accessUnit != null) {
                                 val flags = partialFlags
@@ -750,6 +752,13 @@ class H264HardwareEncoder(
 
     companion object {
         private const val TAG = "H264HardwareEncoder"
+
+        /**
+         * From the vendor partial-frame extension. The flag is only exposed as a `MediaCodec`
+         * field from API 26, but the inlined value is harmless on older versions (they never
+         * set it), so declare it locally instead of guarding the drain loop's hot path.
+         */
+        private const val BUFFER_FLAG_PARTIAL_FRAME = 8
 
         /** Cached AVC encoder capabilities, queried once. Makes sizing/bitrate device-agnostic. */
         data class Caps(val maxW: Int, val maxH: Int, val minBitrate: Int, val maxBitrate: Int)

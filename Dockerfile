@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# check=skip=FromPlatformFlagConstDisallowed
 #
 # =============================================================================
 # android-ip-camera - Docker Android builder
@@ -70,7 +71,9 @@
 # The Android NDK only ships x86_64 Linux host tools, so a native arm64
 # container cannot run its clang. Pin the image to linux/amd64: on x86_64 hosts
 # that is native, and on ARM hosts (Apple Silicon, ARM Linux) Docker runs it
-# through x86_64 emulation, which Docker Desktop sets up automatically.
+# through x86_64 emulation, which Docker Desktop sets up automatically. The
+# constant platform trips BuildKit's FromPlatformFlagConstDisallowed lint, which
+# is skipped deliberately at the top of this file.
 FROM --platform=linux/amd64 eclipse-temurin:21-jdk
 
 # Everything expensive lives in the mounted /cache and is provisioned by the

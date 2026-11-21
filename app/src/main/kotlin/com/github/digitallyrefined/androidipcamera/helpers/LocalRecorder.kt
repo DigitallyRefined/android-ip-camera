@@ -69,6 +69,8 @@ class LocalRecorder(
     private var outputUri: Uri? = null
     private var outputFile: File? = null
     private var pfd: ParcelFileDescriptor? = null
+    /** Cache file used to mux a custom-folder clip on API 24-25 (MediaMuxer(FileDescriptor) is API 26+). */
+    private var pendingCopyFile: File? = null
     /** Path inside the recordings root while a clip is being written (YYYY/MM/DD/name.mp4). */
     @Volatile private var relativePath: String = ""
 
@@ -104,8 +106,17 @@ class LocalRecorder(
                     val fd = context.contentResolver.openFileDescriptor(uri, "rw")
                         ?: throw IllegalStateException("Failed to open file descriptor for $uri")
                     outputUri = uri
-                    pfd = fd
-                    muxer = MediaMuxer(fd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        pfd = fd
+                        muxer = MediaMuxer(fd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                    } else {
+                        // MediaMuxer(FileDescriptor, ...) needs API 26. On API 24-25 mux into a
+                        // cache file and copy it into the SAF document once the clip is final.
+                        fd.close()
+                        val temp = File.createTempFile("recording-", ".mp4", context.cacheDir)
+                        pendingCopyFile = temp
+                        muxer = MediaMuxer(temp.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                    }
                 } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // API 29+: MediaStore (scoped storage)
                     val values = ContentValues().apply {
@@ -332,6 +343,20 @@ class LocalRecorder(
         if (outputUri != null) {
             // Custom SAF folder: the file is already visible through the folder picker
             // (and any file manager browsing that folder); no MediaStore / scan needed.
+            // On API 24-25 the clip was muxed into a cache file, so copy it across now.
+            pendingCopyFile?.let { temp ->
+                try {
+                    context.contentResolver.openOutputStream(outputUri!!)?.use { output ->
+                        temp.inputStream().use { it.copyTo(output) }
+                    } ?: throw IllegalStateException("Unable to open output stream for $outputUri")
+                    Log.i(TAG, "Copied recording into custom folder: $outputUri")
+                } catch (e: Exception) {
+                    Log.e(TAG, "copy to custom folder: ${e.message}")
+                } finally {
+                    temp.delete()
+                    pendingCopyFile = null
+                }
+            }
             return
         }
 
@@ -394,9 +419,15 @@ class LocalRecorder(
                 }
             }
         }
+        pendingCopyFile?.let { temp ->
+            try { if (temp.exists()) temp.delete() } catch (e: Exception) {
+                Log.e(TAG, "cleanup temp file: ${e.message}")
+            }
+        }
         mediaStoreUri = null
         outputUri = null
         outputFile = null
+        pendingCopyFile = null
     }
 
     /** Recordings are grouped by year, month and day: YYYY/MM/DD. */

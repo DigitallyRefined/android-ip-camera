@@ -2,14 +2,16 @@ package com.github.digitallyrefined.androidipcamera.activities
 
 import android.app.Activity
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.documentfile.provider.DocumentFile
@@ -63,9 +65,23 @@ class SettingsActivity : AppCompatActivity() {
     class SettingsFragment : PreferenceFragmentCompat() {
         private var openTunnelPollJob: Job? = null
 
+        private val pickCertificateFile = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                handleCertificateResult(result.data)
+            }
+        }
+
+        private val pickRecordingFolder = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                handleRecordingFolderResult(result.data)
+            }
+        }
+
         companion object {
-            private const val PICK_CERTIFICATE_FILE = 1
-            private const val PICK_RECORDING_FOLDER = 2
             private const val PREF_ONVIF_NAME = "onvif_name"
             private const val PREF_ONVIF_PORT = "onvif_port"
         }
@@ -95,9 +111,8 @@ class SettingsActivity : AppCompatActivity() {
                         putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/x-pkcs12", "application/pkcs12", "*/*"))
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                     }
-                    startActivityForResult(
-                        Intent.createChooser(intent, "Select TLS Certificate"),
-                        PICK_CERTIFICATE_FILE
+                    pickCertificateFile.launch(
+                        Intent.createChooser(intent, "Select TLS Certificate")
                     )
                     true
                 }
@@ -416,9 +431,8 @@ class SettingsActivity : AppCompatActivity() {
                                 Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                         )
                     }
-                    startActivityForResult(
-                        Intent.createChooser(intent, "Select recording folder"),
-                        PICK_RECORDING_FOLDER
+                    pickRecordingFolder.launch(
+                        Intent.createChooser(intent, "Select recording folder")
                     )
                     true
                 }
@@ -437,9 +451,9 @@ class SettingsActivity : AppCompatActivity() {
                             // Permission may already be gone; nothing to release
                         }
                     }
-                    PreferenceManager.getDefaultSharedPreferences(requireContext()).edit()
-                        .remove(RecordingsHelper.PREF_RECORDING_STORAGE_URI)
-                        .apply()
+                    PreferenceManager.getDefaultSharedPreferences(requireContext()).edit {
+                        remove(RecordingsHelper.PREF_RECORDING_STORAGE_URI)
+                    }
                     findPreference<Preference>("recording_storage_uri")?.summary = recordingStorageSummary()
                     Toast.makeText(requireContext(),
                         "Recordings will be saved to ${RecordingsHelper.DEFAULT_RELATIVE_PATH}",
@@ -468,7 +482,7 @@ class SettingsActivity : AppCompatActivity() {
                         if (privateFile.exists()) {
                             InputValidator.validateCertificateFile(privateFile, certPassword)
                         } else {
-                            val certUri = android.net.Uri.parse(certificatePath)
+                            val certUri = certificatePath.toUri()
                             InputValidator.validateCertificateUsability(requireContext(), certUri, certPassword)
                         }
                     } else {
@@ -724,9 +738,9 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-            if (requestCode == PICK_CERTIFICATE_FILE && resultCode == Activity.RESULT_OK) {
-                data?.data?.let { uri ->
+        private fun handleCertificateResult(data: Intent?) {
+            if (data != null) {
+                data.data?.let { uri ->
                     val certificatePath = uri.toString()
 
                     // Enhanced certificate validation
@@ -740,7 +754,7 @@ class SettingsActivity : AppCompatActivity() {
                     // Validate certificate can actually be loaded and used
                     val secureStorage = SecureStorage(requireContext())
                     val certPassword = secureStorage.getSecureString(SecureStorage.KEY_CERT_PASSWORD, "")
-                    val certificateUri = Uri.parse(certificatePath)
+                    val certificateUri = certificatePath.toUri()
 
                     // Keep a private copy so the certificate does not depend on URI permissions
                     // that may be lost when the app restarts.
@@ -772,9 +786,8 @@ class SettingsActivity : AppCompatActivity() {
                     }
 
                     // Store the certificate path
-                    preferenceManager.sharedPreferences?.edit()?.apply {
+                    preferenceManager.sharedPreferences?.edit {
                         putString("certificate_path", certificatePath)
-                        apply()
                     }
                     // Update the preference summary
                     findPreference<Preference>("certificate_path")?.summary = certificatePath
@@ -804,17 +817,19 @@ class SettingsActivity : AppCompatActivity() {
                     }
                 }
             }
+        }
 
-            if (requestCode == PICK_RECORDING_FOLDER && resultCode == Activity.RESULT_OK) {
-                data?.data?.let { uri ->
+        private fun handleRecordingFolderResult(data: Intent?) {
+            if (data != null) {
+                data.data?.let { uri ->
                     try {
                         requireContext().contentResolver.takePersistableUriPermission(
                             uri,
                             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                         )
-                        PreferenceManager.getDefaultSharedPreferences(requireContext()).edit()
-                            .putString(RecordingsHelper.PREF_RECORDING_STORAGE_URI, uri.toString())
-                            .apply()
+                        PreferenceManager.getDefaultSharedPreferences(requireContext()).edit {
+                            putString(RecordingsHelper.PREF_RECORDING_STORAGE_URI, uri.toString())
+                        }
                         findPreference<Preference>("recording_storage_uri")?.summary = recordingStorageSummary()
                         Toast.makeText(requireContext(),
                             "Recording location updated", Toast.LENGTH_SHORT).show()
@@ -825,7 +840,6 @@ class SettingsActivity : AppCompatActivity() {
                     }
                 }
             }
-            super.onActivityResult(requestCode, resultCode, data)
         }
 
         /** Summary for the storage preference: the chosen folder name or the default path. */

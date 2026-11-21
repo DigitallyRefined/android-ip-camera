@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Bridge theme: keeps the existing AppCompat styling while enabling Material components. -->
-    <style name="Theme.AndroidIPCamera" parent="Theme.MaterialComponents.Light.DarkActionBar.Bridge" />
+    <style name="Theme.AndroidIPCamera" parent="Theme.MaterialComponents.Light.DarkActionBar.Bridge">
+        <!-- Black window behind the full-screen preview, so the layout does not paint it twice. -->
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
 
     <!-- Settings follows the system light/dark setting (DayNight), while the rest of the
          app keeps its fixed light theme. -->

@@ -315,7 +315,7 @@ class CameraGlPipe(
         val attrib = intArrayOf(
             EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGLExt.EGL_RECORDABLE_ANDROID, 1, EGL14.EGL_NONE
+            EGL_RECORDABLE_ANDROID, 1, EGL14.EGL_NONE
         )
         EGL14.eglChooseConfig(eglDisplay, attrib, 0, cfg, 0, 1, num, 0)
         eglConfig = cfg[0]
@@ -465,6 +465,13 @@ class CameraGlPipe(
 
     companion object {
         private const val TAG = "CameraGlPipe"
+
+        /**
+         * From the EGL_ANDROID_recordable extension. The constant is only exposed as an
+         * `EGLExt` field from API 26, but the extension and its stable value are available
+         * on every Android version this app supports, so declare it locally.
+         */
+        private const val EGL_RECORDABLE_ANDROID = 0x3142
 
         /** Standard GL vertical flip; SurfaceTexture always applies this regardless of camera. */
         private val GL_FLIP_ONLY = floatArrayOf(

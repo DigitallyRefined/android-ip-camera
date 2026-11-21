@@ -10,6 +10,7 @@ import android.os.storage.StorageManager
 import android.os.storage.StorageVolume
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import androidx.core.net.toUri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import androidx.preference.PreferenceManager
@@ -116,7 +117,7 @@ object RecordingsHelper {
         val s = PreferenceManager.getDefaultSharedPreferences(context)
             .getString(PREF_RECORDING_STORAGE_URI, null)
         if (s.isNullOrBlank()) return null
-        return try { Uri.parse(s) } catch (_: Exception) { null }
+        return try { s.toUri() } catch (_: Exception) { null }
     }
 
     /** Human-readable root folder label for the web UI: the custom folder name or the default path. */
@@ -435,8 +436,7 @@ object RecordingsHelper {
 
     // ---- API 29+ (MediaStore / scoped storage) ----
 
-    private fun mediaStoreCollection(): Uri =
-        MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+    private fun mediaStoreCollection(): Uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
 
     private fun listMediaStore(context: Context, dir: String): List<RecordingEntry> {
         val root = relativePath.trimEnd('/')

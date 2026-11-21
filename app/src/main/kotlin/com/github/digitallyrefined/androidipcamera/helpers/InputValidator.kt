@@ -2,6 +2,7 @@ package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
 import android.net.Uri
+import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
 import java.security.KeyStore
@@ -28,7 +29,7 @@ object InputValidator {
     // Certificate path validation - STRENGTHENED for security
     fun isValidCertificatePath(context: Context, path: String): Boolean {
         return try {
-            val uri = Uri.parse(path)
+            val uri = path.toUri()
 
             when (uri.scheme) {
                 "content" -> {

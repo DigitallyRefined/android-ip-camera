@@ -1,6 +1,7 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -101,18 +102,18 @@ data class CropRegion(
         fun write(prefs: SharedPreferences, cameraId: String?, region: CropRegion?) {
             if (cameraId.isNullOrBlank()) return
             val phys = cameraId.substringAfter(':', cameraId)
-            val editor = prefs.edit()
-            if (region == null) {
-                editor.remove("$PREF_PREFIX$cameraId")
-                if (phys.isNotBlank() && phys != cameraId) editor.remove("$PREF_PREFIX$phys")
-            } else {
-                val formatted = region.format()
-                editor.putString("$PREF_PREFIX$cameraId", formatted)
-                if (phys.isNotBlank() && phys != cameraId) {
-                    editor.putString("$PREF_PREFIX$phys", formatted)
+            prefs.edit {
+                if (region == null) {
+                    remove("$PREF_PREFIX$cameraId")
+                    if (phys.isNotBlank() && phys != cameraId) remove("$PREF_PREFIX$phys")
+                } else {
+                    val formatted = region.format()
+                    putString("$PREF_PREFIX$cameraId", formatted)
+                    if (phys.isNotBlank() && phys != cameraId) {
+                        putString("$PREF_PREFIX$phys", formatted)
+                    }
                 }
             }
-            editor.apply()
         }
 
         /** Format an arbitrary numeric rectangle for storage, clamping and normalising the corners. */

@@ -7,6 +7,8 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.util.Log
 import androidx.camera.core.ImageProxy
+import androidx.core.content.edit
+import androidx.core.graphics.createBitmap
 import androidx.preference.PreferenceManager
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -231,9 +233,9 @@ class MjpegStreamingEncoder(
                 if (scale in 0.5f..2.0f) {
                     val camId = prefs.getString("camera_id", null)
                     camId?.let {
-                        prefs.edit().putString("stream_scale_$it", value).apply()
+                        prefs.edit { putString("stream_scale_$it", value) }
                         val phys = it.substringAfter(':', it)
-                        if (phys.isNotBlank() && phys != it) prefs.edit().putString("stream_scale_$phys", value).apply()
+                        if (phys.isNotBlank() && phys != it) prefs.edit { putString("stream_scale_$phys", value) }
                     }
                     true
                 } else {
@@ -243,7 +245,7 @@ class MjpegStreamingEncoder(
             "fps" -> {
                 val fps = value.toIntOrNull() ?: return false
                 if (fps in 1..60) {
-                    prefs.edit().putString("stream_fps", value).apply()
+                    prefs.edit { putString("stream_fps", value) }
                     true
                 } else {
                     false
@@ -252,7 +254,7 @@ class MjpegStreamingEncoder(
             "audio_gain" -> {
                 val gain = value.toFloatOrNull() ?: return false
                 if (gain in 0.5f..3.0f) {
-                    prefs.edit().putString("audio_gain", gain.toString()).apply()
+                    prefs.edit { putString("audio_gain", gain.toString()) }
                     true
                 } else {
                     false
@@ -262,9 +264,9 @@ class MjpegStreamingEncoder(
                 val contrast = value.toIntOrNull() ?: return false
                 val camId = prefs.getString("camera_id", null)
                 camId?.let {
-                    prefs.edit().putString("camera_contrast_$it", contrast.toString()).apply()
+                    prefs.edit { putString("camera_contrast_$it", contrast.toString()) }
                     val phys = it.substringAfter(':', it)
-                    if (phys.isNotBlank() && phys != it) prefs.edit().putString("camera_contrast_$phys", contrast.toString()).apply()
+                    if (phys.isNotBlank() && phys != it) prefs.edit { putString("camera_contrast_$phys", contrast.toString()) }
                 }
                 Log.i(TAG, "Remote Control: Contrast set to $contrast (software-based)")
                 true
@@ -273,9 +275,9 @@ class MjpegStreamingEncoder(
                 if (value in listOf("true", "false")) {
                     val camId = prefs.getString("camera_id", null)
                     camId?.let {
-                        prefs.edit().putString("mirror_$it", value).apply()
+                        prefs.edit { putString("mirror_$it", value) }
                         val phys = it.substringAfter(':', it)
-                        if (phys.isNotBlank() && phys != it) prefs.edit().putString("mirror_$phys", value).apply()
+                        if (phys.isNotBlank() && phys != it) prefs.edit { putString("mirror_$phys", value) }
                     }
                     true
                 } else {
@@ -300,6 +302,7 @@ class MjpegStreamingEncoder(
     }
 
     /** Called by [StreamingService] when Android reports low memory. */
+    @Suppress("DEPRECATION") // TRIM_MEMORY_RUNNING_CRITICAL still arrives on older devices (< API 34).
     fun onMemoryPressure(severe: Boolean) {
         invalidatePendingWrites()
         lastJpeg = null
@@ -399,7 +402,7 @@ class MjpegStreamingEncoder(
                         colorFilter = android.graphics.ColorMatrixColorFilter(contrastColorMatrix)
                     }
 
-                    val contrastedBitmap = Bitmap.createBitmap(
+                    val contrastedBitmap = createBitmap(
                         bitmap.width, bitmap.height, bitmap.config ?: Bitmap.Config.ARGB_8888
                     )
                     val canvas = android.graphics.Canvas(contrastedBitmap)

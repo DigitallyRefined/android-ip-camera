@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!--
+      bcpkix (bundled with BouncyCastle) contains a permissive trust manager used by its
+      own test helpers. The app never installs it as the platform trust manager, and the
+      warning points inside the dependency JAR rather than at our code.
+    -->
+    <issue id="TrustAllX509TrustManager">
+        <ignore regexp="bcpkix-jdk15on-.*\.jar" />
+    </issue>
+
+    <!--
+      AndroidX Lifecycle ships lint checks compiled against an older lint API, so the
+      current Android Gradle Plugin skips its two lifecycle-specific checks. This is a
+      library/toolchain mismatch, not a finding in this project; the rest of lint runs.
+    -->
+    <issue id="ObsoleteLintCustomCheck">
+        <ignore regexp=".*lifecycle-runtime.*lint\.jar" />
+    </issue>
+</lint>

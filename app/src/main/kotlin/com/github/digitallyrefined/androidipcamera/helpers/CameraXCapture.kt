@@ -5,6 +5,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -12,6 +13,7 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Surface
+import androidx.annotation.OptIn as AndroidXOptIn
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
@@ -119,7 +121,7 @@ class CameraXCapture(
         ?.substringAfter(':', "")
         ?.takeIf { it.isNotBlank() }
 
-    @OptIn(ExperimentalCamera2Interop::class)
+    @AndroidXOptIn(ExperimentalCamera2Interop::class)
     fun start() {
         val future = ProcessCameraProvider.getInstance(ctx)
         future.addListener({
@@ -143,7 +145,7 @@ class CameraXCapture(
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 val analysisInterop = Camera2Interop.Extender(aBuilder)
-                physicalCameraId?.let { analysisInterop.setPhysicalCameraId(it) }
+                analysisInterop.setPhysicalCameraIdIfSupported(physicalCameraId)
                 // Some legacy HALs (e.g. this phone's rear cam) stall the analysis stream unless an AE
                 // target FPS range is set. Use the WIDEST advertised range, not a fixed lock — AE stays
                 // fully auto (drops low for light in the dark, up to 30 in good light).
@@ -179,18 +181,18 @@ class CameraXCapture(
                 val imageCaptureBuilder = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .setTargetRotation(Surface.ROTATION_0)
-                physicalCameraId?.let { Camera2Interop.Extender(imageCaptureBuilder).setPhysicalCameraId(it) }
+                Camera2Interop.Extender(imageCaptureBuilder).setPhysicalCameraIdIfSupported(physicalCameraId)
                 imageCapture = imageCaptureBuilder.build()
                 previewSurfaceProvider?.let { pv ->
                     val previewBuilder = Preview.Builder().setResolutionSelector(sel)
                         .setTargetRotation(Surface.ROTATION_0)
-                    physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
+                    Camera2Interop.Extender(previewBuilder).setPhysicalCameraIdIfSupported(physicalCameraId)
                     previewUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
                 encoderSurfaceProvider?.let { pv ->
                     val previewBuilder = Preview.Builder().setResolutionSelector(sel)
                         .setTargetRotation(Surface.ROTATION_0)
-                    physicalCameraId?.let { Camera2Interop.Extender(previewBuilder).setPhysicalCameraId(it) }
+                    Camera2Interop.Extender(previewBuilder).setPhysicalCameraIdIfSupported(physicalCameraId)
                     encoderUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
                 boundSelector = logicalCameraId?.let { requestedId ->
@@ -210,6 +212,7 @@ class CameraXCapture(
     /** (Re)bind the streaming use cases on the main thread. ImageCapture is always co-bound so a still
      *  can snap directly from the already-bound use case — never a per-shot unbind/rebind cycle (which
      *  hangs the session configuration on some HALs). */
+    @AndroidXOptIn(ExperimentalCamera2Interop::class)
     private fun rebind() {
         if (released) return
         val p = provider ?: return
@@ -409,7 +412,7 @@ class CameraXCapture(
     }
     override fun setExposure(ev: Int) { exposureIndex = ev; try { camera?.cameraControl?.setExposureCompensationIndex(ev) } catch (_: Exception) {} }
     override fun setZoom(ratio: Float) { zoomRatio = ratio; applyZoomWithRetry(ratio) }
-    @OptIn(ExperimentalCamera2Interop::class)
+    @AndroidXOptIn(ExperimentalCamera2Interop::class)
     override fun triggerAutoFocus() {
         try {
             val cam = camera ?: return
@@ -429,7 +432,7 @@ class CameraXCapture(
      * in diopters (0f = infinity, 1f = the lens' minimum focus distance / nearest). A negative
      * value clears the override and restores continuous autofocus.
      */
-    @OptIn(ExperimentalCamera2Interop::class)
+    @AndroidXOptIn(ExperimentalCamera2Interop::class)
     override fun setManualFocus(distance: Float) {
         val cam = camera ?: run { manualFocus = distance.takeIf { it >= 0f }; return }
         try {
@@ -477,6 +480,19 @@ class CameraXCapture(
 
     companion object {
         private const val TAG = "CameraXCapture"
+
+        /**
+         * Physical camera IDs (logical:physical tokens) only exist from API 28, where
+         * [Camera2Interop.Extender.setPhysicalCameraId] becomes available too. Older devices
+         * never provide one, so skipping the call keeps the legacy path unchanged.
+         */
+        @AndroidXOptIn(ExperimentalCamera2Interop::class)
+        private fun Camera2Interop.Extender<*>.setPhysicalCameraIdIfSupported(id: String?) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                id?.let { setPhysicalCameraId(it) }
+            }
+        }
+
         /** Give a full-res takePicture this long before falling back to the analysis frame. */
         private const val CAPTURE_TIMEOUT_MS = 4_000L
         /** Analysis-frame fallback is only served if the cached frame is at most this old. */

@@ -8,6 +8,59 @@ on:
   workflow_dispatch:
 
 jobs:
+  checks:
+    name: Lint, tests and build warnings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          # Matches gradle/gradle-daemon-jvm.properties (toolchainVersion=21).
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Install SDK components
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+
+      - name: Install Rust and the Android targets
+        # rustup installs the channel, profile, and targets from rust-toolchain.toml.
+        run: cargo --version
+
+      - name: Route Maven Central through Google's mirror
+        run: |
+          # GitHub-hosted runners are rate-limited by Maven Central, which makes
+          # the build fail to resolve every artifact hosted there.
+          gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
+          mkdir -p "$gradle_home/init.d"
+          cp .github/gradle/maven-central-mirror.gradle "$gradle_home/init.d/"
+
+      - name: Run lint, unit tests and strict compiler checks
+        # -PstrictChecks promotes Kotlin compiler warnings, Android lint warnings
+        # and rustc warnings to errors. --warning-mode fail does the same for
+        # Gradle deprecation warnings. Unit tests fail the step on any failure.
+        run: |
+          ./gradlew clean :app:lintDebug :app:lintRelease test :app:assembleDebug \
+            -PstrictChecks \
+            -PskipSigning \
+            --no-daemon \
+            --max-workers=1 \
+            -Dorg.gradle.parallel=false \
+            --warning-mode fail
+
+      - name: Fail on any lint finding
+        # Lint's "information" severity does not fail the Gradle build, so check
+        # the XML reports as well and require them to be completely empty.
+        run: python3 .github/scripts/check-lint.py
+
   verify-reproducible:
     runs-on: ubuntu-latest
     steps:
@@ -43,22 +96,28 @@ jobs:
           cp .github/gradle/maven-central-mirror.gradle "$gradle_home/init.d/"
 
       - name: Build release APK (first)
+        # Strict checks run on both builds so a warning cannot slip through, and
+        # both builds use identical flags so the APK comparison stays meaningful.
         run: |
           ./gradlew clean test :app:assembleRelease \
+            -PstrictChecks \
             -PskipSigning \
             --no-daemon \
             --max-workers=1 \
-            -Dorg.gradle.parallel=false
+            -Dorg.gradle.parallel=false \
+            --warning-mode fail
           mkdir -p build/unsigned
           cp app/build/outputs/apk/release/*universal-release.apk build/unsigned/build1.apk
 
       - name: Clean and build release APK (second)
         run: |
           ./gradlew clean :app:assembleRelease \
+            -PstrictChecks \
             -PskipSigning \
             --no-daemon \
             --max-workers=1 \
-            -Dorg.gradle.parallel=false
+            -Dorg.gradle.parallel=false \
+            --warning-mode fail
           mkdir -p build/unsigned
           cp app/build/outputs/apk/release/*universal-release.apk build/unsigned/build2.apk
 

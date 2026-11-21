@@ -1,10 +1,12 @@
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
 }
 
 def skipSigning = project.hasProperty('skipSigning')
-def enableAbiSplits = project.properties.getOrDefault('enableAbiSplits', 'true').toBoolean()
+def enableAbiSplits = (findProperty('enableAbiSplits') ?: 'true').toBoolean()
+// Opt-in strictness for CI: turn compiler and lint warnings into build failures.
+// Local builds keep the default (warnings only) unless -PstrictChecks is passed.
+def strictChecks = project.hasProperty('strictChecks')
 
 def keystorePropertiesFile = rootProject.file("signing.properties")
 def keystoreProperties = new Properties()
@@ -13,16 +15,16 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace 'com.github.digitallyrefined.androidipcamera'
-    compileSdk 36
-    ndkVersion "27.2.12479018"
+    namespace = 'com.github.digitallyrefined.androidipcamera'
+    compileSdk = 36
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
-        applicationId "com.github.digitallyrefined.androidipcamera"
-        minSdk 24
-        targetSdk 36
-        versionCode 200
-        versionName "0.20.0"
+        applicationId = "com.github.digitallyrefined.androidipcamera"
+        minSdk = 24
+        targetSdk = 36
+        versionCode = 200
+        versionName = "0.20.0"
 
         // https://f-droid.org/docs/Reproducible_Builds/#pngs-generated-from-vector-drawables
         vectorDrawables.generatedDensities = []
@@ -37,9 +39,14 @@ android {
         }
     }
 
-    // https://f-droid.org/docs/Reproducible_Builds/#png-crushcrunch
-    aaptOptions {
-        cruncherEnabled false
+    // ABI splits: one APK per supported architecture plus a universal APK.
+    splits {
+        abi {
+            enable = enableAbiSplits
+            reset()
+            include("armeabi-v7a", "arm64-v8a")
+            universalApk = true
+        }
     }
 
     signingConfigs {
@@ -65,27 +72,22 @@ android {
 
     buildTypes {
         debug {
-            minifyEnabled false
+            minifyEnabled = false
+            // https://f-droid.org/docs/Reproducible_Builds/#png-crushcrunch
+            crunchPngs = false
         }
         release {
             if (!skipSigning) {
-                signingConfig signingConfigs.release
+                signingConfig = signingConfigs.release
             }
-            minifyEnabled true
-            crunchPngs false
+            minifyEnabled = true
+            // https://f-droid.org/docs/Reproducible_Builds/#png-crushcrunch
+            crunchPngs = false
             // https://f-droid.org/docs/Reproducible_Builds/#vcs-info
             vcsInfo {
-                include false
+                include = false
             }
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            splits {
-                abi {
-                    enable enableAbiSplits
-                    reset()
-                    include "armeabi-v7a", "arm64-v8a"
-                    universalApk true
-                }
-            }
         }
     }
 
@@ -97,16 +99,19 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
-
-    kotlinOptions {
-        jvmTarget = '1.8'
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     buildFeatures {
-        viewBinding true
+        viewBinding = true
+    }
+
+    lint {
+        // -PstrictChecks (used by CI) fails the build on lint warnings, not just
+        // errors, so a new warning cannot slip into main unnoticed.
+        abortOnError = true
+        warningsAsErrors = strictChecks
     }
 
     dependenciesInfo {
@@ -119,15 +124,22 @@ android {
             useLegacyPackaging = true
         }
     }
+}
 
-    applicationVariants.all { variant ->
-        variant.outputs.all { output ->
-            def versionName = variant.versionName
-            def abi = output.getFilter(com.android.build.OutputFile.ABI) ?: "universal"
-            def buildType = variant.buildType.name
+kotlin {
+    compilerOptions {
+        // -PstrictChecks (used by CI) promotes every Kotlin compiler warning to
+        // an error, matching the lint and Rust settings below.
+        allWarningsAsErrors.set(strictChecks)
+    }
+}
 
-            def newApkName = "${project.rootProject.name}-${versionName}-${abi}-${buildType}.apk"
-            outputFileName = newApkName
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.outputs.each { output ->
+            def abi = output.filters.find { it.filterType.name() == 'ABI' }?.identifier ?: "universal"
+            def newApkName = "${rootProject.name}-${output.versionName.get()}-${abi}-${variant.buildType}.apk"
+            output.outputFileName.set(newApkName)
         }
     }
 }
@@ -217,6 +229,9 @@ rustAbis.each { abi ->
             "--remap-path-prefix=${cargoHome}=/cargo",
             "--remap-path-prefix=${rootProject.projectDir.absolutePath}=/build/${rootProject.name}",
         ]
+        // -PstrictChecks (used by CI) makes rustc warnings fatal. Cargo caps
+        // lints for registry dependencies, so only this crate is affected.
+        def rustLintFlags = strictChecks ? ["-D", "warnings"] : []
         if (rustTarget == "aarch64-linux-android") {
             // CARGO_ENCODED_RUSTFLAGS replaces the target rustflags from
             // .cargo/config.toml, so keep the 16 KB page-size link flag.
@@ -264,6 +279,7 @@ rustAbis.each { abi ->
             def encodedRustFlags = System.getenv("CARGO_ENCODED_RUSTFLAGS")
             def allRustFlags = encodedRustFlags ? encodedRustFlags.split("\u001f", -1).toList() : []
             allRustFlags.addAll(rustRemapFlags)
+            allRustFlags.addAll(rustLintFlags)
             environment "CARGO_ENCODED_RUSTFLAGS", allRustFlags.join("\u001f")
 
             def rustBin = resolveRustBinDir()

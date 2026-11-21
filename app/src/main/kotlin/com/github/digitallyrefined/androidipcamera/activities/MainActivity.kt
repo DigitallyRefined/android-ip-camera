@@ -9,7 +9,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -23,6 +22,8 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -193,7 +194,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<ImageButton>(R.id.helpButton).setOnClickListener {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://ip-cam.app")))
+            startActivity(Intent(Intent.ACTION_VIEW, "https://ip-cam.app".toUri()))
         }
 
         findViewById<ImageButton>(R.id.exitButton).setOnClickListener {
@@ -289,7 +290,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             ""
         }
-        ipAddressText.text = "$protocol://$ipAddress:$port$rtspUrls"
+        ipAddressText.text = getString(R.string.stream_urls, protocol, ipAddress, port, rtspUrls)
     }
 
     private fun startOpenTunnelPolling() {
@@ -399,9 +400,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        PreferenceManager.getDefaultSharedPreferences(this).edit()
-            .putBoolean(OpenTunnelConfig.PREF_TAPPED, true)
-            .apply()
+        PreferenceManager.getDefaultSharedPreferences(this).edit {
+            putBoolean(OpenTunnelConfig.PREF_TAPPED, true)
+        }
 
         val status = if (isBound) {
             streamingService?.openTunnelStatus() ?: OpenTunnelController.status(this)

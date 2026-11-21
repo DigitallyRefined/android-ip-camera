@@ -1,5 +1,6 @@
 package com.github.digitallyrefined.androidipcamera.opentunnel
 
+import android.annotation.SuppressLint
 import android.util.Log
 import java.io.IOException
 import java.io.InputStream
@@ -40,6 +41,9 @@ class LocalTlsBridge(
 
     private val protocol: String = if (tlsVersion == "1.2") "TLSv1.2" else "TLSv1.3"
 
+    // Deliberately trusts any certificate: this client only ever connects to the camera's own
+    // server on 127.0.0.1, whose self-signed certificate is generated on the device.
+    @SuppressLint("CustomX509TrustManager")
     private val trustAll = object : X509TrustManager {
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
