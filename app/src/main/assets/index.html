@@ -700,7 +700,9 @@
               </select>
               <div class="hint" style="margin:0 0 14px; font-size:12px; color:#ccc">
                 CBR limits bandwidth spikes but can lower quality in complex scenes. Falls back
-                to VBR on devices whose encoder does not support CBR.
+                to VBR on devices whose encoder does not support CBR. Android 12+ applies a minimum
+                quality floor in VBR, so a low target may produce a higher average bitrate; choose
+                CBR when you need the stream to stay close to the target.
               </div>
 
               <label for="streamKeyframeInterval">Keyframe Interval</label>
@@ -1646,6 +1648,7 @@
                   frameQueue.push({ ts: performance.now(), bmp: bitmap });
                   if (frameQueue.length > 180)
                     frameQueue.shift();
+                  refreshStreamStatus();
                 }
                 )
                 .catch(() => { });
@@ -1930,7 +1933,7 @@
           }
           if (!configured) {
             lastSpsKey = spsKey;
-            try { decoder.configure({ codec: 'avc1.' + hex(nal[1]) + hex(nal[2]) + hex(nal[3]), optimizeForLatency: true }); configured = true; }
+            try { decoder.configure({ codec: 'avc1.' + hex(nal[1]) + hex(nal[2]) + hex(nal[3]), optimizeForLatency: true }); configured = true; refreshStreamStatus(); }
             catch (e) { console.error('configure:', e); }
           }
         }
@@ -2349,18 +2352,11 @@
       }
     }
 
-    function applyStreamSettings(settings) {
+    // Server-computed stream status. Kept separate from the controls so a periodic poll can refresh
+    // the effective size (which can change once the camera negotiates a size) without reapplying
+    // settings over what the user is editing.
+    function updateServerStreamInfo(settings) {
       if (!settings) return;
-      applySubstreamSettings(settings);
-      if (settings.cameraId) {
-        currentCamera = settings.cameraId;
-        updateCameraSelectValue();
-      }
-      // Reconcile torch state with the server: the page starts blind ('off'), but the service may
-      // have the torch lit (restored from prefs on its last camera start).
-      if (settings.deviceHasFlash !== undefined) deviceHasFlash = !!settings.deviceHasFlash;
-      if (settings.torch === 'on' || settings.torch === 'off') setTorchState(settings.torch);
-      if (settings.streamRes) desiredResolution = settings.streamRes;
       if (settings.effectiveResolution) {
         serverStreamInfo.effectiveResolution = String(settings.effectiveResolution);
       }
@@ -2373,6 +2369,21 @@
       if (settings.fps != null) {
         serverStreamInfo.fps = parseFloat(settings.fps) || serverStreamInfo.fps;
       }
+    }
+
+    function applyStreamSettings(settings) {
+      if (!settings) return;
+      applySubstreamSettings(settings);
+      if (settings.cameraId) {
+        currentCamera = settings.cameraId;
+        updateCameraSelectValue();
+      }
+      // Reconcile torch state with the server: the page starts blind ('off'), but the service may
+      // have the torch lit (restored from prefs on its last camera start).
+      if (settings.deviceHasFlash !== undefined) deviceHasFlash = !!settings.deviceHasFlash;
+      if (settings.torch === 'on' || settings.torch === 'off') setTorchState(settings.torch);
+      if (settings.streamRes) desiredResolution = settings.streamRes;
+      updateServerStreamInfo(settings);
       // Set the frame rate before rebuilding the resolution options: MJPEG estimates depend on it.
       ensureFpsOption(settings.fps);
       if (settings.rotate != null) {
@@ -2509,6 +2520,17 @@
       }
     }
 
+    // The first decoded frame means the encoder/capture path is live, so its negotiated size is now
+    // known. Refresh once (coalesced) instead of showing the requested size until the next poll.
+    let streamStatusRefreshTimer = null;
+    function refreshStreamStatus() {
+      if (streamStatusRefreshTimer) return;
+      streamStatusRefreshTimer = setTimeout(() => {
+        streamStatusRefreshTimer = null;
+        loadDeviceInfo(false);
+      }, 750);
+    }
+
     function loadDeviceInfo(applySettings) {
       return fetch('/info.json')
         .then(res => res.json())
@@ -2517,6 +2539,7 @@
           // Visibility of the Substream section follows the RTSP setting even on periodic polls.
           applySubstreamSettings(data.settings);
           if (applySettings) applyStreamSettings(data.settings);
+          else updateServerStreamInfo(data.settings);
           renderCameraControls();
           // If server provided per-camera lens settings for the selected camera,
           // apply them so UI controls (zoom/exposure/focus/rotate/scale/contrast)

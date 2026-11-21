@@ -240,7 +240,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Query Parameter:** `?camera=<id|front|back|toggle>` to query a specific camera sensor.
     * *Example:* `https://[ip_address]:[port]/video/snapshot?camera=back`
 * **Device Info and Capabilities JSON (`/info.json`)**
-  * **Usage:** Query available camera sensors, their supported resolutions, device battery percentage, Wi-Fi signal strength, individual camera lens settings and the current main-stream encoder settings (including `streamDenoise`).
+  * **Usage:** Query available camera sensors, their supported resolutions (for the output path that lens actually uses), device battery percentage, Wi-Fi signal strength, individual camera lens settings and the current main-stream encoder settings, including the negotiated `effectiveResolution` and `streamDenoise`.
   * **Format:** `application/json`
 * **Start Recording (`/record/start`, POST)**
   * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Manual recordings are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS-manual.mp4` inside the recordings folder. Recordings started by **Motion clips** use the same folder layout with a `-motion.mp4` suffix, and **Continuous recording** segments use `-continuous.mp4`.
@@ -305,7 +305,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `resolution=<low|medium|high|auto|max|WxH>`: Change capture/stream resolution. Use `low|medium|high` for presets; `auto`/`max` or explicit `WxH` may be used to control the negotiated stream size.
   * `fps=<1..60>`: Main stream frame rate.
   * `stream_bitrate=<auto|500..8000>`: Main stream target bitrate in kbps. `auto` scales ~0.2 bits per pixel per frame with resolution and frame rate.
-  * `stream_bitrate_mode=<vbr|cbr>`: Main stream rate control mode (falls back to VBR when unsupported).
+  * `stream_bitrate_mode=<vbr|cbr>`: Main stream rate control mode (falls back to VBR when unsupported). Android 12+ enforces a minimum quality floor in VBR, so a low `stream_bitrate` can still produce a higher average bitrate; CBR bypasses that floor and stays closer to the target.
   * `stream_keyframe_interval=<1..120>`: Seconds between main stream keyframes.
   * `stream_denoise=<0..100>`: **Noise Reduction** slider. Spatial noise reduction runs on the phone's GPU before H.264 encoding; `0` disables it and each step widens the 5×5 filter radius up to `100`. It applies live only to the back camera's GPU H.264 path, so MJPEG, front-camera and software YUV streams are not filtered. When the web panel's preview is MJPEG, switch to H.264 to see the effect live; RTSP and recordings still use it. The current value is reported as `streamDenoise` in `/info.json`.
   * `zoom=<value>`: Adjusts digital zoom (e.g., `1.0`, `2.5`).

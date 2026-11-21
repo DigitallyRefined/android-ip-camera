@@ -55,6 +55,38 @@ class StreamSizingTest {
     }
 
     @Test
+    fun `negotiateSize keeps a supported request and otherwise picks the closest lower same-aspect size`() {
+        val supported = listOf(1920 to 1080, 1280 to 720, 640 to 480)
+        assertEquals(1920 to 1080, StreamSizing.negotiateSize(1920, 1080, supported))
+
+        // A front camera listing 1080p for preview but only exposing 720p on its YUV path.
+        val yuvOnly = listOf(1280 to 720, 960 to 540, 640 to 480)
+        assertEquals(1280 to 720, StreamSizing.negotiateSize(1920, 1080, yuvOnly))
+    }
+
+    @Test
+    fun `negotiateSize prefers the closest larger size before falling back lower`() {
+        assertEquals(
+            2560 to 1440,
+            StreamSizing.negotiateSize(1920, 1080, listOf(2560 to 1440, 1280 to 720)),
+        )
+        assertEquals(
+            1920 to 1080,
+            StreamSizing.negotiateSize(1600, 900, listOf(1920 to 1080, 1280 to 720)),
+        )
+        // No same-aspect candidates: fall back to the closest by area.
+        assertEquals(
+            1280 to 960,
+            StreamSizing.negotiateSize(1920, 1080, listOf(1280 to 960, 640 to 480)),
+        )
+    }
+
+    @Test
+    fun `negotiateSize returns the request when the path reports no sizes`() {
+        assertEquals(1920 to 1080, StreamSizing.negotiateSize(1920, 1080, emptyList()))
+    }
+
+    @Test
     fun `estimateKbps follows the encoder formula at 30fps`() {
         assertEquals(2880, StreamSizing.estimateKbps(800, 600, 30, caps))
         assertEquals(5529, StreamSizing.estimateKbps(1280, 720, 30, caps))

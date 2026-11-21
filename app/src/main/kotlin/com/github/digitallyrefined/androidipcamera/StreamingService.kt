@@ -697,6 +697,7 @@ class StreamingService : LifecycleService() {
                 onRecordStart = { startRecording() },
                 onRecordStop = { stopRecording() },
                 onRecordStatus = { getRecordingStatus() },
+                actualStreamSize = { actualStreamSize()?.let { it.width to it.height } },
                 // /control/stop must also drop RTSP viewers, which the HTTP server does not own.
                 onStreamingEnabledChanged = { enabled -> if (!enabled) rtspServer?.disconnectAll() }
             )
@@ -794,7 +795,9 @@ class StreamingService : LifecycleService() {
                 )
             },
             stream = {
-                val size = desiredSize()
+                // While streaming, report the negotiated frame size; before a viewer connects the
+                // camera is idle, so fall back to the size the active capture path will request.
+                val size = actualStreamSize() ?: desiredSize()
                 val fps = (prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30).coerceIn(1, 60)
                 val enc = StreamEncoding.encoderConfig(prefs, size.width, size.height, fps)
                 val scheme = if (TlsHelper.isEnabled(this)) "rtsps" else "rtsp"
@@ -1096,7 +1099,53 @@ class StreamingService : LifecycleService() {
         // Keep the selected aspect ratio when the encoder cannot take the full size; capping
         // width and height independently would turn e.g. 1080x1920 into a square frame.
         val (w, h) = StreamSizing.effectiveSize(streamRes, quality, caps)
-        return Size(w, h)
+        // A lens can list a size for one output path but not the one the stream actually uses.
+        // Negotiate against the active path so e.g. a front camera that only exposes YUV up to
+        // 720p does not silently run at 720p while the UI claims 1080p.
+        val characteristics = selectedCameraCharacteristics()
+        val path = CameraStreamSizing.outputPath(
+            front = frontFacing,
+            hardwareLevel = characteristics?.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL),
+            captureApi = prefs.getString("capture_api", "auto"),
+        )
+        val supported = characteristics?.let { CameraStreamSizing.outputSizes(it, path) }
+            ?.filter { it.first <= caps.maxW && it.second <= caps.maxH }
+        val (sw, sh) = if (supported != null) StreamSizing.negotiateSize(w, h, supported) else w to h
+        return Size(sw, sh)
+    }
+
+    /** The characteristics of the camera the stream is currently configured for, if it can be resolved. */
+    private fun selectedCameraCharacteristics(): CameraCharacteristics? = try {
+        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val want = if (frontFacing) CameraCharacteristics.LENS_FACING_FRONT
+        else CameraCharacteristics.LENS_FACING_BACK
+        val id = selectedCameraId
+            ?.let { parseCameraToken(it).logicalId }
+            ?.takeIf { it in cm.cameraIdList }
+            ?: cm.cameraIdList.firstOrNull { cameraId ->
+                try {
+                    cm.getCameraCharacteristics(cameraId).get(CameraCharacteristics.LENS_FACING) == want
+                } catch (_: Exception) {
+                    false
+                }
+            }
+            ?: cm.cameraIdList.firstOrNull()
+        id?.let { cm.getCameraCharacteristics(it) }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * The frame size the running encoder is actually producing, or null while the camera is idle.
+     * Used by `/info.json` and ONVIF so status reflects the negotiated stream rather than only the
+     * resolution that was requested.
+     */
+    private fun actualStreamSize(): Size? {
+        val encoder = h264StreamingEncoder?.h264HardwareEncoder
+        if (encoder != null && !encoder.isReleased) return Size(encoder.width, encoder.height)
+        val runningBackend = backend
+        if (!captureRunning || runningBackend == null) return null
+        return Size(runningBackend.width, runningBackend.height)
     }
 
     private suspend fun startCameraIfNeeded() {

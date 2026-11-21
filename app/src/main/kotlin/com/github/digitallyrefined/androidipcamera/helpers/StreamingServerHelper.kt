@@ -3,7 +3,6 @@ package com.github.digitallyrefined.androidipcamera.helpers
 import android.content.Context
 import android.Manifest
 import android.content.pm.PackageManager
-import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioAttributes
@@ -60,6 +59,8 @@ class StreamingServerHelper(
     private val onRecordStart: () -> Triple<Boolean, String, String> = { Triple(false, "503 Service Unavailable", """{"error":"unavailable"}""") },
     private val onRecordStop: () -> Triple<Boolean, String, String> = { Triple(false, "409 Conflict", """{"error":"not_recording"}""") },
     private val onRecordStatus: () -> String = { """{"recording":false}""" },
+    /** Frame size the running H.264 encoder is producing, or null while the camera is idle. */
+    private val actualStreamSize: () -> Pair<Int, Int>? = { null },
     private val onStreamingEnabledChanged: (Boolean) -> Unit = {}
 ) {
     data class Client(
@@ -1734,8 +1735,12 @@ class StreamingServerHelper(
             prefs.getString(StreamEncoding.PREF_BITRATE_MODE, null)
         )
         // Same sizing/clamping path the encoder uses, so the UI's estimate matches the stream.
+        // When the camera is live, prefer the encoder's real frame size: a lens can negotiate a
+        // smaller size than requested (notably a front camera whose YUV path tops out below its
+        // preview sizes), and the status must not keep advertising the request.
         val encCaps = H264HardwareEncoder.caps()
-        val (effectiveW, effectiveH) = StreamSizing.effectiveSize(streamRes, quality, encCaps)
+        val (effectiveW, effectiveH) = actualStreamSize()
+            ?: effectiveStreamSize(cameraId, streamRes, quality, encCaps)
         val h264Bps = StreamSizing.targetBps(effectiveW, effectiveH, fpsInt, manualKbps, encCaps)
         // MJPEG applies the per-camera Scale post-processing before compressing, so its estimate
         // uses the scaled output size.
@@ -1790,6 +1795,48 @@ class StreamingServerHelper(
                 ),
             ),
         )
+    }
+
+    /**
+     * The size the selected lens will actually capture before a stream starts: the stored size
+     * fitted to encoder caps, then negotiated against the output path the lens uses. This is the
+     * idle counterpart of [actualStreamSize], and keeps `/info.json` honest when a front camera's
+     * YUV path cannot reach the 1080p listed for its preview surface.
+     */
+    private fun effectiveStreamSize(
+        cameraId: String?,
+        streamRes: String,
+        quality: String,
+        caps: H264HardwareEncoder.Companion.Caps,
+    ): Pair<Int, Int> {
+        val (w, h) = StreamSizing.effectiveSize(streamRes, quality, caps)
+        val source = cameraSourceFor(cameraId) ?: return w to h
+        val ch = source.sizesCharacteristics
+        val hardwareLevel = ch.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+            ?: source.characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val path = CameraStreamSizing.outputPath(
+            front = source.facing == "front",
+            hardwareLevel = hardwareLevel,
+            captureApi = prefs.getString("capture_api", "auto"),
+        )
+        val supported = CameraStreamSizing.outputSizes(ch, path)
+            ?.filter { it.first <= caps.maxW && it.second <= caps.maxH }
+            ?: return w to h
+        return StreamSizing.negotiateSize(w, h, supported)
+    }
+
+    /** The camera list entry matching a stored id/token, or null when it cannot be resolved. */
+    private fun cameraSourceFor(cameraId: String?): CameraInfoSource? {
+        if (cameraId.isNullOrBlank()) return null
+        return try {
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            cameraInfoSources(cm).firstOrNull {
+                it.id == cameraId || it.logicalId == cameraId || it.physicalId == cameraId
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /** Per-camera MJPEG output scale (the Scale post-processing control); 1.0 when unset. */
@@ -1875,6 +1922,7 @@ class StreamingServerHelper(
             val streamFps = (prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30).coerceAtLeast(1)
             val mjpegQuality = DeviceMemoryHelper.mjpegJpegQuality(context)
             val storedCamId = prefs.getString("camera_id", null)
+            val captureApi = prefs.getString("capture_api", "auto")
             val savedStreamSize = Regex("^(\\d+)x(\\d+)$")
                 .find(prefs.getString("stream_res", "auto") ?: "auto")
                 ?.let { m ->
@@ -1886,18 +1934,30 @@ class StreamingServerHelper(
             sources.map { source ->
                 val ch = source.sizesCharacteristics
                 val label = cameraLabel(source)
+                val hardwareLevel = ch.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+                    ?: source.characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+                val path = CameraStreamSizing.outputPath(
+                    front = source.facing == "front",
+                    hardwareLevel = hardwareLevel,
+                    captureApi = captureApi,
+                )
                 val set = LinkedHashSet<Pair<Int, Int>>()
-                try {
-                    val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                    map?.getOutputSizes(SurfaceTexture::class.java)?.forEach { set.add(it.width to it.height) }
-                    map?.getOutputSizes(android.media.MediaCodec::class.java)?.forEach { set.add(it.width to it.height) }
-                } catch (_: Exception) {}
-                if (idle) {  // Camera1 preview sizes expose 16:9 that LEGACY Camera2 omits
-                    try {
-                        @Suppress("DEPRECATION") val c1 = android.hardware.Camera.open(source.physicalId?.toIntOrNull() ?: source.logicalId.toIntOrNull() ?: source.fallbackIndex)
-                        @Suppress("DEPRECATION") c1.parameters.supportedPreviewSizes?.forEach { set.add(it.width to it.height) }
-                        @Suppress("DEPRECATION") c1.release()
-                    } catch (_: Exception) {}
+                when (path) {
+                    CameraOutputStream.SURFACE, CameraOutputStream.YUV ->
+                        CameraStreamSizing.outputSizes(ch, path)?.let { set.addAll(it) }
+                    CameraOutputStream.CAMERA1 -> {
+                        // Camera2's surface list is a useful fallback while the camera is busy and
+                        // the legacy API cannot be opened to enumerate its preview sizes.
+                        CameraStreamSizing.outputSizes(ch, CameraOutputStream.SURFACE)
+                            ?.let { set.addAll(it) }
+                        if (idle) {  // Camera1 preview sizes expose 16:9 that LEGACY Camera2 omits
+                            try {
+                                @Suppress("DEPRECATION") val c1 = android.hardware.Camera.open(source.physicalId?.toIntOrNull() ?: source.logicalId.toIntOrNull() ?: source.fallbackIndex)
+                                @Suppress("DEPRECATION") c1.parameters.supportedPreviewSizes?.forEach { set.add(it.width to it.height) }
+                                @Suppress("DEPRECATION") c1.release()
+                            } catch (_: Exception) {}
+                        }
+                    }
                 }
                 if (savedStreamSize != null) {
                     val savedApplies = storedCamId == null ||
@@ -1905,7 +1965,10 @@ class StreamingServerHelper(
                         storedCamId == source.logicalId ||
                         storedCamId == source.physicalId ||
                         storedCamId == source.facing
-                    if (savedApplies) set.add(savedStreamSize)
+                    // Only advertise the stored size if this lens can really deliver it. The web UI
+                    // separately keeps an unavailable saved value selectable, so dropping it here
+                    // does not rewrite the preference to Auto.
+                    if (savedApplies && (set.isEmpty() || savedStreamSize in set)) set.add(savedStreamSize)
                 }
                 val scale = streamScaleFor(source.id)
                 val sizes = set

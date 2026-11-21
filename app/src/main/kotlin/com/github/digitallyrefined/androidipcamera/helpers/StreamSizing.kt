@@ -1,5 +1,6 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
@@ -41,6 +42,32 @@ object StreamSizing {
         val h = match?.groupValues?.get(2)?.toIntOrNull() ?: 1080
         return fitToCaps(w, h, caps)
     }
+
+    /**
+     * The size a camera will actually use for a requested [w]×[h] frame, given the sizes the active
+     * capture path supports. Prefers an exact match, then the closest larger size in the same
+     * aspect ratio, then the closest smaller one — the same "closest higher, then lower" rule
+     * CameraX applies. Returns the request unchanged when the path reports no sizes.
+     */
+    fun negotiateSize(w: Int, h: Int, supported: Collection<Pair<Int, Int>>): Pair<Int, Int> {
+        if (supported.isEmpty()) return w to h
+        if (supported.any { it.first == w && it.second == h }) return w to h
+
+        val aspect = w.toDouble() / h
+        val sameAspect = supported.filter { (sw, sh) ->
+            sh > 0 && abs(sw.toDouble() / sh - aspect) <= ASPECT_TOLERANCE
+        }
+        val candidates = sameAspect.ifEmpty { supported }
+        val wantedArea = w.toLong() * h
+        return candidates
+            .filter { it.first.toLong() * it.second >= wantedArea }
+            .minByOrNull { it.first.toLong() * it.second }
+            ?: candidates.maxByOrNull { it.first.toLong() * it.second }
+            ?: (w to h)
+    }
+
+    /** Relative tolerance for treating two frame sizes as the same shape (16:9, 4:3, …). */
+    private const val ASPECT_TOLERANCE = 0.02
 
     /**
      * Auto target bitrate in bits per second: ~0.2 bits per pixel per frame at the configured
