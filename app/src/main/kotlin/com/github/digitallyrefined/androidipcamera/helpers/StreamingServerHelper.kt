@@ -1448,7 +1448,22 @@ class StreamingServerHelper(
 
     private data class InfoSize(val w: Int, val h: Int, val bitrateKbps: Bitrates)
 
-    private data class InfoCamera(val id: String, val facing: String, val label: String, val sizes: List<InfoSize>, val hasFlash: Boolean, val sensorOrientation: Int, val minZoom: Float?, val maxZoom: Float?)
+    private data class InfoCamera(
+        val id: String,
+        val facing: String,
+        val label: String,
+        val sizes: List<InfoSize>,
+        val hasFlash: Boolean,
+        val sensorOrientation: Int,
+        val minZoom: Float?,
+        val maxZoom: Float?,
+        val nightMode: Boolean,
+        val nightManual: Boolean,
+        val nightExposureMinMs: Long?,
+        val nightExposureMaxMs: Long?,
+        val nightIsoMin: Int?,
+        val nightIsoMax: Int?,
+    )
 
     private data class CameraInfoSource(
         val id: String,
@@ -1493,6 +1508,18 @@ class StreamingServerHelper(
         val effectiveResolution: String,
         /** Estimated H.264 and MJPEG bitrates for [effectiveResolution], in kbps. */
         val streamBitrateKbps: Bitrates,
+        /** User preference: the stream currently comes from night-mode stills. */
+        val nightMode: Boolean,
+        /** Whether the selected camera has any usable night still pipeline. */
+        val nightModeSupported: Boolean,
+        /** Manual night exposure support and limits for the selected camera. */
+        val nightManualSupported: Boolean,
+        val nightExposureMinMs: Long?,
+        val nightExposureMaxMs: Long?,
+        val nightExposureMs: Long?,
+        val nightIsoMin: Int?,
+        val nightIsoMax: Int?,
+        val nightIso: Int?,
     )
 
     private data class DeviceInfo(
@@ -1511,6 +1538,14 @@ class StreamingServerHelper(
                         put("facing", camera.facing)
                         put("label", camera.label)
                         put("hasFlash", camera.hasFlash)
+                        put("nightMode", JSONObject().apply {
+                            put("available", camera.nightMode)
+                            put("manual", camera.nightManual)
+                            put("exposureMinMs", camera.nightExposureMinMs ?: JSONObject.NULL)
+                            put("exposureMaxMs", camera.nightExposureMaxMs ?: JSONObject.NULL)
+                            put("isoMin", camera.nightIsoMin ?: JSONObject.NULL)
+                            put("isoMax", camera.nightIsoMax ?: JSONObject.NULL)
+                        })
                         put("sensorOrientation", camera.sensorOrientation)
                         try {
                             put("zoom", JSONObject().apply {
@@ -1579,6 +1614,17 @@ class StreamingServerHelper(
                 put("streamKeyframeInterval", settings.streamKeyframeInterval)
                 put("streamDenoise", settings.streamDenoise)
                 put("effectiveResolution", settings.effectiveResolution)
+                put("nightMode", JSONObject().apply {
+                    put("enabled", settings.nightMode)
+                    put("available", settings.nightModeSupported)
+                    put("manual", settings.nightManualSupported)
+                    put("exposureMinMs", settings.nightExposureMinMs ?: JSONObject.NULL)
+                    put("exposureMaxMs", settings.nightExposureMaxMs ?: JSONObject.NULL)
+                    put("exposureMs", settings.nightExposureMs ?: JSONObject.NULL)
+                    put("isoMin", settings.nightIsoMin ?: JSONObject.NULL)
+                    put("isoMax", settings.nightIsoMax ?: JSONObject.NULL)
+                    put("iso", settings.nightIso ?: JSONObject.NULL)
+                })
                 put("streamBitrateKbps", JSONObject().apply {
                     put("h264", settings.streamBitrateKbps.h264)
                     put("mjpeg", settings.streamBitrateKbps.mjpeg)
@@ -1749,6 +1795,7 @@ class StreamingServerHelper(
         val scale = streamScaleFor(cameraId)
         val mjpegW = Math.round(effectiveW * scale).coerceAtLeast(1)
         val mjpegH = Math.round(effectiveH * scale).coerceAtLeast(1)
+        val nightManual = NightMode.manualExposure(context, cameraId)
         return StreamSettings(
             cameraId = cameraId,
             resolution = quality,
@@ -1796,6 +1843,15 @@ class StreamingServerHelper(
                     DeviceMemoryHelper.mjpegJpegQuality(context),
                 ),
             ),
+            nightMode = NightMode.isEnabled(context),
+            nightModeSupported = NightMode.supports(context, cameraId),
+            nightManualSupported = nightManual != null,
+            nightExposureMinMs = nightManual?.minExposureMs,
+            nightExposureMaxMs = nightManual?.maxExposureMs,
+            nightExposureMs = nightManual?.let { NightMode.currentExposureMs(context, cameraId, it) },
+            nightIsoMin = nightManual?.minIso,
+            nightIsoMax = nightManual?.maxIso,
+            nightIso = nightManual?.let { NightMode.currentIso(context, cameraId, it) },
         )
     }
 
@@ -1994,6 +2050,16 @@ class StreamingServerHelper(
                 // Some devices report flash on logical camera, others on physical
                 val hasFlash = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true ||
                     source.characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                // Night mode can be exposed through the OEM Camera Extension, a Camera2 scene mode,
+                // or (newer devices) the low-light AE boost mode. Check every path.
+                val nightMode = NightMode.hasNightExtension(cm, source.logicalId) ||
+                    NightMode.sceneModeSupported(ch) ||
+                    NightMode.lowLightBoostSupported(ch) ||
+                    NightMode.sceneModeSupported(source.characteristics) ||
+                    NightMode.lowLightBoostSupported(source.characteristics) ||
+                    NightMode.manualExposure(ch) != null ||
+                    NightMode.manualExposure(source.characteristics) != null
+                val nightManual = NightMode.manualExposure(cm, source.id)
                 val sensorOrientation = (ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
                     ?: source.characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)) ?: 0
                 // Gather zoom-related characteristics and compute fallbacks
@@ -2070,7 +2136,12 @@ class StreamingServerHelper(
 
                     Pair(roundedMin, roundedMax)
                 } catch (_: Exception) { Pair(null, null) }
-                InfoCamera(source.id, source.facing, label, sizes, hasFlash, sensorOrientation, minZoom, maxZoom)
+                InfoCamera(
+                    source.id, source.facing, label, sizes, hasFlash, sensorOrientation,
+                    minZoom, maxZoom, nightMode, nightManual != null,
+                    nightManual?.minExposureMs, nightManual?.maxExposureMs,
+                    nightManual?.minIso, nightManual?.maxIso,
+                )
             }
         } catch (_: Throwable) {
             emptyList()

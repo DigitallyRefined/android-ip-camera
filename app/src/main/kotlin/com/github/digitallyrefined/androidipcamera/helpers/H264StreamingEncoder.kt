@@ -1,6 +1,10 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import androidx.camera.core.ImageProxy
@@ -84,21 +88,7 @@ class H264StreamingEncoder(
             if (encMutable == null || encMutable.width != outW || encMutable.height != outH) {
                 invalidatePendingWrites()
                 encMutable?.stop()
-                val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
-                val fpsCoerced = fps.coerceIn(1, 60)
-                val encConfig = StreamEncoding.encoderConfig(prefs, outW, outH, fpsCoerced)
-                encMutable = H264HardwareEncoder(
-                    outW,
-                    outH,
-                    fpsCoerced,
-                    encConfig.bitrateBps,
-                    false,
-                    encConfig.keyframeIntervalSec,
-                    encConfig.bitrateMode,
-                ) { d, k, pts -> broadcastH264(d, k, pts) }
-                h264HardwareEncoder = encMutable
-                encMutable.requestKeyFrame()
-                streamingServerHelper?.resetH264Wait()
+                encMutable = createByteBufferEncoder(outW, outH)
             }
             val mirror = run {
                 val phys = camId?.substringAfter(':', camId)
@@ -119,6 +109,137 @@ class H264StreamingEncoder(
         } catch (e: Exception) {
             Log.e(TAG, "feed: ${e.message}")
         }
+    }
+
+    private fun createByteBufferEncoder(outW: Int, outH: Int): H264HardwareEncoder {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val fps = prefs.getString("stream_fps", "30")?.toIntOrNull() ?: 30
+        val fpsCoerced = fps.coerceIn(1, 60)
+        val encConfig = StreamEncoding.encoderConfig(prefs, outW, outH, fpsCoerced)
+        val enc = H264HardwareEncoder(
+            outW,
+            outH,
+            fpsCoerced,
+            encConfig.bitrateBps,
+            false,
+            encConfig.keyframeIntervalSec,
+            encConfig.bitrateMode,
+        ) { d, k, pts -> broadcastH264(d, k, pts) }
+        h264HardwareEncoder = enc
+        enc.requestKeyFrame()
+        streamingServerHelper?.resetH264Wait()
+        return enc
+    }
+
+    /**
+     * Encode one night-mode still into the H.264 stream. The still is a JPEG, so it is decoded,
+     * rotated/mirrored/cropped exactly like a camera frame, scaled into [maxWidth]×[maxHeight], and
+     * fed to a byte-buffer encoder as NV21. Night captures are far slower than video, so the CPU cost
+     * of this path is negligible next to the exposure itself.
+     */
+    fun processStillJpeg(jpeg: ByteArray, maxWidth: Int, maxHeight: Int) {
+        if (!hasClients()) return
+        var bitmap: Bitmap? = null
+        try {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            val camId = prefs.getString("camera_id", null)
+            val rotation = quantized((((readRotatePref(prefs, camId) % 360) + 360) % 360))
+            val mirror = run {
+                val phys = camId?.substringAfter(':', camId)
+                when {
+                    camId != null && prefs.contains("mirror_$camId") -> prefs.getString("mirror_$camId", null)?.toBoolean() ?: false
+                    phys != null && prefs.contains("mirror_$phys") -> prefs.getString("mirror_$phys", null)?.toBoolean() ?: false
+                    else -> false
+                }
+            }
+            val crop = CropRegion.read(prefs, camId)?.takeUnless { it.isFullFrame() }
+
+            bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return
+            var current = bitmap
+            if (rotation != 0 || mirror) {
+                val matrix = Matrix().apply {
+                    if (mirror) {
+                        postScale(-1f, 1f)
+                        postTranslate(current.width.toFloat(), 0f)
+                    }
+                    if (rotation != 0) postRotate(rotation.toFloat())
+                }
+                val transformed = Bitmap.createBitmap(current, 0, 0, current.width, current.height, matrix, true)
+                if (transformed !== current) {
+                    current.recycle()
+                    current = transformed
+                    bitmap = transformed
+                }
+            }
+            if (crop != null) {
+                val bounds = crop.pixelBounds(current.width, current.height)
+                if (bounds.width < current.width || bounds.height < current.height) {
+                    val cropped = Bitmap.createBitmap(current, bounds.left, bounds.top, bounds.width, bounds.height)
+                    if (cropped !== current) {
+                        current.recycle()
+                        current = cropped
+                        bitmap = cropped
+                    }
+                }
+            }
+            if (maxWidth > 0 && maxHeight > 0) {
+                // Cap by the long side so a rotated portrait still keeps its stream aspect ratio
+                // instead of being shrunk to fit inside a landscape box.
+                val limit = maxOf(maxWidth, maxHeight)
+                val longest = maxOf(current.width, current.height)
+                if (longest > limit) {
+                    val scale = limit.toFloat() / longest
+                    val scaled = Bitmap.createScaledBitmap(
+                        current,
+                        evenAtLeastTwo((current.width * scale).toInt()),
+                        evenAtLeastTwo((current.height * scale).toInt()),
+                        true,
+                    )
+                    if (scaled !== current) {
+                        current.recycle()
+                        current = scaled
+                        bitmap = scaled
+                    }
+                }
+            }
+            if (current.width % 2 != 0 || current.height % 2 != 0) {
+                val even = Bitmap.createScaledBitmap(
+                    current,
+                    evenAtLeastTwo(current.width),
+                    evenAtLeastTwo(current.height),
+                    true,
+                )
+                if (even !== current) {
+                    current.recycle()
+                    current = even
+                    bitmap = even
+                }
+            }
+
+            var enc = h264HardwareEncoder
+            if (enc == null || enc.useSurface || enc.width != current.width || enc.height != current.height) {
+                invalidatePendingWrites()
+                enc?.stop()
+                enc = createByteBufferEncoder(current.width, current.height)
+            }
+            val nv21 = convertBitmapToNV21(current)
+            enc.feedNv21(nv21, SystemClock.elapsedRealtimeNanos() / 1000)
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "processStillJpeg OOM: ${e.message}")
+            try { System.gc() } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "processStillJpeg: ${e.message}")
+        } finally {
+            try { bitmap?.recycle() } catch (_: Exception) {}
+        }
+    }
+
+    private fun quantized(angle: Int): Int = ((angle + 45) / 90 * 90) % 360
+
+    private fun evenAtLeastTwo(value: Int): Int {
+        var v = value.coerceAtLeast(2)
+        if (v % 2 != 0) v--
+        return v.coerceAtLeast(2)
     }
 
     /** Per-camera rotate= control (token then physical id fallback, mirroring the MJPEG encoder). */

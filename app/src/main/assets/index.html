@@ -602,6 +602,33 @@
             <input id="zoom" type='range' min='0.1' max='8.0' step='0.1' value='1.0' data-control='zoom'
               data-badge='zoomVal' data-fmt='suffix' data-suffix='x' style='margin-bottom:0'>
 
+            <label id="nightModeRow" style="display:none; margin-top:10px;">
+              <input type="checkbox" id="nightModeCheckbox" onchange="setNightMode(this.checked)" style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">🌙 Night-sight mode</span>
+            </label>
+            <div id="nightModeHint" class="hint" style="display:none; margin:4px 0 0; font-size:12px; color:#ccc">
+              Replaces live video with brighter night-sight photos, sent into the stream as they are taken.
+              Expect a much lower frame rate and a pause while each photo is captured.
+            </div>
+
+            <div id="nightModeLoading" style="display:none; align-items:center; gap:8px; margin-top:8px; color:#aaa; font-size:12px;">
+              <div class="spinner" style="width:16px;height:16px;flex:none;border-width:2px;"></div>
+              <span id="nightModeLoadingText">Starting night mode and reading exposure limits…</span>
+            </div>
+
+            <div id="nightExposureControls" style="display:none; margin-top:10px;">
+              <label for="nightExposure">Night Exposure <span class="val-badge" id="nightExposureVal">--</span></label>
+              <input id="nightExposure" type="range" min="1" max="1000" step="1" value="100"
+                oninput="updateNightExposureBadge()" onchange="sendNightExposure()"
+                style="margin-bottom:14px">
+              <label for="nightIso">Night ISO <span class="val-badge" id="nightIsoVal">--</span></label>
+              <input id="nightIso" type="range" min="100" max="6400" step="50" value="1600"
+                oninput="updateNightIsoBadge()" onchange="sendNightIso()" style="margin-bottom:8px">
+              <div class="hint" style="margin:0; font-size:12px; color:#ccc">
+                Longer exposure and higher ISO brighten a dark room. Very long exposures blur movement.
+              </div>
+            </div>
+
             <p class="group-title">Rotation &amp; Mirror</p>
 
             <div style="margin-bottom: 12px">
@@ -1377,6 +1404,186 @@
       } catch (_) { /* swallow */ }
     }
 
+    // ---- Night mode: live video replaced by night-sight stills ----
+    function nightModeTruthy(value) {
+      return value === true || value === 1 || value === 'true' || value === 'on' || value === '1';
+    }
+
+    function updateNightModeUi(supported, enabled) {
+      const row = getElById('nightModeRow');
+      const hint = getElById('nightModeHint');
+      const checkbox = getElById('nightModeCheckbox');
+      const show = !!supported;
+      if (row) row.style.display = show ? '' : 'none';
+      if (hint) hint.style.display = show ? '' : 'none';
+      if (checkbox) {
+        checkbox.disabled = !show;
+        if (!show) checkbox.checked = false;
+        else if (enabled !== undefined) checkbox.checked = !!enabled;
+      }
+      if (enabled === false) {
+        const exposure = getElById('nightExposureControls');
+        if (exposure) exposure.style.display = 'none';
+        setNightModeLoading(false);
+      }
+    }
+
+    function applyNightExposureUi(settings) {
+      const box = getElById('nightExposureControls');
+      if (!box || !settings) return;
+      const night = settings.nightMode;
+      if (!night || typeof night !== 'object') return;
+      const modeOn = nightModeTruthy(night.enabled);
+      const manual = nightModeTruthy(night.manual);
+      const available = nightModeTruthy(night.available);
+      const show = available && modeOn && manual;
+      box.style.display = show ? '' : 'none';
+      if (show || !modeOn || (available && !manual)) {
+        // The controls are either ready, or this camera has no manual exposure controls to wait
+        // for. Either way the "starting night mode" spinner has done its job.
+        setNightModeLoading(false);
+      }
+      if (!show) return;
+
+      const exposure = getElById('nightExposure');
+      if (exposure) {
+        const min = Number(night.exposureMinMs);
+        const max = Number(night.exposureMaxMs);
+        if (Number.isFinite(min) && min > 0) exposure.min = String(min);
+        if (Number.isFinite(max) && max > 0) exposure.max = String(max);
+        exposure.step = '1';
+        if (night.exposureMs != null && document.activeElement !== exposure) {
+          exposure.value = String(night.exposureMs);
+        }
+        const badge = getElById('nightExposureVal');
+        if (badge) badge.textContent = formatNightExposure(exposure.value);
+      }
+
+      const iso = getElById('nightIso');
+      if (iso) {
+        const min = Number(night.isoMin);
+        const max = Number(night.isoMax);
+        if (Number.isFinite(min) && min > 0) iso.min = String(min);
+        if (Number.isFinite(max) && max > 0) iso.max = String(max);
+        iso.step = '1';
+        if (night.iso != null && document.activeElement !== iso) {
+          iso.value = String(night.iso);
+        }
+        const badge = getElById('nightIsoVal');
+        if (badge) badge.textContent = formatNightIso(iso.value);
+      }
+    }
+
+    function formatNightExposure(value) {
+      const n = parseFloat(value);
+      if (!isFinite(n)) return '--';
+      return (n >= 10 ? Math.round(n) : n.toFixed(1)) + ' ms';
+    }
+
+    function formatNightIso(value) {
+      const n = parseInt(value, 10);
+      return isFinite(n) ? String(n) : '--';
+    }
+
+    function updateNightExposureBadge() {
+      const el = getElById('nightExposure');
+      const badge = getElById('nightExposureVal');
+      if (el && badge) badge.textContent = formatNightExposure(el.value);
+    }
+
+    function updateNightIsoBadge() {
+      const el = getElById('nightIso');
+      const badge = getElById('nightIsoVal');
+      if (el && badge) badge.textContent = formatNightIso(el.value);
+    }
+
+    function sendNightExposure() {
+      const el = getElById('nightExposure');
+      if (!el) return;
+      sendControl('night_exposure', el.value);
+      // The still session is rebuilt with the new sensor exposure, which takes a moment.
+      setNightModeLoading(true, 'Applying night exposure…', 4000);
+      setTimeout(() => loadDeviceInfo(true), 1500);
+    }
+
+    function sendNightIso() {
+      const el = getElById('nightIso');
+      if (!el) return;
+      sendControl('night_iso', el.value);
+      setNightModeLoading(true, 'Applying night ISO…', 4000);
+      setTimeout(() => loadDeviceInfo(true), 1500);
+    }
+
+    function setNightMode(enabled) {
+      if (!enabled) nightModeLoadingMinUntil = 0;
+      setNightModeLoading(
+        enabled,
+        'Starting night mode and reading exposure limits…',
+        enabled ? 6000 : 0,
+      );
+      if (!enabled) {
+        const controls = getElById('nightExposureControls');
+        if (controls) controls.style.display = 'none';
+      }
+      sendControl('night_mode', enabled ? 'true' : 'false');
+      // The camera restart may take a moment; refresh /info.json so the checkbox reflects the
+      // mode the service actually accepted (e.g. an unsupported lens switches it back off).
+      setTimeout(() => loadDeviceInfo(true), 900);
+    }
+
+    let nightModeLoadingTimer = null;
+    let nightModeLoadingMinUntil = 0;
+    function setNightModeLoading(show, message, minDurationMs = 0) {
+      const el = getElById('nightModeLoading');
+      const text = getElById('nightModeLoadingText');
+      if (!el) return;
+      if (text && message) text.textContent = message;
+      if (show) {
+        if (nightModeLoadingTimer) {
+          clearTimeout(nightModeLoadingTimer);
+          nightModeLoadingTimer = null;
+        }
+        if (minDurationMs > 0) {
+          nightModeLoadingMinUntil = Math.max(nightModeLoadingMinUntil, Date.now() + minDurationMs);
+        }
+        el.style.display = 'flex';
+        // Never leave a spinner forever if the camera cannot start.
+        nightModeLoadingTimer = setTimeout(() => {
+          nightModeLoadingTimer = null;
+          el.style.display = 'none';
+        }, 20000);
+        return;
+      }
+
+      // Keep the spinner visible for the minimum time even if the controls/settings are already
+      // back: the first night-mode frame usually arrives 3-5 seconds after enabling.
+      const wait = Math.max(0, nightModeLoadingMinUntil - Date.now());
+      if (nightModeLoadingTimer) {
+        clearTimeout(nightModeLoadingTimer);
+        nightModeLoadingTimer = null;
+      }
+      if (wait > 0) {
+        nightModeLoadingTimer = setTimeout(() => {
+          nightModeLoadingTimer = null;
+          nightModeLoadingMinUntil = 0;
+          el.style.display = 'none';
+        }, wait);
+      } else {
+        nightModeLoadingMinUntil = 0;
+        el.style.display = 'none';
+      }
+    }
+
+    function applyNightModeSettings(settings) {
+      if (!settings) return;
+      const night = settings.nightMode;
+      if (!night || typeof night !== 'object') return;
+      updateNightModeUi(
+        nightModeTruthy(night.available),
+        nightModeTruthy(night.enabled)
+      );
+    }
+
     // ---- Recording mode: on demand / notify only / motion clips / continuous ----
     function normalizeRecordingMode(mode) {
       return ['off', 'notify', 'motion', 'continuous'].includes(mode) ? mode : 'off';
@@ -1407,7 +1614,8 @@
         param === 'recording_segment_minutes' ||
         param === 'recording_storage_limit_percent' || param.startsWith('rtsp_') ||
         param === 'stream_bitrate' || param === 'stream_bitrate_mode' ||
-        param === 'stream_keyframe_interval' || param === 'stream_denoise') return null;
+        param === 'stream_keyframe_interval' || param === 'stream_denoise' ||
+        param === 'night_mode' || param === 'night_exposure' || param === 'night_iso') return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -1451,6 +1659,10 @@
           const n = parseInt(v, 10) || 0;
           return n <= 0 ? 'Off' : n + ' / 100';
         }
+        case 'exposureMs':
+          return formatNightExposure(v);
+        case 'iso':
+          return formatNightIso(v);
         default:
           return v;
       }
@@ -2268,6 +2480,16 @@
       }
       updateFlashButton();
 
+      // Night mode is per lens: hide the control (and clear the server's mode) immediately when
+      // the newly selected camera cannot take night stills.
+      const nightSupported = newCameraInfo?.nightMode?.available === true;
+      if (!nightSupported && getElById('nightModeCheckbox')?.checked) {
+        sendControl('night_mode', 'false');
+      }
+      updateNightModeUi(nightSupported, nightSupported ? getElById('nightModeCheckbox')?.checked : false);
+      // Night exposure ranges are per lens; refresh /info.json after the server switches cameras.
+      setTimeout(() => loadDeviceInfo(true), 700);
+
       // If the server provided per-camera lens settings in the camera object, apply
       // them immediately
       try {
@@ -2421,7 +2643,9 @@
       }
       const exposure = getElById('exposure');
       const exposureVal = getElById('exposureVal');
-      if (exposure && settings.exposure != null) {
+      // The EV slider uses the scalar `exposure` from per-camera lensSettings; global settings
+      // carry night-mode exposure fields inside the `nightMode` object.
+      if (exposure && settings.exposure != null && typeof settings.exposure !== 'object') {
         exposure.value = settings.exposure;
         if (exposureVal) exposureVal.textContent = settings.exposure;
       }
@@ -2435,6 +2659,10 @@
       if (mirrorEl && settings.mirror !== undefined) {
         mirrorEl.checked = settings.mirror === 'true';
       }
+      // Night mode support is per camera, so only touch the controls when the payload actually
+      // carries it (per-camera lensSettings updates do not).
+      applyNightModeSettings(settings);
+      applyNightExposureUi(settings);
       if (settings.crop !== undefined) {
         cropRegion = parseCropValue(String(settings.crop));
         if (cropMode) renderCropOverlay();
@@ -2468,8 +2696,9 @@
         if (!param) return;
         const key = toCamel(param);
         const serverVal = settings[key];
-        // If server provided a value, set it in the control (but don't send back).
-        if (serverVal !== undefined && serverVal !== null) {
+        // If server provided a value, set it in the control (but don't send back). Nested objects
+        // (e.g. settings.nightMode) are not form-control values.
+        if (serverVal !== undefined && serverVal !== null && typeof serverVal !== 'object') {
           try { el.value = serverVal; } catch (_) { }
         } else {
           // Ensure selects default to their first option if not set
@@ -2538,6 +2767,10 @@
           cameraList = Array.isArray(data.cameras) ? data.cameras : [];
           // Visibility of the Substream section follows the RTSP setting even on periodic polls.
           applySubstreamSettings(data.settings);
+          // Night mode can switch itself off server-side after repeated capture failures; keep the
+          // checkbox in step even on polls that do not reapply every control.
+          applyNightModeSettings(data.settings);
+          applyNightExposureUi(data.settings);
           if (applySettings) applyStreamSettings(data.settings);
           else updateServerStreamInfo(data.settings);
           renderCameraControls();

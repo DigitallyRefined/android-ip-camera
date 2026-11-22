@@ -72,3 +72,36 @@ fun convertNV21toJPEG(nv21: ByteArray, width: Int, height: Int, quality: Int = 8
     yuv.compressToJpeg(Rect(0, 0, width, height), quality, out)
     return out.toByteArray()
 }
+
+/**
+ * Convert a decoded bitmap to an NV21 buffer (Y plane followed by interleaved V/U chroma).
+ * Used by the Night mode stills path, which gets JPEGs rather than camera YUV frames and has to feed
+ * them into the H.264 encoder. Night frames arrive slowly, so the per-pixel conversion is cheap
+ * relative to the capture itself.
+ */
+fun convertBitmapToNV21(bitmap: android.graphics.Bitmap): ByteArray {
+    val width = bitmap.width
+    val height = bitmap.height
+    val argb = IntArray(width * height)
+    bitmap.getPixels(argb, 0, width, 0, 0, width, height)
+    val ySize = width * height
+    val out = ByteArray(ySize + ySize / 2)
+    var yIndex = 0
+    for (row in 0 until height) {
+        for (col in 0 until width) {
+            val pixel = argb[yIndex]
+            val r = (pixel shr 16) and 0xff
+            val g = (pixel shr 8) and 0xff
+            val b = pixel and 0xff
+            out[yIndex] = (((66 * r + 129 * g + 25 * b + 128) shr 8) + 16).toByte()
+            // One chroma sample per 2x2 block, from its top-left pixel.
+            if (row % 2 == 0 && col % 2 == 0) {
+                val chromaIndex = ySize + (row / 2) * width + col
+                out[chromaIndex] = (((112 * r - 94 * g - 18 * b + 128) shr 8) + 128).toByte()
+                out[chromaIndex + 1] = (((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128).toByte()
+            }
+            yIndex++
+        }
+    }
+    return out
+}
