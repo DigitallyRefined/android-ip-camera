@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.camera.core.ImageProxy
 import androidx.core.content.edit
 import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import androidx.preference.PreferenceManager
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -71,32 +72,6 @@ class MjpegStreamingEncoder(
             if (currentTime - lastFrameTime < delay) return
             lastFrameTime = currentTime
 
-            val camId = prefs.getString("camera_id", null)
-            // Rotation is controlled only by the per-camera rotate= setting; the camera's
-            // sensor orientation is intentionally ignored.
-            val rotation = if (camId != null) {
-                val phys = camId.substringAfter(':', camId)
-                when {
-                    prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
-                    prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
-                    else -> 0
-                }
-            } else 0
-            val totalRotation = ((rotation % 360) + 360) % 360
-            val scaleFactor = if (camId != null) {
-                val phys = camId.substringAfter(':', camId)
-                prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
-            } else 1.0f
-            val contrastValue = if (camId != null) {
-                val phys = camId.substringAfter(':', camId)
-                prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
-            } else 0
-            val mirror = if (camId != null) {
-                val phys = camId.substringAfter(':', camId)
-                prefStringWithFallback(prefs, "mirror_$camId", "mirror_$phys")?.toBoolean() ?: false
-            } else false
-            val crop = CropRegion.read(prefs, camId)
-
             val nv21 = convertYUV420toNV21(image, nv21Buffer, nv21RowBuffer).also {
                 nv21Buffer = it
                 if (nv21RowBuffer == null || nv21RowBuffer!!.size < image.planes[0].rowStride) {
@@ -104,11 +79,10 @@ class MjpegStreamingEncoder(
                 }
             }
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
-            var jpegBytes = convertNV21toJPEG(nv21, image.width, image.height, quality)
-            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror || crop != null
-            if (needsTransform) {
-                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality, mirror, crop)
-            }
+            val jpegBytes = applyStreamTransformations(
+                convertNV21toJPEG(nv21, image.width, image.height, quality),
+                quality,
+            )
             broadcastJpeg(jpegBytes)
         } catch (e: OutOfMemoryError) {
             handleOutOfMemory("processFrame")
@@ -129,36 +103,11 @@ class MjpegStreamingEncoder(
             if (currentTime - lastFrameTime < delay) return
             lastFrameTime = currentTime
 
-            val camId = prefs.getString("camera_id", null)
-            val rotation = if (camId != null) {
-                val phys = camId.substringAfter(':', camId)
-                when {
-                    prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
-                    prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
-                    else -> 0
-                }
-            } else 0
-            val totalRotation = ((rotation % 360) + 360) % 360
-            val scaleFactor = if (camId != null) {
-                val phys = camId.substringAfter(':', camId)
-                prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
-            } else 1.0f
-            val contrastValue = if (camId != null) {
-                val phys = camId.substringAfter(':', camId)
-                prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
-            } else 0
-            val mirror = if (camId != null) {
-                val phys = camId.substringAfter(':', camId)
-                prefStringWithFallback(prefs, "mirror_$camId", "mirror_$phys")?.toBoolean() ?: false
-            } else false
-            val crop = CropRegion.read(prefs, camId)
-
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
-            var jpegBytes = convertNV21toJPEG(nv21, width, height, quality)
-            val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 || mirror || crop != null
-            if (needsTransform) {
-                jpegBytes = applyTransformations(jpegBytes, totalRotation, scaleFactor, contrastValue, quality, mirror, crop)
-            }
+            val jpegBytes = applyStreamTransformations(
+                convertNV21toJPEG(nv21, width, height, quality),
+                quality,
+            )
             broadcastJpeg(jpegBytes)
         } catch (e: OutOfMemoryError) {
             handleOutOfMemory("processNv21Frame")
@@ -322,6 +271,68 @@ class MjpegStreamingEncoder(
         }
     }
 
+    /**
+     * Broadcast a ready-made JPEG (night mode stills). Unlike camera frames it has not been through
+     * the MJPEG post-processing yet, so apply the same rotate/scale/contrast/mirror/crop settings
+     * before sending. [maxWidth]×[maxHeight] caps the result so a full-sensor night photo does not
+     * make the stream much larger than the selected resolution.
+     */
+    fun processJpegFrame(jpeg: ByteArray, maxWidth: Int = 0, maxHeight: Int = 0) {
+        if (!hasClients()) return
+        try {
+            val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
+            broadcastJpeg(applyStreamTransformations(jpeg, quality, maxWidth, maxHeight))
+        } catch (e: OutOfMemoryError) {
+            handleOutOfMemory("processJpegFrame")
+        } catch (e: Exception) {
+            Log.e(TAG, "processJpegFrame: ${e.message}")
+        }
+    }
+
+    private fun applyStreamTransformations(
+        jpegBytes: ByteArray,
+        jpegQuality: Int,
+        maxWidth: Int = 0,
+        maxHeight: Int = 0,
+    ): ByteArray {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val camId = prefs.getString("camera_id", null)
+        // Rotation is controlled only by the per-camera rotate= setting; the camera's
+        // sensor orientation is intentionally ignored.
+        val rotation = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            when {
+                prefs.contains("camera_rotate_$camId") -> prefs.getInt("camera_rotate_$camId", 0)
+                prefs.contains("camera_rotate_$phys") -> prefs.getInt("camera_rotate_$phys", 0)
+                else -> 0
+            }
+        } else 0
+        val totalRotation = ((rotation % 360) + 360) % 360
+        val scaleFactor = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            prefStringWithFallback(prefs, "stream_scale_$camId", "stream_scale_$phys")?.toFloatOrNull() ?: 1.0f
+        } else 1.0f
+        val contrastValue = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            prefStringWithFallback(prefs, "camera_contrast_$camId", "camera_contrast_$phys")?.toIntOrNull() ?: 0
+        } else 0
+        val mirror = if (camId != null) {
+            val phys = camId.substringAfter(':', camId)
+            prefStringWithFallback(prefs, "mirror_$camId", "mirror_$phys")?.toBoolean() ?: false
+        } else false
+        val crop = CropRegion.read(prefs, camId)
+        val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 ||
+            mirror || crop != null || (maxWidth > 0 && maxHeight > 0)
+        return if (needsTransform) {
+            applyTransformations(
+                jpegBytes, totalRotation, scaleFactor, contrastValue, jpegQuality, mirror, crop,
+                maxWidth, maxHeight,
+            )
+        } else {
+            jpegBytes
+        }
+    }
+
     private fun applyTransformations(
         jpegBytes: ByteArray,
         rotation: Int,
@@ -329,7 +340,9 @@ class MjpegStreamingEncoder(
         contrastValue: Int,
         jpegQuality: Int,
         mirror: Boolean = false,
-        crop: CropRegion? = null
+        crop: CropRegion? = null,
+        maxWidth: Int = 0,
+        maxHeight: Int = 0,
     ): ByteArray {
         var bitmap: Bitmap? = null
         try {
@@ -381,6 +394,27 @@ class MjpegStreamingEncoder(
                         if (cropped !== bitmap) {
                             bitmap.recycle()
                             bitmap = cropped
+                        }
+                    }
+                }
+
+                // Fit a full-sensor night photo into the stream's resolution. Applied last so the
+                // user's Scale control is still relative to the rotated picture.
+                if (maxWidth > 0 && maxHeight > 0) {
+                    // Fit a full-sensor night photo into the stream's resolution using the long
+                    // side, so a rotated portrait still is not squashed into a landscape box.
+                    val limit = maxOf(maxWidth, maxHeight)
+                    val longest = maxOf(bitmap.width, bitmap.height)
+                    if (longest > limit) {
+                        val fit = limit.toFloat() / longest
+                        val scaled = bitmap.scale(
+                            (bitmap.width * fit).toInt().coerceAtLeast(1),
+                            (bitmap.height * fit).toInt().coerceAtLeast(1),
+                            true,
+                        )
+                        if (scaled !== bitmap) {
+                            bitmap.recycle()
+                            bitmap = scaled
                         }
                     }
                 }

@@ -233,6 +233,126 @@ class H264HardwareEncoder(
     }
 
     /**
+     * Feed a dense NV21 frame (as produced by [convertBitmapToNV21]) to the byte-buffer encoder.
+     * Used by the Night mode stills path, where frames are JPEG photos rather than camera YUV
+     * frames. The caller has already rotated/cropped/scaled the bitmap to [width]×[height].
+     */
+    fun feedNv21(nv21: ByteArray, ptsUs: Long) {
+        if (useSurface) return
+        val expected = width * height * 3 / 2
+        if (nv21.size < expected) return
+        synchronized(codecLock) {
+            if (!running) return
+            var idx = -1
+            try {
+                idx = codec.dequeueInputBuffer(5000)
+                if (idx < 0) return
+                val dstImage = codec.getInputImage(idx)
+                if (dstImage != null) {
+                    writeNv21ToInputImage(nv21, width, height, dstImage)
+                } else {
+                    val buf = codec.getInputBuffer(idx)
+                    if (buf == null) {
+                        codec.queueInputBuffer(idx, 0, 0, ptsUs, 0)
+                        idx = -1
+                        return
+                    }
+                    val size = width * height * 3 / 2
+                    var arr = yuv
+                    if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
+                    nv21ToCodecLayout(nv21, width, height, semiPlanar, arr)
+                    buf.clear(); buf.put(arr, 0, size)
+                }
+                codec.queueInputBuffer(idx, 0, width * height * 3 / 2, ptsUs, 0)
+                idx = -1
+            } catch (e: Exception) {
+                if (running) Log.e(TAG, "feedNv21: ${e.message}")
+            } finally {
+                // Never leave a dequeued input buffer unchecked: recycle it so the codec can keep going.
+                if (idx >= 0) {
+                    try { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0) } catch (_: Exception) {}
+                }
+            }
+        }
+    }
+
+    /** Copy a dense NV21 buffer into the codec's input [Image], honouring its plane strides. */
+    private fun writeNv21ToInputImage(nv21: ByteArray, w: Int, h: Int, image: Image) {
+        val planes = image.planes
+        val yPlane = planes[0]
+        val yBuffer = yPlane.buffer
+        val yRowStride = yPlane.rowStride
+        val yPixelStride = yPlane.pixelStride
+        for (row in 0 until h) {
+            val src = row * w
+            if (yPixelStride == 1) {
+                yBuffer.position(row * yRowStride)
+                yBuffer.put(nv21, src, w)
+            } else {
+                var dst = row * yRowStride
+                for (col in 0 until w) {
+                    yBuffer.put(dst, nv21[src + col])
+                    dst += yPixelStride
+                }
+            }
+        }
+
+        val uPlane = planes[1]
+        val vPlane = planes[2]
+        val uBuffer = uPlane.buffer
+        val vBuffer = vPlane.buffer
+        val cw = w / 2
+        val ch = h / 2
+        val uvOffset = w * h
+        for (row in 0 until ch) {
+            val srcRow = uvOffset + row * w
+            for (col in 0 until cw) {
+                val v = nv21[srcRow + col * 2]
+                val u = nv21[srcRow + col * 2 + 1]
+                uBuffer.put(row * uPlane.rowStride + col * uPlane.pixelStride, u)
+                vBuffer.put(row * vPlane.rowStride + col * vPlane.pixelStride, v)
+            }
+        }
+    }
+
+    /** Dense NV21 → the codec's byte-buffer layout (NV12 interleaved or I420 planar). */
+    private fun nv21ToCodecLayout(nv21: ByteArray, w: Int, h: Int, semiPlanar: Boolean, dst: ByteArray) {
+        val ySize = w * h
+        System.arraycopy(nv21, 0, dst, 0, ySize)
+        val cw = w / 2
+        val ch = h / 2
+        if (semiPlanar) {
+            // NV21 is V,U interleaved; NV12 (the common codec layout) is U,V.
+            var src = ySize
+            var out = ySize
+            repeat(ch) {
+                var col = 0
+                while (col < cw) {
+                    val v = nv21[src + col * 2]
+                    val u = nv21[src + col * 2 + 1]
+                    dst[out + col * 2] = u
+                    dst[out + col * 2 + 1] = v
+                    col++
+                }
+                src += w
+                out += w
+            }
+        } else {
+            // I420: planar U then V.
+            val uOffset = ySize
+            val vOffset = ySize + cw * ch
+            for (row in 0 until ch) {
+                val srcRow = ySize + row * w
+                val dstRow = row * cw
+                for (col in 0 until cw) {
+                    dst[uOffset + dstRow + col] = nv21[srcRow + col * 2 + 1]
+                    dst[vOffset + dstRow + col] = nv21[srcRow + col * 2]
+                }
+            }
+        }
+    }
+
+    /**
      * Rotate a densely packed YUV420 buffer (as produced by [toYuv420] — NV12 interleaved UV or I420
      * planar UV per [semiPlanar]) into [dst] by a 90° multiple. [mirror] mirrors the source frame
      * horizontally before rotation, matching the MJPEG encoder's mirror-then-rotate behaviour.
