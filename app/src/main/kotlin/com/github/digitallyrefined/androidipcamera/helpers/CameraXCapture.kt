@@ -56,6 +56,7 @@ class CameraXCapture(
     private val front: Boolean,
     private val cameraId: String?,
     private val desired: Size,
+    private val requestedFps: Int,
     private val previewSurfaceProvider: Preview.SurfaceProvider? = null,
     private val encoderSurfaceProvider: Preview.SurfaceProvider? = null,
     private val onEncoderSurfaceFallback: (() -> Unit)? = null,
@@ -146,12 +147,14 @@ class CameraXCapture(
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 val analysisInterop = Camera2Interop.Extender(aBuilder)
                 analysisInterop.setPhysicalCameraIdIfSupported(physicalCameraId)
-                // Some legacy HALs (e.g. this phone's rear cam) stall the analysis stream unless an AE
-                // target FPS range is set. Use the WIDEST advertised range, not a fixed lock — AE stays
-                // fully auto (drops low for light in the dark, up to 30 in good light).
-                aeFpsRange()?.let {
+                // Request the tightest advertised range around the configured FPS. The previous
+                // "widest range" choice let auto-exposure fall to the lower bound (often 7–15 FPS)
+                // in low light, so a 30 FPS recording could run far below its target. The range is
+                // still driven by auto-exposure; this is not a fixed high-speed session.
+                val fpsRange = targetFpsRange()
+                fpsRange?.let {
                     analysisInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
-                    Log.i(TAG, "AE fps range $it (auto within range)")
+                    Log.i(TAG, "AE fps range $it (requested $requestedFps)")
                 }
                 analysisUseCase = aBuilder.build()
                     .also { a -> a.setAnalyzer(analysisExec) { img ->
@@ -186,12 +189,14 @@ class CameraXCapture(
                 previewSurfaceProvider?.let { pv ->
                     val previewBuilder = Preview.Builder().setResolutionSelector(sel)
                         .setTargetRotation(Surface.ROTATION_0)
+                    fpsRange?.let { previewBuilder.setTargetFrameRate(it) }
                     Camera2Interop.Extender(previewBuilder).setPhysicalCameraIdIfSupported(physicalCameraId)
                     previewUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
                 encoderSurfaceProvider?.let { pv ->
                     val previewBuilder = Preview.Builder().setResolutionSelector(sel)
                         .setTargetRotation(Surface.ROTATION_0)
+                    fpsRange?.let { previewBuilder.setTargetFrameRate(it) }
                     Camera2Interop.Extender(previewBuilder).setPhysicalCameraIdIfSupported(physicalCameraId)
                     encoderUseCase = previewBuilder.build().also { it.setSurfaceProvider(pv) }
                 }
@@ -209,72 +214,72 @@ class CameraXCapture(
         }, main)
     }
 
-    /** (Re)bind the streaming use cases on the main thread. ImageCapture is always co-bound so a still
-     *  can snap directly from the already-bound use case — never a per-shot unbind/rebind cycle (which
-     *  hangs the session configuration on some HALs). */
+    /** (Re)bind the streaming use cases on the main thread. When the device cannot fit every
+     *  requested use case, shed the optional ones in [CameraXBindingPolicy] order. The encoder
+     *  surface is the last to go: the CPU-fed YUV fallback cannot sustain full-HD frame rates. */
     @AndroidXOptIn(ExperimentalCamera2Interop::class)
     private fun rebind() {
         if (released) return
         val p = provider ?: return
         val sel = boundSelector ?: return
         val analysis = analysisUseCase ?: return
-        val cases = mutableListOf<androidx.camera.core.UseCase>()
-        previewUseCase?.let { cases.add(it) }
-        encoderUseCase?.let { cases.add(it) }
-        cases.add(analysis)
-        imageCapture?.let { cases.add(it) }
-        p.unbindAll()
-        // On slow HALs (e.g. Exynos 7420) the previous camera close() can take 400ms–6s.
-        // bindToLifecycle() may fail if the HAL hasn't finished tearing down. Retry a few
-        // times before falling back to degraded surface combinations.
-        val maxRetries = 3
+        val candidates = CameraXBindingPolicy.candidates(
+            display = previewUseCase != null,
+            encoder = encoderUseCase != null,
+            still = imageCapture != null,
+        )
+        var bound: CameraXBinding? = null
         var lastException: Exception? = null
-        for (attempt in 1..maxRetries) {
-            try {
-                camera = p.bindToLifecycle(owner, sel, *cases.toTypedArray())
-                encoderSurfaceBound = encoderUseCase != null && cases.any { it === encoderUseCase }
-                lastException = null
-                break
-            } catch (e: Exception) {
-                lastException = e
-                if (attempt < maxRetries) {
-                    Log.w(TAG, "bindToLifecycle failed (attempt $attempt/$maxRetries): ${e.message}; retrying in 500ms...")
-                    Thread.sleep(500)
-                } else {
-                    Log.e(TAG, "bindToLifecycle failed after $maxRetries attempts: ${e.message}")
-                }
-            }
-        }
-        if (lastException != null) {
-            // Co-binding the encoder surface with a still stream can exceed some HALs' concurrent-stream
-            // limit. Rather than lose the camera, shed the encoder surface / screen preview and keep
-            // ImageAnalysis + ImageCapture (software YUV stream, full-res stills intact).
-            if (encoderUseCase != null || previewUseCase != null) {
-                Log.w(TAG, "Attempting fallback: dropping encoder surface / preview...")
-                try {
-                    encoderUseCase = null
-                    previewUseCase = null
-                    encoderSurfaceBound = false
-                    p.unbindAll()
-                    camera = p.bindToLifecycle(owner, sel, analysis, imageCapture ?: throw RuntimeException("ImageCapture not initialized"))
-                    onEncoderSurfaceFallback?.invoke()
-                } catch (e: Exception) {
-                    Log.e(TAG, "fallback rebind failed: ${e.message}")
-                    throw e
-                }
-            } else {
-                // Last resort: a lone ImageCapture should always be bindable.
-                Log.w(TAG, "Attempting fallback: binding ImageCapture alone...")
+        for ((index, candidate) in candidates.withIndex()) {
+            val cases = mutableListOf<androidx.camera.core.UseCase>()
+            if (candidate.display) previewUseCase?.let { cases.add(it) }
+            if (candidate.encoder) encoderUseCase?.let { cases.add(it) }
+            cases.add(analysis)
+            if (candidate.still) imageCapture?.let { cases.add(it) }
+            // On slow HALs (e.g. Exynos 7420) the previous camera close() can take 400ms–6s.
+            // bindToLifecycle() may fail if the HAL hasn't finished tearing down, so retry the
+            // requested combination; reduced combinations are attempted once each.
+            val attempts = if (index == 0) 3 else 1
+            for (attempt in 1..attempts) {
                 try {
                     p.unbindAll()
-                    camera = p.bindToLifecycle(owner, sel, imageCapture ?: throw RuntimeException("ImageCapture not initialized"))
-                    encoderSurfaceBound = false
+                    camera = p.bindToLifecycle(owner, sel, *cases.toTypedArray())
+                    bound = candidate
+                    lastException = null
+                    break
                 } catch (e: Exception) {
-                    Log.e(TAG, "ImageCapture-alone rebind failed: ${e.message}")
-                    throw e
+                    lastException = e
+                    // A rejected surface combination will not become valid on a retry; only slow
+                    // HAL teardown benefits from waiting, so move on to the next combination.
+                    val unsupported = e.message?.contains("No supported surface combination") == true
+                    if (attempt < attempts && !unsupported) {
+                        Log.w(TAG, "bindToLifecycle failed (attempt $attempt/$attempts): ${e.message}; retrying in 500ms...")
+                        Thread.sleep(500)
+                    } else break
                 }
             }
+            if (bound != null) break
+            if (candidates.size > 1) Log.w(TAG, "bind $candidate failed: ${lastException?.message}")
         }
+        if (bound == null) {
+            Log.e(TAG, "bindToLifecycle failed after ${candidates.size} combinations: ${lastException?.message}")
+            throw lastException ?: IllegalStateException("Could not bind the camera")
+        }
+        encoderSurfaceBound = bound.encoder && encoderUseCase != null
+        if (encoderUseCase != null && !bound.encoder) {
+            Log.w(TAG, "Could not keep the H.264 encoder surface; using software YUV encoding")
+            encoderUseCase = null
+            onEncoderSurfaceFallback?.invoke()
+        }
+        if (previewUseCase != null && !bound.display) {
+            Log.w(TAG, "Could not keep the on-phone preview in this camera session")
+            previewUseCase = null
+        }
+        if (imageCapture != null && !bound.still) {
+            Log.w(TAG, "Could not keep full-resolution stills; snapshots use the analysis frame")
+            imageCapture = null
+        }
+        Log.i(TAG, "bound use cases: display=${bound.display} encoder=${bound.encoder} still=${bound.still}; analysis=true")
         // Re-apply cached controls, since rebinding replaces the camera control.
         val cc = camera?.cameraControl
         if (torchEnabled && hasFlashUnit) try { cc?.enableTorch(true) } catch (_: Exception) {}
@@ -315,8 +320,8 @@ class CameraXCapture(
     }
 
     override fun captureStill(onJpeg: (ByteArray?) -> Unit) {
-        val ic = imageCapture ?: return onJpeg(null)
         if (provider == null || released) return onJpeg(null)
+        val ic = imageCapture ?: return onJpeg(frameFallbackJpeg())
         // ImageCapture stays bound from start(), so a still needs no rebind — per-shot unbind/rebind
         // cycles hang the session configuration on some HALs. Just snap from the bound use case.
         main.execute {
@@ -457,17 +462,20 @@ class CameraXCapture(
         } catch (e: Exception) { Log.e(TAG, "manualFocus: ${e.message}") }
     }
 
-    /** The camera's WIDEST advertised AE FPS range — leaves auto-exposure fully free while giving legacy
-     *  HALs the explicit range they need to not stall the analysis stream. Not a fixed-fps lock. */
-    private fun aeFpsRange(): Range<Int>? = try {
+    /** The advertised AE range that best matches the configured stream FPS. Preferring the tightest
+     *  containing range keeps auto-exposure from dropping to single-digit frame rates in low light. */
+    private fun targetFpsRange(): Range<Int>? = try {
         val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val want = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
         val id = logicalCameraId?.takeIf { it in cm.cameraIdList }
             ?: cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == want }
             ?: cm.cameraIdList.first()
-        cm.getCameraCharacteristics(id).get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.maxWithOrNull(compareBy({ it.upper - it.lower }, { it.upper }))
-    } catch (e: Exception) { Log.e(TAG, "aeRange: ${e.message}"); null }
+        val advertised = cm.getCameraCharacteristics(id)
+            .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.map { FpsRange(it.lower, it.upper) }
+            .orEmpty()
+        CaptureFps.select(advertised, requestedFps)?.let { Range(it.lower, it.upper) }
+    } catch (e: Exception) { Log.e(TAG, "fpsRange: ${e.message}"); null }
 
     override fun stop() {
         ready = false

@@ -30,8 +30,15 @@ class H264StreamingEncoder(
         private const val TAG = "H264StreamingEncoder"
     }
 
-    var h264HardwareEncoder: H264HardwareEncoder? = null
+    @Volatile var h264HardwareEncoder: H264HardwareEncoder? = null
         private set
+    /**
+     * Serializes encoder replacement between the analyzer (byte-buffer fallback) and the camera
+     * thread (surface encoder). A stale analysis frame from a session that is being torn down could
+     * otherwise install a byte-buffer encoder just after a surface encoder was set, silently
+     * switching a full-HD stream to the slow CPU path.
+     */
+    private val encoderLock = Any()
     /** RTSP server sharing this encoder's output, when RTSP is enabled. */
     @Volatile internal var rtspServer: RtspServer? = null
     /**
@@ -87,9 +94,21 @@ class H264StreamingEncoder(
                 outH = rotatedH
             }
             if (encMutable == null || encMutable.width != outW || encMutable.height != outH) {
-                invalidatePendingWrites()
-                encMutable?.stop()
-                encMutable = createByteBufferEncoder(outW, outH)
+                encMutable = synchronized(encoderLock) {
+                    val current = h264HardwareEncoder
+                    if (current != null && current.useSurface) {
+                        // A surface encoder was installed while this (possibly stale) frame was
+                        // being prepared. Never replace it with a byte-buffer encoder.
+                        return
+                    }
+                    if (current != null && current.width == outW && current.height == outH) {
+                        current
+                    } else {
+                        invalidatePendingWrites()
+                        current?.stop()
+                        createByteBufferEncoder(outW, outH)
+                    }
+                }
             }
             val mirror = run {
                 val phys = camId?.substringAfter(':', camId)
@@ -102,9 +121,11 @@ class H264StreamingEncoder(
             encMutable.feed(image, image.imageInfo.timestamp / 1000, mirror, rotation, crop)
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "processFrame OOM: ${e.message}")
-            invalidatePendingWrites()
-            h264HardwareEncoder?.stop()
-            h264HardwareEncoder = null
+            synchronized(encoderLock) {
+                invalidatePendingWrites()
+                h264HardwareEncoder?.stop()
+                h264HardwareEncoder = null
+            }
             DeviceMemoryHelper.updateMemoryPressure(android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
             try { System.gc() } catch (_: Exception) {}
         } catch (e: Exception) {
@@ -215,11 +236,17 @@ class H264StreamingEncoder(
                 }
             }
 
-            var enc = h264HardwareEncoder
-            if (enc == null || enc.useSurface || enc.width != current.width || enc.height != current.height) {
-                invalidatePendingWrites()
-                enc?.stop()
-                enc = createByteBufferEncoder(current.width, current.height)
+            var enc = synchronized(encoderLock) {
+                val existing = h264HardwareEncoder
+                if (existing != null && !existing.useSurface &&
+                    existing.width == current.width && existing.height == current.height
+                ) {
+                    existing
+                } else {
+                    invalidatePendingWrites()
+                    existing?.stop()
+                    createByteBufferEncoder(current.width, current.height)
+                }
             }
             val nv21 = convertBitmapToNV21(current)
             enc.feedNv21(nv21, SystemClock.elapsedRealtimeNanos() / 1000)
@@ -268,13 +295,15 @@ class H264StreamingEncoder(
         backend = null
         glPipe?.stop()
         glPipe = null
-        h264HardwareEncoder?.let { enc ->
-            enc.stop()
-            if (enc.useSurface && enc.hasSurfaceBeenProvided && !enc.isReleased) {
-                releasingEncoders.add(enc)
+        synchronized(encoderLock) {
+            h264HardwareEncoder?.let { enc ->
+                enc.stop()
+                if (enc.useSurface && enc.hasSurfaceBeenProvided && !enc.isReleased) {
+                    releasingEncoders.add(enc)
+                }
             }
+            h264HardwareEncoder = null
         }
-        h264HardwareEncoder = null
         invalidatePendingWrites()
         captureRunning = false
     }
@@ -390,25 +419,27 @@ class H264StreamingEncoder(
      * Set the H.264 hardware encoder (used by Camera1 backend).
      */
     fun setEncoder(encoder: H264HardwareEncoder?) {
-        invalidatePendingWrites()
-        h264HardwareEncoder?.let { old ->
-            old.stop()
-            if (old.useSurface && old.hasSurfaceBeenProvided && !old.isReleased) {
-                releasingEncoders.add(old)
+        synchronized(encoderLock) {
+            invalidatePendingWrites()
+            h264HardwareEncoder?.let { old ->
+                old.stop()
+                if (old.useSurface && old.hasSurfaceBeenProvided && !old.isReleased) {
+                    releasingEncoders.add(old)
+                }
             }
+            h264HardwareEncoder = encoder
         }
-        h264HardwareEncoder = encoder
     }
 
     /**
      * Hands the current encoder over without stopping it, for a caller that must stop it later: a
      * Camera1 GL pipe keeps drawing into the encoder's surface until its preview stops.
      */
-    fun detachEncoder(): H264HardwareEncoder? {
+    fun detachEncoder(): H264HardwareEncoder? = synchronized(encoderLock) {
         invalidatePendingWrites()
         val enc = h264HardwareEncoder
         h264HardwareEncoder = null
-        return enc
+        enc
     }
 
     private fun invalidatePendingWrites() {

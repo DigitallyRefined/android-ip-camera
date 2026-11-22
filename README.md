@@ -198,7 +198,7 @@ Other similar IP camera apps exist, but most are closed source. You cannot verif
 
 This app is open source so you do not have to take its privacy claims on trust. The code that controls the camera, encodes video and handles logins is in this repository. You can read it, build it and compare it with the APK you install.
 
-By default, video stays on your local network. The phone serves the stream and the recordings directly to the clients you point at it. Nothing leaves your network. Recordings are written to the phone, not uploaded anywhere.
+By default, video stays on your local network. The phone serves the stream and the recordings directly to the clients you point at it. Nothing leaves your network, unless you enable the optional OpenTunnel service. Recordings are written to the phone, not uploaded anywhere.
 
 Logins and streams are protected by username and password authentication across the web, RTSP and ONVIF endpoints. When TLS is enabled, the same certificate encrypts all three. You can check how credentials and certificates are handled in the source instead of trusting a privacy policy.
 
