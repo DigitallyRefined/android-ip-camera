@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.camera.core.ImageProxy
 import androidx.core.content.edit
 import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import androidx.preference.PreferenceManager
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -406,8 +407,7 @@ class MjpegStreamingEncoder(
                     val longest = maxOf(bitmap.width, bitmap.height)
                     if (longest > limit) {
                         val fit = limit.toFloat() / longest
-                        val scaled = Bitmap.createScaledBitmap(
-                            bitmap,
+                        val scaled = bitmap.scale(
                             (bitmap.width * fit).toInt().coerceAtLeast(1),
                             (bitmap.height * fit).toInt().coerceAtLeast(1),
                             true,

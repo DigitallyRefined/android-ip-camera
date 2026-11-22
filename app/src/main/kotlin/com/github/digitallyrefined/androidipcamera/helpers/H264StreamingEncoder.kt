@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import androidx.camera.core.ImageProxy
+import androidx.core.graphics.scale
 import androidx.preference.PreferenceManager
 import kotlinx.coroutines.delay
 import java.util.concurrent.ArrayBlockingQueue
@@ -189,8 +190,7 @@ class H264StreamingEncoder(
                 val longest = maxOf(current.width, current.height)
                 if (longest > limit) {
                     val scale = limit.toFloat() / longest
-                    val scaled = Bitmap.createScaledBitmap(
-                        current,
+                    val scaled = current.scale(
                         evenAtLeastTwo((current.width * scale).toInt()),
                         evenAtLeastTwo((current.height * scale).toInt()),
                         true,
@@ -203,8 +203,7 @@ class H264StreamingEncoder(
                 }
             }
             if (current.width % 2 != 0 || current.height % 2 != 0) {
-                val even = Bitmap.createScaledBitmap(
-                    current,
+                val even = current.scale(
                     evenAtLeastTwo(current.width),
                     evenAtLeastTwo(current.height),
                     true,

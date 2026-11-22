@@ -180,6 +180,7 @@ object NightMode {
      * [sceneModes] / [aeModes] are the arrays from [CameraCharacteristics]; [nightExtension] comes
      * from [CameraExtensionCharacteristics.supportedExtensions].
      */
+    @Suppress("InlinedApi")
     fun supports(
         sceneModes: IntArray?,
         aeModes: IntArray?,
@@ -209,6 +210,7 @@ object NightMode {
         } == true
     }
 
+    @Suppress("InlinedApi")
     fun lowLightBoostSupported(characteristics: CameraCharacteristics?): Boolean = try {
         characteristics?.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES)?.contains(
             CameraMetadata.CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY

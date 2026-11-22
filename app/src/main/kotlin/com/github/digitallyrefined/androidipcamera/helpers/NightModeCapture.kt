@@ -242,6 +242,7 @@ class NightModeCapture(
         bind(p, selector, mode, onReady)
     }
 
+    @Suppress("InlinedApi")
     @AndroidXOptIn(ExperimentalCamera2Interop::class)
     private fun bind(
         p: ProcessCameraProvider,
