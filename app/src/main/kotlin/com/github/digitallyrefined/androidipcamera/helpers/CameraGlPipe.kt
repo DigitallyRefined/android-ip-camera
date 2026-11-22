@@ -342,11 +342,12 @@ class CameraGlPipe(
         // Optional edge-preserving (bilateral) filter. It only runs when uDenoise > 0, so the
         // default pipeline keeps its single texture fetch. The GL thread updates uDenoise and
         // uTexel per frame, letting the web slider change the radius without a camera restart.
-        // A fixed 5x5 grid is sampled with a radius that grows with the slider, so higher levels
-        // reach noise that spans more than one pixel (the old 3x3 kernel only touched fine grain).
+        // A dense 3x3 pass always smooths per-pixel grain; two rings at growing radii reach wider
+        // low-light noise as the slider rises. Taps are unrolled: some mobile drivers miscompile
+        // sampler loops, which made the previous version look like it did nothing.
         val fs = """
             #extension GL_OES_EGL_image_external : require
-            precision mediump float;
+            precision highp float;
             varying vec2 vTex;
             uniform samplerExternalOES sTex;
             uniform float uMirror;
@@ -359,6 +360,10 @@ class CameraGlPipe(
                 return vec4(s, 1.0) * exp(-dot(d, d) * k);
             }
 
+            vec4 ringTap(vec2 tc, vec3 c, float k, vec2 dir, float radius) {
+                return tap(tc + dir * radius * uTexel, c, k);
+            }
+
             void main() {
                 vec2 tc = vec2(mix(vTex.x, 1.0 - vTex.x, uMirror), vTex.y);
                 vec3 c = texture2D(sTex, tc).rgb;
@@ -367,29 +372,63 @@ class CameraGlPipe(
                     return;
                 }
 
-                // A wider colour tolerance smooths more of the sensor grain at higher levels.
-                float sigma = 0.03 + 0.12 * uDenoise;
+                // Low-light grain can be much larger than one pixel, so be more tolerant than a
+                // classic edge-preserving filter. Highp avoids mediump quantising the offsets.
+                float sigma = 0.05 + 0.28 * uDenoise;
                 float k = 1.0 / (2.0 * sigma * sigma);
-                // The slider scales the spacing of the 5x5 taps from half a texel to five texels.
-                float radius = 0.5 + 4.5 * uDenoise;
-                vec2 spacing = uTexel * radius;
-                vec4 sum = vec4(0.0);
-                for (int y = 0; y < 5; y++) {
-                    for (int x = 0; x < 5; x++) {
-                        sum += tap(tc + vec2(float(x - 2), float(y - 2)) * spacing, c, k);
-                    }
-                }
+                vec2 t = uTexel;
+                vec4 sum = vec4(c, 1.0);
+
+                // Dense 3x3: always removes per-pixel sensor grain.
+                sum += tap(tc + vec2(-t.x, -t.y), c, k);
+                sum += tap(tc + vec2( 0.0, -t.y), c, k);
+                sum += tap(tc + vec2( t.x, -t.y), c, k);
+                sum += tap(tc + vec2(-t.x,  0.0), c, k);
+                sum += tap(tc + vec2( t.x,  0.0), c, k);
+                sum += tap(tc + vec2(-t.x,  t.y), c, k);
+                sum += tap(tc + vec2( 0.0,  t.y), c, k);
+                sum += tap(tc + vec2( t.x,  t.y), c, k);
+
+                // Two rings widen the filter as the slider rises (1.5..3 and 2.5..8 texels).
+                float r1 = 1.5 + 1.5 * uDenoise;
+                float r2 = 2.5 + 5.5 * uDenoise;
+                const float d = 0.70710678;
+                sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r1) * 0.75;
+                sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r1) * 0.75;
+                sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r1) * 0.75;
+                sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r1) * 0.75;
+                sum += ringTap(tc, c, k, vec2(-d,   -d),   r1) * 0.75;
+                sum += ringTap(tc, c, k, vec2( d,   -d),   r1) * 0.75;
+                sum += ringTap(tc, c, k, vec2(-d,    d),   r1) * 0.75;
+                sum += ringTap(tc, c, k, vec2( d,    d),   r1) * 0.75;
+                sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r2) * 0.40;
+                sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r2) * 0.40;
+                sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r2) * 0.40;
+                sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r2) * 0.40;
+                sum += ringTap(tc, c, k, vec2(-d,   -d),   r2) * 0.40;
+                sum += ringTap(tc, c, k, vec2( d,   -d),   r2) * 0.40;
+                sum += ringTap(tc, c, k, vec2(-d,    d),   r2) * 0.40;
+                sum += ringTap(tc, c, k, vec2( d,    d),   r2) * 0.40;
 
                 gl_FragColor = vec4(sum.rgb / sum.a, 1.0);
             }
         """.trimIndent()
         var p = linkProgram(vs, fs)
+        var shaderKind = "highp"
         if (p == 0) {
-            // A driver that cannot compile the 25-tap kernel must still stream. Fall back to the
-            // original passthrough shader; the denoise uniforms are then absent (-1) and ignored.
+            // Fragment shaders may lack highp on old GPUs; try mediump before giving up.
+            Log.w(TAG, "highp noise-reduction shader rejected; retrying with mediump")
+            p = linkProgram(vs, fs.replace("precision highp float;", "precision mediump float;"))
+            shaderKind = "mediump"
+        }
+        if (p == 0) {
+            // A driver that cannot compile the kernel must still stream. Fall back to the original
+            // passthrough shader; the denoise uniforms are then absent (-1) and ignored.
             Log.w(TAG, "noise-reduction shader rejected by the driver; using passthrough")
             p = linkProgram(vs, PASSTHROUGH_FS)
+            shaderKind = "passthrough"
         }
+        Log.i(TAG, "noise-reduction shader active: $shaderKind")
         aPos = GLES20.glGetAttribLocation(p, "aPos")
         aTex = GLES20.glGetAttribLocation(p, "aTex")
         uST = GLES20.glGetUniformLocation(p, "uST")
