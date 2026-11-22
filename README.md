@@ -30,7 +30,9 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 📡 Optional RTSP stream (H.264 video + AAC audio) for mpv, Frigate/go2rtc, NVRs and other RTSP clients (using `rtsps://[ip_address]:8554/live`, plus a lighter sub stream at `/live/sub`)
 * 🛰️ Optional ONVIF camera mode with WS-Discovery, snapshots and motion events for UniFi Protect, Home Assistant and other NVRs
 * 🤳 Switch between the main or selfie camera
-* 🎛️ Remote web interface with controls for camera section, image rotation, video recording, audio/video sync, flash light toggle, resolution, zoom, exposure, contrast and optional GPU noise reduction
+* 🏃‍➡️ Motion detection & notifications (via ONVIF), automatic recording on motion & continuous recording (with automatic deletion of old recordings) 
+* 🎛️ Remote web interface with controls for camera section, image rotation, manual video recording, audio/video sync, flash light toggle, resolution, zoom, exposure, contrast and optional GPU noise reduction
+* 🌙 Night-sight mode: on phones with a astrophotography/night-sight photo mode, camera still photos are continually taken & are streamed as video
 * ✂️ Crop the live stream (and snapshots) to a rectangle drawn over the preview; the crop is applied on the phone
 * ☁️ Optionally connect your device to a hosted or [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server) cloud [OpenTunnel](https://github.com/anomalyco/opentunnel) server for remote access when you're not on your home/work network
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
@@ -325,6 +327,9 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `mirror=<true|false>`: Mirror the video.
   * `crop=<left,top,right,bottom|reset>`: Crop the stream and snapshots to a normalised rectangle (0..1) of the rotated frame, persisted per-camera. `reset` removes the crop and restores the full frame. Changes restart the camera so the H.264 encoder follows the crop's aspect ratio. In the web control panel, open **Settings → Crop** and drag a rectangle over the video preview; cropping is applied on the phone and can only be changed from a desktop browser.
   * `api=<auto|camerax|camera1>`: Prefer capture API implementation.
+  * `night_mode=<on|off>`: Replace live video with night-mode still photos on cameras that support it. The camera takes one night-sight / night-scene / low-light still at a time and feeds it into the current MJPEG or H.264 stream, so the frame rate drops to match the exposure time. `/info.json` reports `settings.nightMode.available` for the selected camera and `cameras[].nightMode.available` for each lens; `settings.nightMode.enabled` is the current value.
+  * `night_exposure=<ms>`: Night-mode shutter time in milliseconds, applied with auto-exposure off. Only available when `settings.nightMode.manual` is true. The usable range is reported as `settings.nightMode.exposureMinMs`/`exposureMaxMs` (also per lens under `cameras[].nightMode`), and the current value is `settings.nightMode.exposureMs`.
+  * `night_iso=<value>`: Night-mode sensor sensitivity (ISO), applied with auto-exposure off. The usable range is reported as `settings.nightMode.isoMin`/`isoMax` (also per lens under `cameras[].nightMode`), and the current value is `settings.nightMode.iso`. Longer exposure and higher ISO brighten dark scenes; very long exposures blur movement.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
 
 ### 🎬 Motion events and recording

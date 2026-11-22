@@ -45,6 +45,7 @@ import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelConfig
 import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelController
 import com.github.digitallyrefined.androidipcamera.opentunnel.OpenTunnelStatus
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -152,6 +153,21 @@ class StreamingService : LifecycleService() {
      *  Cleared once localRecorder takes over (or the start fails), so the no-viewer baseline returns. */
     @Volatile private var recordingNeeded = false
 
+    /**
+     * Night mode replaces live video with a loop of night-sight stills pushed into the normal
+     * MJPEG/H.264 streams. [nightModeEnabled] is the persisted user choice; [nightCapture] is the
+     * still-only CameraX session that is opened while it runs.
+     */
+    @Volatile private var nightModeEnabled = false
+    @Volatile private var nightCapture: NightStillCapture? = null
+    @Volatile private var nightCaptureReady = false
+    @Volatile private var nightCaptureCamera: String? = null
+    @Volatile private var nightCaptureSize: Size? = null
+    @Volatile private var nightCaptureExposureMs: Long? = null
+    @Volatile private var nightCaptureIso: Int? = null
+    private var nightModeJob: kotlinx.coroutines.Job? = null
+    private var nightModeGeneration = 0
+
     /** Latest good full-res capture per camera ("front"/"back"), with the time it was taken. */
     private data class CachedSnapshot(val jpeg: ByteArray, val atMs: Long)
     private val snapCache = ConcurrentHashMap<String, CachedSnapshot>()
@@ -214,6 +230,12 @@ class StreamingService : LifecycleService() {
         private const val CAMERA1_RELEASE_WAIT_MS = 30_000L
         /** A CameraX start without frames this soon after a slow Camera1 release is not counted as a miss. */
         private const val CAMERA1_SETTLE_MS = 30_000L
+        /** Night stills are exposed for seconds, so restart immediately after each frame. */
+        private const val NIGHT_MODE_FRAME_GAP_MS = 100L
+        /** Give up (and restore video) after this many consecutive still-capture failures. */
+        private const val NIGHT_MODE_MAX_FAILURES = 5
+        /** Delay between failed night captures before retrying. */
+        private const val NIGHT_MODE_RETRY_DELAY_MS = 2_000L
         const val ACTION_STOP_SERVICE = "com.github.digitallyrefined.androidipcamera.STOP_SERVICE"
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
@@ -304,6 +326,11 @@ class StreamingService : LifecycleService() {
         } else {
             frontFacing = false
             selectedCameraId = null
+        }
+        nightModeEnabled = NightMode.isEnabled(this)
+        if (nightModeEnabled && !NightMode.supports(this, camId())) {
+            nightModeEnabled = false
+            NightMode.setEnabled(this, false)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             registerReceiver(notificationChannelReceiver,
@@ -1288,6 +1315,31 @@ class StreamingService : LifecycleService() {
             Log.i(TAG, "startCamera bypassed: no force, no clients, and preview surface is null")
             return@withLock
         }
+        // Night mode is a still-photo loop, not a video session. It owns the camera whenever it is
+        // enabled and a consumer is connected; turning it off (or losing every viewer) falls back
+        // through to the normal video path.
+        if (nightModeEnabled) {
+            if (!hasClients && currentSurfaceProvider == null && !motionEnabled()) {
+                stopCamera()
+                return@withLock
+            }
+            val wantedSize = desiredSize()
+            val wantedCamera = camId()
+            val wantedManual = NightMode.manualExposure(this, wantedCamera)
+            val wantedExposure = wantedManual?.let { NightMode.currentExposureMs(this, wantedCamera, it) }
+            val wantedIso = wantedManual?.let { NightMode.currentIso(this, wantedCamera, it) }
+            if (nightCaptureReady && nightCapture != null &&
+                nightCaptureCamera == wantedCamera && nightCaptureSize == wantedSize &&
+                nightCaptureExposureMs == wantedExposure && nightCaptureIso == wantedIso
+            ) {
+                h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
+                return@withLock
+            }
+            cameraHeldForTorch = false
+            stopCamera()
+            startNightModeCamera()
+            return@withLock
+        }
         // A viewer joining or leaving restarts the camera only when the running session cannot serve the
         // viewers now connected, or has stopped delivering frames. Restarting on every connection cost a
         // close and an open each time, over 40 s on some Camera1 HALs, long enough to crash cameraserver.
@@ -1588,11 +1640,183 @@ class StreamingService : LifecycleService() {
         Log.i(TAG, "stream ${camId()} api=camerax")
     }
 
+    /**
+     * Opens the still-only night session used in place of live video. Camera extensions can spend
+     * several seconds merging a night photo, so capture runs on its own coroutine and each resulting
+     * JPEG is fed to the active streaming encoder.
+     */
+    private fun startNightModeCamera() {
+        val generation = ++nightModeGeneration
+        nightModeJob?.cancel()
+        nightModeJob = null
+        nightCapture?.stop()
+        nightCapture = null
+        nightCaptureReady = false
+
+        val camera = camId()
+        val size = desiredSize()
+        if (!NightMode.supports(this, camera)) {
+            Log.w(TAG, "Night mode requested on $camera but this camera does not support it")
+            nightModeEnabled = false
+            NightMode.setEnabled(this, false)
+            launchMain { startCamera(force = true) }
+            return
+        }
+        nightCaptureCamera = camera
+        nightCaptureSize = size
+        acquireStreamingWakeLock()
+
+        val manual = NightMode.manualExposure(this, camera)
+        val exposureMs = manual?.let { NightMode.currentExposureMs(this, camera, it) }
+        val iso = manual?.let { NightMode.currentIso(this, camera, it) }
+        nightCaptureExposureMs = exposureMs
+        nightCaptureIso = iso
+        val mode = NightMode.captureMode(
+            getSystemService(Context.CAMERA_SERVICE) as CameraManager,
+            camera,
+        )
+        val capture: NightStillCapture = if (mode == NightMode.CaptureMode.MANUAL && exposureMs != null && iso != null) {
+            Camera2NightCapture(this, frontFacing, selectedCameraId, size, exposureMs, iso) { message ->
+                Log.i(TAG, message)
+                onLog?.invoke(message)
+            }
+        } else {
+            NightModeCapture(this, this, frontFacing, selectedCameraId, size, exposureMs, iso) { message ->
+                Log.i(TAG, message)
+                onLog?.invoke(message)
+            }
+        }
+        nightCapture = capture
+        capture.start { ready ->
+            if (generation != nightModeGeneration || !nightModeEnabled) {
+                capture.stop()
+                return@start
+            }
+            if (!ready) {
+                Log.w(TAG, "Night mode capture could not start; restoring video")
+                nightModeEnabled = false
+                NightMode.setEnabled(this, false)
+                nightCapture = null
+                nightCaptureReady = false
+                launchMain { startCamera(force = true) }
+                return@start
+            }
+            nightCaptureReady = true
+            captureRunning = true
+            runningSession = null
+            runningStartedAtMs = SystemClock.elapsedRealtime()
+            encoders.forEach { it.start() }
+            startNightModeLoop(capture, generation)
+        }
+    }
+
+    private fun startNightModeLoop(capture: NightStillCapture, generation: Int) {
+        nightModeJob?.cancel()
+        nightModeJob = lifecycleScope.launch(Dispatchers.IO) {
+            var failures = 0
+            while (isActive && nightModeEnabled && generation == nightModeGeneration) {
+                if (!hasActiveClients() && currentSurfaceProvider == null) break
+                val jpeg = captureNightStill(capture, generation)
+                // A capture can block for seconds. If night mode was switched off meanwhile, do not
+                // push this stale still into the video stream after the normal camera restarted.
+                if (!isActive || generation != nightModeGeneration) break
+                if (jpeg == null) {
+                    if (!isActive || generation != nightModeGeneration) break
+                    failures++
+                    Log.w(TAG, "Night capture failed ($failures/$NIGHT_MODE_MAX_FAILURES)")
+                    if (failures >= NIGHT_MODE_MAX_FAILURES) {
+                        launchMain {
+                            if (generation == nightModeGeneration) {
+                                Log.w(TAG, "Too many night capture failures; restoring video")
+                                nightModeEnabled = false
+                                NightMode.setEnabled(this@StreamingService, false)
+                                startCamera(force = true)
+                            }
+                        }
+                        break
+                    }
+                    delay(NIGHT_MODE_RETRY_DELAY_MS)
+                    continue
+                }
+                failures = 0
+                if (!hasActiveClients() && currentSurfaceProvider == null) break
+                val size = nightCaptureSize
+                val maxW = size?.width ?: 0
+                val maxH = size?.height ?: 0
+                if (mjpegStreamingEncoder?.hasClients() == true) {
+                    mjpegStreamingEncoder?.processJpegFrame(jpeg, maxW, maxH)
+                }
+                if (h264StreamingEncoder?.hasClients() == true) {
+                    h264StreamingEncoder?.processStillJpeg(jpeg, maxW, maxH)
+                }
+                delay(NIGHT_MODE_FRAME_GAP_MS)
+            }
+        }
+    }
+
+    /** Requests one still from the night session and waits for it on the IO thread. */
+    private suspend fun captureNightStill(capture: NightStillCapture, generation: Int): ByteArray? {
+        val latch = CountDownLatch(1)
+        val out = arrayOfNulls<ByteArray>(1)
+        launchMain {
+            if (generation == nightModeGeneration && nightCapture === capture) {
+                capture.capture {
+                    out[0] = it
+                    latch.countDown()
+                }
+            } else {
+                latch.countDown()
+            }
+        }
+        try {
+            latch.await(16, TimeUnit.SECONDS)
+        } catch (_: Exception) {
+        }
+        return out[0]
+    }
+
+    /** Blocking variant for a /video/snapshot request while the night still loop owns the camera. */
+    private fun snapshotNightStill(): ByteArray? {
+        val capture = nightCapture ?: return null
+        val generation = nightModeGeneration
+        val latch = CountDownLatch(1)
+        val out = arrayOfNulls<ByteArray>(1)
+        launchMain {
+            if (generation == nightModeGeneration && nightCapture === capture) {
+                capture.capture {
+                    out[0] = it
+                    latch.countDown()
+                }
+            } else {
+                latch.countDown()
+            }
+        }
+        try {
+            latch.await(16, TimeUnit.SECONDS)
+        } catch (_: Exception) {
+        }
+        return out[0]?.let { transformSnapshot(it, readRotatePref(), readMirrorPref(), readCropPref()) }
+    }
+
+    private fun stopNightModeCamera() {
+        nightModeGeneration++
+        nightModeJob?.cancel()
+        nightModeJob = null
+        nightCaptureReady = false
+        nightCapture?.stop()
+        nightCapture = null
+        nightCaptureCamera = null
+        nightCaptureSize = null
+        nightCaptureExposureMs = null
+        nightCaptureIso = null
+    }
+
     private fun stopCamera() {
         // Single choke point for every on-demand release path (last viewer left, preview hidden,
         // stream reconfigured). The torch-off handler clears the flag before calling in, so it is
         // the one caller that can still close a torch-held session.
         if (cameraHeldForTorch) return
+        stopNightModeCamera()
         safeStopRecording()
         stopSubStream()   // detach it from the GL pipe while the pipe is still running
         val old = backend
@@ -1910,6 +2134,11 @@ class StreamingService : LifecycleService() {
         synchronized(snapLock) {
             snapshotInProgress = true
             try {
+                // Night mode has no video backend; grab one of its stills directly instead of
+                // trying to rebind a normal camera session behind the still loop.
+                if (nightModeEnabled && nightCaptureReady) {
+                    snapshotNightStill()?.let { return it }
+                }
                 val deadline = System.currentTimeMillis() + SNAPSHOT_DEADLINE_MS
                 val target = resolveCamera(cameraId) ?: (frontFacing to selectedCameraId)
                 val targetFront = target.first
@@ -2183,6 +2412,53 @@ class StreamingService : LifecycleService() {
         // physical id fallback (if id is "logical:physical" this extracts physical)
         val physicalId = id.substringAfter(':', id)
         when (key) {
+            "night_mode" -> {
+                val next = when (value.lowercase()) {
+                    "on", "true", "1" -> true
+                    "off", "false", "0" -> false
+                    else -> return
+                }
+                // Do not let an unsupported camera store a mode it can never run; the web UI only
+                // shows the checkbox when /info.json reports support, but stale clients may still ask.
+                if (next && !NightMode.supports(this, camId())) {
+                    Log.w(TAG, "Ignoring night_mode=on: ${camId()} has no night-mode still pipeline")
+                    return
+                }
+                nightModeEnabled = next
+                NightMode.setEnabled(this, next)
+                if (next) {
+                    debouncedStartCamera(force = true)
+                } else {
+                    // Release the still session before rebinding video. Camera extension sessions can
+                    // take a moment to close, and starting CameraX immediately can leave the preview
+                    // frozen on the last night photo.
+                    launchMain {
+                        stopNightModeCamera()
+                        captureRunning = false
+                        // Camera extension sessions can take a moment to release the camera.
+                        delay(1000)
+                        if (!nightModeEnabled) startCamera(force = true)
+                    }
+                }
+            }
+            "night_exposure" -> {
+                val camera = camId()
+                val manual = NightMode.manualExposure(this, camera) ?: return
+                val ms = value.trim().toFloatOrNull()?.toLong()
+                    ?.coerceIn(manual.minExposureMs, manual.maxExposureMs)
+                    ?: return
+                NightMode.setExposureMs(this, camera, ms)
+                if (nightModeEnabled) debouncedStartCamera(force = true)
+            }
+            "night_iso" -> {
+                val camera = camId()
+                val manual = NightMode.manualExposure(this, camera) ?: return
+                val iso = value.trim().toIntOrNull()
+                    ?.coerceIn(manual.minIso, manual.maxIso)
+                    ?: return
+                NightMode.setIso(this, camera, iso)
+                if (nightModeEnabled) debouncedStartCamera(force = true)
+            }
             "torch" -> {
                 val current = backend?.getTorch()
                     ?: (prefs.getString(PREF_CAMERA_TORCH, "off") == "on")
