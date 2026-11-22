@@ -2330,6 +2330,8 @@ class StreamingService : LifecycleService() {
                 val strength = NoiseReduction.strength(level)
                 glPipe?.denoise = strength
                 cameraXGlPipe?.denoise = strength
+                Log.i(TAG, "Noise reduction level=$level strength=$strength " +
+                    "glPipe=${glPipe != null} cameraXGlPipe=${cameraXGlPipe != null}")
             }
             // RTSP sub stream and audio settings. The RTSP server reads them when a viewer
             // connects, so a change applies to the next connection (as the old Settings screen did).
