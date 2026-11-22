@@ -53,9 +53,18 @@ class Camera1Capture private constructor(private val cameraId: Int, targetW: Int
         p.setRecordingHint(true)                         // video mode → enables concurrent video snapshot
         p.setPreviewSize(chosenW, chosenH)
         p.supportedPreviewFpsRange?.let { ranges ->
-            val want = fps * 1000
-            (ranges.filter { it[1] >= want }.minByOrNull { it[0] } ?: ranges.maxByOrNull { it[1] })
-                ?.let { p.setPreviewFpsRange(it[0], it[1]) }
+            // Prefer the tightest advertised range containing the requested rate. Choosing the range
+            // with the lowest lower bound (the old behaviour) let auto-exposure drop to 7–15 FPS in
+            // low light even when the user asked for 30.
+            val selected = CaptureFps.select(
+                ranges.map { FpsRange(it[0] / 1000, it[1] / 1000) },
+                fps,
+            )
+            val match = selected?.let { want ->
+                ranges.firstOrNull { it[0] / 1000 == want.lower && it[1] / 1000 == want.upper }
+            }
+            if (match != null) p.setPreviewFpsRange(match[0], match[1])
+            Log.i(TAG, "Camera1[$cameraId] fps range ${match?.contentToString() ?: "automatic"} (requested $fps)")
         }
         listOf(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO,
                Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE,

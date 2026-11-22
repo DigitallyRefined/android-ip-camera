@@ -1517,7 +1517,7 @@ class StreamingService : LifecycleService() {
         }.takeIf { demand.nv21 }
         try {
             val pipe = newPipe(Size(cap.chosenW, cap.chosenH))
-            cap.start(pipe.surfaceTexture, onFrame = onFrame)
+            cap.start(pipe.surfaceTexture, streamFps(), onFrame = onFrame)
         } catch (e: Exception) {
             // Not the backend yet, so stopCamera() cannot release it. Its pipe and encoder go once the
             // preview stops.
@@ -1607,7 +1607,7 @@ class StreamingService : LifecycleService() {
 
         val showScreenPreview = demand.screenPreview
         backend = CameraXCapture(
-            this, this, frontFacing, selectedCameraId, want,
+            this, this, frontFacing, selectedCameraId, want, streamFps(),
             if (showScreenPreview) currentSurfaceProvider else null,
             h264SurfaceProvider,
             onEncoderSurfaceFallback = {
