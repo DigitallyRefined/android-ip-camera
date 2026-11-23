@@ -1,0 +1,405 @@
+/**
+ * Android IP Camera theme.
+ *
+ * The palette is taken from the app icon (#1a237e) and the Play Store artwork
+ * (deep navy backgrounds with a soft periwinkle accent).
+ */
+
+:root {
+  --ifm-color-primary: #1a237e;
+  --ifm-color-primary-dark: #151c6b;
+  --ifm-color-primary-darker: #121858;
+  --ifm-color-primary-darkest: #0d1240;
+  --ifm-color-primary-light: #202a97;
+  --ifm-color-primary-lighter: #2430a8;
+  --ifm-color-primary-lightest: #2c3ac6;
+
+  --ifm-background-color: #f6f7fc;
+  --ifm-background-surface-color: #ffffff;
+  --ifm-navbar-background-color: #ffffff;
+  --ifm-footer-background-color: #080b22;
+
+  --ifm-font-family-base: system-ui, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+  --ifm-heading-font-family: var(--ifm-font-family-base);
+  --ifm-heading-font-weight: 750;
+  --ifm-font-weight-bold: 700;
+  --ifm-line-height-base: 1.7;
+  --ifm-code-font-size: 90%;
+
+  --ifm-color-content: #1a2238;
+  --ifm-color-content-secondary: #59627a;
+  --ifm-link-color: #2236a8;
+  --ifm-link-hover-color: #1a237e;
+  --ifm-toc-border-color: #e3e6f2;
+  --ifm-color-emphasis-200: #e3e6f2;
+  --ifm-color-emphasis-300: #d2d7e8;
+  --ifm-global-radius: 10px;
+
+  --brand-surface: #ffffff;
+  --brand-surface-muted: #eef0fa;
+  --brand-border: #e3e6f2;
+  --brand-shadow: 0 18px 50px rgba(26, 35, 126, 0.12);
+
+  --docusaurus-highlighted-code-line-bg: rgba(26, 35, 126, 0.09);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #8fa8ff;
+  --ifm-color-primary-dark: #7391f5;
+  --ifm-color-primary-darker: #5c7eec;
+  --ifm-color-primary-darkest: #3f62d9;
+  --ifm-color-primary-light: #a6b9ff;
+  --ifm-color-primary-lighter: #bccbff;
+  --ifm-color-primary-lightest: #d3ddff;
+
+  --ifm-background-color: #070a1c;
+  --ifm-background-surface-color: #0e1330;
+  --ifm-navbar-background-color: #0e1330;
+  --ifm-footer-background-color: #050817;
+
+  --ifm-color-content: #e7eaf6;
+  --ifm-color-content-secondary: #a8b0cb;
+  --ifm-link-color: #a6b9ff;
+  --ifm-link-hover-color: #d3ddff;
+  --ifm-toc-border-color: #1d2545;
+  --ifm-color-emphasis-200: #1d2545;
+  --ifm-color-emphasis-300: #28325a;
+  --ifm-hr-border-color: #1d2545;
+
+  --brand-surface: #0e1330;
+  --brand-surface-muted: #111737;
+  --brand-border: #1d2545;
+  --brand-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+
+  --docusaurus-highlighted-code-line-bg: rgba(143, 168, 255, 0.16);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: rgba(47, 63, 190, 0.24);
+}
+
+[data-theme='dark'] ::selection {
+  background: rgba(143, 168, 255, 0.3);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  letter-spacing: -0.02em;
+}
+
+/* ---------------------------------------------------------------- Navbar */
+
+.navbar {
+  border-bottom: 1px solid var(--ifm-toc-border-color);
+  box-shadow: none;
+}
+
+.navbar__logo {
+  height: 32px;
+  width: 32px;
+  border-radius: 9px;
+  box-shadow: 0 2px 10px rgba(8, 11, 34, 0.25);
+}
+
+/* Keep the mobile drawer opaque so content never shows through behind it. */
+.navbar-sidebar {
+  background-color: var(--ifm-background-surface-color);
+  border-right: 1px solid var(--ifm-toc-border-color);
+}
+
+.navbar__title {
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.navbar__link {
+  font-weight: 600;
+  font-size: 0.94rem;
+}
+
+.navbar__items--right .navbar__link {
+  color: var(--ifm-color-content-secondary);
+}
+
+.navbar__items--right .navbar__link:hover {
+  color: var(--ifm-color-primary);
+}
+
+/* --------------------------------------------------------------- Sidebar */
+
+.theme-doc-sidebar-container {
+  border-right: 1px solid var(--ifm-toc-border-color) !important;
+}
+
+/* Keep the desktop sidebar visible even in browsers that do not understand
+ * the media-query range syntax used by the theme's own breakpoint. */
+@media (min-width: 997px) {
+  .theme-doc-sidebar-container {
+    display: block !important;
+  }
+}
+
+.menu__link {
+  border-radius: 8px;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.menu__link--sublist {
+  font-weight: 650;
+}
+
+.menu__list-item-collapsible:hover {
+  background: transparent;
+}
+
+.menu__link--active:not(.menu__link--sublist) {
+  background: rgba(26, 35, 126, 0.1);
+  color: var(--ifm-color-primary-darkest);
+  font-weight: 650;
+}
+
+[data-theme='dark'] .menu__link--active:not(.menu__link--sublist) {
+  background: rgba(143, 168, 255, 0.14);
+  color: var(--ifm-color-primary-lightest);
+}
+
+.menu__caret:hover {
+  background: var(--ifm-color-emphasis-200);
+}
+
+/* ------------------------------------------------------------------ Docs */
+
+.markdown {
+  --ifm-h2-vertical-rhythm-top: 2.4;
+  --ifm-h3-vertical-rhythm-top: 1.8;
+}
+
+.markdown > h1:first-child {
+  font-size: clamp(2rem, 4vw, 2.65rem);
+  font-weight: 800;
+  margin-bottom: 0.9rem;
+}
+
+.markdown > h2 {
+  border-bottom: 1px solid var(--ifm-toc-border-color);
+  padding-bottom: 0.45rem;
+  margin-top: 2.6rem;
+}
+
+.markdown > h3 {
+  margin-top: 2rem;
+}
+
+.markdown img {
+  border-radius: 12px;
+}
+
+.markdown img[alt='Screenshot'] {
+  border: 1px solid var(--brand-border);
+  box-shadow: var(--brand-shadow);
+}
+
+.markdown blockquote {
+  border-left: 4px solid var(--ifm-color-primary);
+  background: rgba(26, 35, 126, 0.045);
+  border-radius: 0 10px 10px 0;
+  padding: 0.9rem 1.2rem;
+  color: var(--ifm-color-content);
+}
+
+[data-theme='dark'] .markdown blockquote {
+  background: rgba(143, 168, 255, 0.07);
+}
+
+.markdown code {
+  border: 1px solid var(--ifm-toc-border-color);
+  border-radius: 6px;
+  padding: 0.12rem 0.35rem;
+}
+
+.theme-code-block {
+  border-radius: 12px;
+  box-shadow: 0 12px 35px rgba(8, 11, 34, 0.12);
+  padding: 1rem;
+}
+
+[data-theme='dark'] .theme-code-block {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.42);
+}
+
+.theme-code-block code {
+  border: 0;
+  padding: 0;
+}
+
+.markdown table {
+  display: table;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--brand-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.markdown table thead tr {
+  background: var(--brand-surface-muted);
+}
+
+.markdown table tr:nth-child(2n) {
+  background: transparent;
+}
+
+.markdown hr {
+  border-color: var(--ifm-toc-border-color);
+}
+
+/* Table of contents */
+
+.table-of-contents {
+  font-size: 0.82rem;
+  border-left: 1px solid var(--ifm-toc-border-color);
+}
+
+.table-of-contents__link--active {
+  font-weight: 650;
+}
+
+/* Pagination */
+
+.pagination-nav__link {
+  border: 1px solid var(--brand-border);
+  border-radius: 12px;
+  background: var(--brand-surface);
+  transition: border-color 160ms ease, transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.pagination-nav__link:hover {
+  border-color: var(--ifm-color-primary-light);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 30px rgba(26, 35, 126, 0.1);
+  text-decoration: none;
+}
+
+[data-theme='dark'] .pagination-nav__link:hover {
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+
+.pagination-nav__sublabel {
+  color: var(--ifm-color-content-secondary);
+}
+
+/* ---------------------------------------------------------------- Footer */
+
+.footer {
+  background:
+    radial-gradient(circle at 15% -20%, rgba(130, 165, 255, 0.18), transparent 45%),
+    radial-gradient(circle at 85% 0%, rgba(110, 70, 255, 0.14), transparent 40%),
+    linear-gradient(180deg, #0a0e28 0%, #050817 100%);
+  border-top: 1px solid rgba(130, 165, 255, 0.14);
+  color: #c3cde6;
+}
+
+.footer__title {
+  color: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.footer__link-item {
+  color: #aeb9d6;
+}
+
+.footer__link-item:hover {
+  color: #ffffff;
+  text-decoration: none;
+}
+
+.footer__logo {
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+
+.footer__copyright {
+  color: #8b96b5;
+  font-size: 0.82rem;
+}
+
+/* --------------------------------------------------------------- Buttons */
+
+.button {
+  border-radius: 10px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  transition: transform 150ms ease, box-shadow 150ms ease,
+    background-color 150ms ease, border-color 150ms ease;
+}
+
+.button--primary {
+  box-shadow: 0 10px 26px rgba(26, 35, 126, 0.26);
+}
+
+.button--primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 32px rgba(26, 35, 126, 0.32);
+}
+
+[data-theme='dark'] .button--primary {
+  color: #080b22;
+  box-shadow: 0 12px 30px rgba(143, 168, 255, 0.22);
+}
+
+/* --------------------------------------------------------------- Admonitions */
+
+.alert {
+  border-radius: 12px;
+  border-width: 1px;
+}
+
+/* --------------------------------------------------------------- Utilities */
+
+.badge {
+  border-radius: 999px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  padding: 0.3rem 0.7rem;
+  text-transform: none;
+}
+
+@media (max-width: 996px) {
+  .navbar__items--right .navbar__link {
+    color: var(--ifm-color-content);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

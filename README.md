@@ -5,18 +5,18 @@
 
 Turn your Android device into a remote security IP camera
 
-[![Screenshot](screenshot.webp)](https://github.com/DigitallyRefined/android-ip-camera/tree/main/fastlane/metadata/android/en-US/images/phoneScreenshots)
+[![Screenshot](fastlane/metadata/android/en-US/images/screenshot.webp)](https://github.com/DigitallyRefined/android-ip-camera/tree/main/fastlane/metadata/android/en-US/images/phoneScreenshots)
 
 ## 📲 Install
 
 <div align="center">
-<a href="https://github.com/DigitallyRefined/android-ip-camera/releases">
-<img src="https://user-images.githubusercontent.com/69304392/148696068-0cfea65d-b18f-4685-82b5-329a330b1c0d.png"
-alt="Get it on GitHub" align="center" height="70" /></a>
-
 <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.github.digitallyrefined.androidipcamera%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FDigitallyRefined%2Fandroid-ip-camera%22%2C%22author%22%3A%22DigitallyRefined%22%2C%22name%22%3A%22Android%20IP%20Camera%22%7D" target="_blank">
 <img src="https://raw.githubusercontent.com/ImranR98/Obtainium/refs/heads/main/assets/graphics/badge_obtainium.png"
 alt="Get it on Obtainium" align="center" height="70" /></a>
+
+<a href="https://github.com/DigitallyRefined/android-ip-camera/releases">
+<img src="https://user-images.githubusercontent.com/69304392/148696068-0cfea65d-b18f-4685-82b5-329a330b1c0d.png"
+alt="Get it on GitHub" align="center" height="70" /></a>
 
 <a href="https://f-droid.org/en/packages/com.github.digitallyrefined.androidipcamera/" target="_blank">
 <img src="https://f-droid.org/badge/get-it-on.png"
@@ -248,42 +248,42 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Manual recordings are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS-manual.mp4` inside the recordings folder. Recordings started by **Motion clips** use the same folder layout with a `-motion.mp4` suffix, and **Continuous recording** segments use `-continuous.mp4`.
   * **Responses:**
     * `201 Created`: Recording started; returns the recording status JSON.
-    * `409 Conflict`: `{"error":"already_recording", ...}` — a recording is already in progress.
-    * `503 Service Unavailable`: `{"error":"no_encoder", ...}` — failed to initialize the H.264 encoder.
-    * `500 Internal Server Error`: `{"error":"start_failed", ...}` — recording failed to start.
+    * `409 Conflict`: `{"error":"already_recording", ...}` - a recording is already in progress.
+    * `503 Service Unavailable`: `{"error":"no_encoder", ...}` - failed to initialize the H.264 encoder.
+    * `500 Internal Server Error`: `{"error":"start_failed", ...}` - recording failed to start.
 * **Stop Recording (`/record/stop`, POST)**
   * **Usage:** Stop the in-progress local MP4 recording and finalize the file.
   * **Responses:**
     * `200 OK`: Recording stopped; returns the final recording status JSON.
-    * `409 Conflict`: `{"error":"not_recording", ...}` — no recording is in progress.
-    * `500 Internal Server Error`: `{"error":"stop_failed", ...}` — failed to finalize the recording.
+    * `409 Conflict`: `{"error":"not_recording", ...}` - no recording is in progress.
+    * `500 Internal Server Error`: `{"error":"stop_failed", ...}` - failed to finalize the recording.
 * **Recording Status (`/record/status`)**
   * **Usage:** Query whether a local MP4 recording is currently active.
-  * **Format:** `application/json` — `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>, "mode":<string>}` (or `{"recording":false, "mode":<string>}` when idle). `mode` is `off`, `notify`, `motion` or `continuous`.
+  * **Format:** `application/json` - `{"recording":<bool>, "uri":<string>, "durationMs":<long>, "width":<int>, "height":<int>, "mode":<string>}` (or `{"recording":false, "mode":<string>}` when idle). `mode` is `off`, `notify`, `motion` or `continuous`.
 * **Recordings Index (`/files`)**
   * **Usage:** Open `https://[ip_address]:[port]/files` in a web browser for a folder browser of the recordings stored on the device (`Movies/AndroidIPCamera`). Folders can be opened from the list or via the breadcrumb.
-  * **Format:** `text/html` — static page shell that loads the current folder listing from `/files.json?dir=<relative path>`, renders folders as navigation links, and renders every entry with emoji-only 💾 **Download** and 🗑️ **Delete** buttons (the Delete button asks for confirmation and issues a `DELETE /files/<relative path>` request). File names open the recording in the browser's video player. Deleting a folder removes the folder and all of its contents.
+  * **Format:** `text/html` - static page shell that loads the current folder listing from `/files.json?dir=<relative path>`, renders folders as navigation links, and renders every entry with emoji-only 💾 **Download** and 🗑️ **Delete** buttons (the Delete button asks for confirmation and issues a `DELETE /files/<relative path>` request). File names open the recording in the browser's video player. Deleting a folder removes the folder and all of its contents.
 * **Recordings List JSON (`/files.json`)**
   * **Usage:** Query a recordings folder listing programmatically or feed custom front-ends. Use `?dir=2026/11/09` to list a subfolder; omit `dir` for the recordings root.
-  * **Format:** `application/json` — `{"folder":<string>, "path":<string>, "entries":[{"name":<string>, "isDirectory":<bool>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
+  * **Format:** `application/json` - `{"folder":<string>, "path":<string>, "entries":[{"name":<string>, "isDirectory":<bool>, "sizeBytes":<long>, "lastModifiedMs":<long>}, ...]}`
 * **Play or Download Recording (`/files/<relative path>`, GET or HEAD)**
   * **Usage:** Open a recorded MP4 in the browser's native video player, which starts streaming immediately and keeps working while the file is being read (MP4s are served as `video/mp4` with `Content-Disposition: inline`). Other files download as before. Use the 💾 **Download** button in the recordings list to save a copy; the player's own save/download control also works. Path segments include recording folders, e.g. `/files/2026/11/09/2026-11-09-093000-manual.mp4`. Supports a single `Range: bytes=...` request (including open-ended and suffix forms) so browsers can seek and stream progressively; the response advertises `Accept-Ranges: bytes`.
   * **Responses:** `200 OK` with the file bytes (or headers only for `HEAD`), `206 Partial Content` with `Content-Range` for a range request, `416 Range Not Satisfiable` for a range outside the file, `404 Not Found` if the file does not exist, `400 Bad Request` for invalid paths.
 * **Delete Recording (`/files/<relative path>`, DELETE)**
   * **Usage:** Permanently delete a recorded MP4, or delete a folder and everything below it. The recordings root itself cannot be deleted.
   * **Responses:**
-    * `200 OK`: `{"deleted":true}` — file or folder deleted.
-    * `404 Not Found`: `{"error":"not_found"}` — no such file or folder in the recordings folder.
-    * `500 Internal Server Error`: `{"error":"delete_failed"}` — the entry exists but could not be deleted.
+    * `200 OK`: `{"deleted":true}` - file or folder deleted.
+    * `404 Not Found`: `{"error":"not_found"}` - no such file or folder in the recordings folder.
+    * `500 Internal Server Error`: `{"error":"delete_failed"}` - the entry exists but could not be deleted.
 * **Enable Streaming (`/control/start`)**
   * **Usage:** Re-enable streaming of the media routes after it has been disabled (e.g. by a home-automation system).
-  * **Format:** `application/json` — `{"streaming":true}`
+  * **Format:** `application/json` - `{"streaming":true}`
 * **Disable Streaming (`/control/stop`)**
   * **Usage:** Stop serving the media routes (`/video/*`, `/audio*`, and the RTSP stream when enabled) without closing the listening port, and disconnect any viewers that are currently connected. The `/control/*` endpoints remain reachable so streaming can be turned back on remotely. When disabled, media routes return `503 Service Unavailable` with a hint to POST `/control/start`.
-  * **Format:** `application/json` — `{"streaming":false}`
+  * **Format:** `application/json` - `{"streaming":false}`
 * **Streaming Status (`/control/status`)**
   * **Usage:** Query whether streaming is currently enabled.
-  * **Format:** `application/json` — `{"streaming":<bool>}`
+  * **Format:** `application/json` - `{"streaming":<bool>}`
 
 ### 📡 RTSP stream
 
@@ -370,7 +370,7 @@ The app uses the following permissions to function:
 <details>
 <summary>Reproducible builds</summary>
 
-> **Build releases in the container.** Native macOS and Windows builds are not byte-for-byte identical to Linux builds — the Rust compiler, Android NDK and JDK each ship separate host toolchains — so they do not match the F-Droid APK. Build the release APK in the provided Docker builder or on a Linux CI runner, not with Android Studio's native toolchain.
+> **Build releases in the container.** Native macOS and Windows builds are not byte-for-byte identical to Linux builds - the Rust compiler, Android NDK and JDK each ship separate host toolchains - so they do not match the F-Droid APK. Build the release APK in the provided Docker builder or on a Linux CI runner, not with Android Studio's native toolchain.
 >
 > The builder image is pinned to `linux/amd64` because the Android NDK only ships x86_64 Linux host tools. On Apple Silicon, ARM Windows and ARM Linux hosts Docker runs it through x86_64 emulation: Docker Desktop does this automatically (Rosetta on Apple Silicon), while ARM Linux needs `qemu-user-static`/binfmt support for x86_64 containers. Docker prints a platform-mismatch warning on ARM hosts; it is expected and the build still runs.
 >
@@ -483,7 +483,7 @@ Signer #1 certificate SHA-1 digest: 1560ceccdd719b2b97d431ad9a4c877abf5c2f32
 Signer #1 certificate MD5 digest: 5fdf04f5b6bab9fdacbe28aa6dc85abb
 ```
 
-### Regenerate Play Store assets
+### Regenerate store assets
 
 The stylised store screenshots and feature graphic are rendered from the raw captures in `fastlane/metadata/android/en-US/images/phoneScreenshots/` with Pillow in Docker:
 
@@ -491,7 +491,7 @@ The stylised store screenshots and feature graphic are rendered from the raw cap
 docker run --rm -v "$(pwd):/work" -w /work python:3.12-slim bash -c \
   "apt-get update -qq && apt-get install -y -qq fonts-noto-core fonts-dejavu-core > /dev/null 2>&1 && \
    pip install -q pillow && \
-   python fastlane/scripts/play_store_assets.py"
+   python fastlane/scripts/store_assets.py"
 ```
 
 Outputs are written to `fastlane/metadata/android/en-US/images/phoneScreenshots/stylised/`.

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Generate professional Google Play Store assets from raw screenshots.
+"""Generate store assets from raw screenshots.
 
 Run inside Docker with Python + Pillow + Noto fonts:
 
     docker run --rm -v "$(pwd):/work" -w /work python:3.12-slim bash -c \
-        "apt-get update -qq && apt-get install -y -qq fonts-noto-core fonts-dejavu-core && pip install -q pillow && python fastlane/scripts/play_store_assets.py"
+        "apt-get update -qq && apt-get install -y -qq fonts-noto-core fonts-dejavu-core && pip install -q pillow && python fastlane/scripts/store_assets.py"
 """
 
 import os
@@ -17,9 +17,9 @@ SRC_DIR = ROOT / "fastlane/metadata/android/en-US/images/phoneScreenshots"
 OUT_DIR = SRC_DIR / "stylised"
 FEATURE_OUT = OUT_DIR / "featureGraphic.png"
 
-PLAY_W, PLAY_H = 1080, 1920
+WIDTH, HIGHT = 1080, 1920
 MARGIN = 96
-TEXT_W = PLAY_W - 2 * MARGIN
+TEXT_W = WIDTH - 2 * MARGIN
 
 COLOR_BG_TOP = (8, 11, 34)
 COLOR_BG_BOTTOM = (18, 23, 70)
@@ -174,7 +174,7 @@ def draw_phone_frame(base: Image.Image, screenshot: Image.Image):
     bezel = 14
     frame_w = screen_w + bezel * 2
     frame_h = screen_h + bezel * 2
-    x = (PLAY_W - frame_w) // 2
+    x = (WIDTH - frame_w) // 2
     y = 560
 
     # shadow
@@ -201,7 +201,7 @@ def draw_desktop_card(base: Image.Image, screenshot: Image.Image):
     screen_w = card_w - bezel * 2
     screen_h = int(screen_w * src_h / src_w)
     card_h = screen_h + bezel * 2
-    x = (PLAY_W - card_w) // 2
+    x = (WIDTH - card_w) // 2
     y = 560 + (1300 - card_h) // 2
 
     # shadow
@@ -221,11 +221,11 @@ def draw_desktop_card(base: Image.Image, screenshot: Image.Image):
 
 
 def build_screenshot(source: str, eyebrow: str, headline: list[str], sub: list[str], device: str):
-    base = draw_linear_gradient(PLAY_W, PLAY_H, COLOR_BG_TOP, COLOR_BG_BOTTOM).convert("RGBA")
+    base = draw_linear_gradient(WIDTH, HIGHT, COLOR_BG_TOP, COLOR_BG_BOTTOM).convert("RGBA")
 
     # decorative glows
     glow = make_glow((700, 700), (COLOR_ACCENT[0], COLOR_ACCENT[1], COLOR_ACCENT[2], 70), 180)
-    base.paste(glow, (PLAY_W // 2 - 350, 850), glow)
+    base.paste(glow, (WIDTH // 2 - 350, 850), glow)
 
     small_glow = make_glow((500, 500), (120, 80, 255, 45), 140)
     base.paste(small_glow, (-120, -50), small_glow)
