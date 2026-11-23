@@ -1,7 +1,7 @@
 # Android IP Camera website
 
 The project website and documentation, built with
-[Docusaurus](https://docusaurus.io/).
+[Docusaurus](https://docusaurus.io/) deployed to: https://ip-cam.app
 
 The documentation is **generated from the repository's `README.md`** by
 [`plugins/readme-docs`](plugins/readme-docs/index.ts). Do not edit files in
@@ -79,11 +79,33 @@ navbar light/dark switch available for an explicit choice.
 
 ## Deployment
 
-`url` defaults to `https://digitallyrefined.github.io` and `baseUrl` defaults to
-`/`. For a GitHub project page, build with the repository subpath:
+`url` defaults to `https://ip-cam.app` and `baseUrl` defaults to `/`. Override
+them when building for another domain:
 
 ```bash
-DOCUSAURUS_URL=https://digitallyrefined.github.io \
-DOCUSAURUS_BASE_URL=/android-ip-camera/ \
+DOCUSAURUS_URL=https://example.com \
+DOCUSAURUS_BASE_URL=/ \
 npm run build
+```
+
+### Cloudflare Pages
+
+[`deploy-website.yml`](../.github/workflows/deploy-website.yml) builds the site
+with Node LTS and deploys `website/build` to Cloudflare Pages on pushes to
+`main` that touch `README.md`, `website/**`, or the Fastlane images. It can also
+be run manually with `workflow_dispatch`.
+
+Configure the repository secrets:
+
+```text
+CLOUDFLARE_API_TOKEN
+CLOUDFLARE_ACCOUNT_ID
+```
+
+Optional repository variables:
+
+```text
+CLOUDFLARE_PAGES_PROJECT   # default: android-ip-camera
+DOCUSAURUS_URL             # default: https://ip-cam.app
+DOCUSAURUS_BASE_URL        # default: /
 ```

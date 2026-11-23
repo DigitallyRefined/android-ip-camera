@@ -30,9 +30,8 @@ const config: Config = {
     v4: true,
   },
 
-  // Override these for a different deployment (for example a GitHub project
-  // page, where the URL is https://<org>.github.io/<project>/).
-  url: process.env.DOCUSAURUS_URL ?? 'https://digitallyrefined.github.io',
+  // Override these for a different deployment.
+  url: process.env.DOCUSAURUS_URL ?? 'https://ip-cam.app',
   baseUrl: process.env.DOCUSAURUS_BASE_URL ?? '/',
 
   organizationName: 'DigitallyRefined',
