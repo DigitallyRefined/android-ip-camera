@@ -139,6 +139,45 @@ h6 {
   color: var(--ifm-color-primary);
 }
 
+/* Donate/sponsor button in the top-right corner. */
+.navbar-sponsor {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.38rem 0.85rem;
+  border: 1px solid var(--ifm-color-primary);
+  border-radius: 999px;
+  font-weight: 650;
+  transition: background-color 150ms ease, color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.navbar__items--right .navbar-sponsor {
+  color: var(--ifm-color-primary);
+}
+
+.navbar__items--right .navbar-sponsor:hover {
+  background: var(--ifm-color-primary);
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(26, 35, 126, 0.28);
+  text-decoration: none;
+}
+
+[data-theme='dark'] .navbar__items--right .navbar-sponsor:hover {
+  color: #080b22;
+  box-shadow: 0 8px 20px rgba(143, 168, 255, 0.25);
+}
+
+.navbar-sponsor__icon {
+  width: 15px;
+  height: 15px;
+}
+
+.navbar-sidebar .navbar-sponsor {
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
 /* --------------------------------------------------------------- Sidebar */
 
 .theme-doc-sidebar-container {

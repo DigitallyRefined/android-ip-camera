@@ -6,6 +6,7 @@ export type IconName =
   | 'camera'
   | 'check'
   | 'globe'
+  | 'heart'
   | 'motion'
   | 'shield'
   | 'sliders';
@@ -43,6 +44,9 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M3.8 9.5h16.4M3.8 14.5h16.4" />
       <path d="M12 3.5c2.2 2.3 3.3 5.2 3.3 8.5S14.2 18.2 12 20.5C9.8 18.2 8.7 15.3 8.7 12S9.8 5.8 12 3.5Z" />
     </>
+  ),
+  heart: (
+    <path d="M12 20.3S4.2 15.6 4.2 9.7a4.1 4.1 0 0 1 7.8-2 4.1 4.1 0 0 1 7.8 2c0 5.9-7.8 10.6-7.8 10.6Z" />
   ),
   motion: (
     <>

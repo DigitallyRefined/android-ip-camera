@@ -132,4 +132,12 @@
             android:summary="Validate your certificate configuration"
             android:persistent="false" />
     </PreferenceCategory>
+
+    <PreferenceCategory android:title="Sponsor">
+        <CheckBoxPreference
+            android:key="hide_sponsor"
+            android:title="Hide Sponsor"
+            android:summary="I've donated"
+            android:defaultValue="false" />
+    </PreferenceCategory>
 </PreferenceScreen>

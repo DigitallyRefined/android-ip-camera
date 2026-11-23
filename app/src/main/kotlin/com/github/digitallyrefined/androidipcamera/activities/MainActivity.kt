@@ -2,6 +2,7 @@ package com.github.digitallyrefined.androidipcamera.activities
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -55,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var openTunnelText: TextView
     private var openTunnelPollJob: Job? = null
     private lateinit var backGestureCallback: OnBackPressedCallback
+    private lateinit var sponsorButton: ImageButton
     private var isFullscreen = false
 
     private val connection = object : ServiceConnection {
@@ -185,6 +187,16 @@ class MainActivity : AppCompatActivity() {
         showNoClientMessage(true)
         updateIpAddressText()
 
+        sponsorButton = findViewById(R.id.sponsorButton)
+        sponsorButton.setOnClickListener {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, SPONSOR_URL.toUri()))
+            } catch (e: ActivityNotFoundException) {
+                Toast.makeText(this, "No web browser found", Toast.LENGTH_SHORT).show()
+            }
+        }
+        updateSponsorButtonVisibility()
+
         findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
@@ -229,6 +241,15 @@ class MainActivity : AppCompatActivity() {
         checkNotificationChannelEnabled()
         // Re-apply the bar visibility: a returning activity or dialog may have restored them.
         setFullscreen(userHiddenPreview)
+        updateSponsorButtonVisibility()
+    }
+
+    /** The sponsor button is opt-out through the "Hide Sponsor" settings checkbox. */
+    private fun updateSponsorButtonVisibility() {
+        val hidden = PreferenceManager.getDefaultSharedPreferences(this)
+            .getBoolean(PREF_HIDE_SPONSOR, false)
+        sponsorButton.visibility =
+            if (hidden || userHiddenPreview) View.GONE else View.VISIBLE
     }
 
     /**
@@ -538,6 +559,7 @@ class MainActivity : AppCompatActivity() {
             viewFinder.visibility = View.INVISIBLE
             ipAddressText.visibility = View.GONE
             urlBar.visibility = View.GONE
+            sponsorButton.visibility = View.GONE
             settingsButton.visibility = View.GONE
             noClientMessage.visibility = View.GONE
             hidePreviewButton.visibility = View.GONE
@@ -576,6 +598,7 @@ class MainActivity : AppCompatActivity() {
 
             userHiddenPreview = false
             backGestureCallback.isEnabled = false
+            updateSponsorButtonVisibility()
 
             if (isBound) {
                 if (hasClients) {
@@ -615,6 +638,8 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val REQUEST_CODE_PERMISSIONS = 10
+        private const val PREF_HIDE_SPONSOR = "hide_sponsor"
+        private const val SPONSOR_URL = "https://github.com/sponsors/DigitallyRefined"
         private val REQUIRED_PERMISSIONS = when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
                 Manifest.permission.CAMERA,
