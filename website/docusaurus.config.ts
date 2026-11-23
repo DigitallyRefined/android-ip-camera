@@ -115,6 +115,10 @@ const config: Config = {
           label: 'F-Droid',
           position: 'right',
         },
+        {
+          type: 'custom-sponsor',
+          position: 'right',
+        },
       ],
     },
     footer: {

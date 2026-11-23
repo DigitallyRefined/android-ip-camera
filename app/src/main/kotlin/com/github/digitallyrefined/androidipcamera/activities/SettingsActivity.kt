@@ -505,6 +505,20 @@ class SettingsActivity : AppCompatActivity() {
             }
 
             setupOpenTunnelPreferences()
+
+            // Hiding the sponsor button is the app's way of thanking donors.
+            findPreference<androidx.preference.CheckBoxPreference>("hide_sponsor")?.apply {
+                setOnPreferenceChangeListener { _, newValue ->
+                    if (newValue == true) {
+                        Toast.makeText(
+                            requireContext(),
+                            "Thank you for your donation!",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    true
+                }
+            }
         }
 
         override fun onResume() {

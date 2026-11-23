@@ -14,6 +14,7 @@
     <string name="toggle_preview">Toggle Preview</string>
     <string name="help">Help</string>
     <string name="exit_app">Exit App</string>
+    <string name="sponsor">Sponsor</string>
     <!-- protocol://ip:port followed by any additional RTSP/ONVIF lines -->
     <string name="stream_urls" translatable="false">%1$s://%2$s:%3$d%4$s</string>
 </resources>
