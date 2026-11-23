@@ -19,7 +19,13 @@ import kotlin.math.abs
  * where every control call runs too.
  */
 @Suppress("DEPRECATION")
-class Camera1Capture private constructor(private val cameraId: Int, targetW: Int, targetH: Int) : CaptureBackend {
+class Camera1Capture private constructor(
+    private val cameraId: Int,
+    targetW: Int,
+    targetH: Int,
+    /** Called on a Camera1 error (e.g. the HAL evicting this client) so the service can reopen it. */
+    private val onError: ((Int) -> Unit)? = null,
+) : CaptureBackend {
     private val camera: Camera = openWithRetry(cameraId)
     var chosenW = targetW; private set
     var chosenH = targetH; private set
@@ -42,6 +48,16 @@ class Camera1Capture private constructor(private val cameraId: Int, targetW: Int
         hasFlashUnit = try {
             camera.parameters.supportedFlashModes?.contains(Camera.Parameters.FLASH_MODE_TORCH) == true
         } catch (_: Exception) { false }
+        // Camera2's CAMERA_ERROR_EVICTED (2) arrives here when another process or the HAL takes the
+        // device. Without this callback the preview silently stops until a viewer reconnects.
+        try {
+            camera.setErrorCallback { error, _ ->
+                Log.e(TAG, "Camera1[$cameraId] error $error")
+                if (!stopped) onError?.invoke(error)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Camera1[$cameraId] setErrorCallback failed: ${e.message}")
+        }
     }
 
     /** Starts the preview into [st] on the Camera1 thread. [onFrame] gets the NV21 preview frames. */
@@ -256,8 +272,15 @@ class Camera1Capture private constructor(private val cameraId: Int, targetW: Int
          * take seconds to answer while it restarts. A caller cancelled meanwhile never leaks the
          * device: it is released there once the open ends, before anything queued after it.
          */
-        suspend fun open(pickCamera: () -> Int, targetW: Int, targetH: Int): Camera1Capture =
-            worker.call(discard = { it.stopped = true; it.close(null) }) { Camera1Capture(pickCamera(), targetW, targetH) }
+        suspend fun open(
+            pickCamera: () -> Int,
+            targetW: Int,
+            targetH: Int,
+            onError: ((Int) -> Unit)? = null,
+        ): Camera1Capture =
+            worker.call(discard = { it.stopped = true; it.close(null) }) {
+                Camera1Capture(pickCamera(), targetW, targetH, onError)
+            }
 
         /**
          * Waits until every Camera1 open and release queued so far has finished, an open whose caller
