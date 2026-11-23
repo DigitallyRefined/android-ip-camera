@@ -1,0 +1,44 @@
+name: Website build
+
+# Verifies that the Docusaurus site in website/ still builds. Runs only when
+# something under website/ changes.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - website/**
+  pull_request:
+    paths:
+      - website/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Install and build website
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node LTS
+        uses: actions/setup-node@v7
+        with:
+          node-version: 'lts/*'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci
+
+      - name: Build website
+        working-directory: website
+        run: npm run build
