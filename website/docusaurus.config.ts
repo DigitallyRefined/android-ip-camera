@@ -1,35 +1,45 @@
 import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import readmeDocsPlugin from './plugins/readme-docs';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
-const config: Config = {
-  title: 'My Site',
-  tagline: 'Dinosaurs are cool',
-  favicon: 'img/favicon.ico',
+const repoUrl = 'https://github.com/DigitallyRefined/android-ip-camera';
 
-  // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
+const obtainiumUrl =
+  'https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.github.digitallyrefined.androidipcamera%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FDigitallyRefined%2Fandroid-ip-camera%22%2C%22author%22%3A%22DigitallyRefined%22%2C%22name%22%3A%22Android%20IP%20Camera%22%7D';
+
+const fDroidUrl =
+  'https://f-droid.org/en/packages/com.github.digitallyrefined.androidipcamera/';
+
+const config: Config = {
+  title: 'Android IP Camera',
+  tagline: 'Turn your Android device into a remote security camera',
+  favicon: 'icon.png',
+
+  // Fastlane images are mounted into the container and served directly. No
+  // image files need to be copied into website/static.
+  staticDirectories: [
+    'static',
+    process.env.DOCUSAURUS_ASSETS_DIR ??
+      '../fastlane/metadata/android/en-US/images',
+  ],
+
   future: {
-    v4: true, // Improve compatibility with the upcoming Docusaurus v4
+    v4: true,
   },
 
-  // Set the production url of your site here
-  url: 'https://your-docusaurus-site.example.com',
-  // Set the /<baseUrl>/ pathname under which your site is served
-  // For GitHub pages deployment, it is often '/<projectName>/'
-  baseUrl: '/',
+  // Override these for a different deployment (for example a GitHub project
+  // page, where the URL is https://<org>.github.io/<project>/).
+  url: process.env.DOCUSAURUS_URL ?? 'https://digitallyrefined.github.io',
+  baseUrl: process.env.DOCUSAURUS_BASE_URL ?? '/',
 
-  // GitHub pages deployment config.
-  // If you aren't using GitHub pages, you don't need these.
-  organizationName: 'facebook', // Usually your GitHub org/user name.
-  projectName: 'docusaurus', // Usually your repo name.
+  organizationName: 'DigitallyRefined',
+  projectName: 'android-ip-camera',
 
   onBrokenLinks: 'throw',
 
-  // Even if you don't use internationalization, you can use this field to set
-  // useful metadata like html lang. For example, if your site is Chinese, you
-  // may want to replace "en" with "zh-Hans".
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],
@@ -40,27 +50,12 @@ const config: Config = {
       'classic',
       {
         docs: {
-          sidebarPath: './sidebars.ts',
-          // Please change this to your repo.
-          // Remove this to remove the "edit this page" links.
-          editUrl:
-            'https://github.com/facebook/docusaurus/tree/main/packages/create-docusaurus/templates/shared/',
+          // Generated from /README.md by plugins/readme-docs.
+          sidebarPath: './docs/sidebars.js',
+          routeBasePath: 'docs',
+          breadcrumbs: true,
         },
-        blog: {
-          showReadingTime: true,
-          feedOptions: {
-            type: ['rss', 'atom'],
-            xslt: true,
-          },
-          // Please change this to your repo.
-          // Remove this to remove the "edit this page" links.
-          editUrl:
-            'https://github.com/facebook/docusaurus/tree/main/packages/create-docusaurus/templates/shared/',
-          // Useful options to enforce blogging best practices
-          onInlineTags: 'warn',
-          onInlineAuthors: 'warn',
-          onUntruncatedBlogPosts: 'warn',
-        },
+        blog: false,
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -68,81 +63,120 @@ const config: Config = {
     ],
   ],
 
+  // The README is the only source of documentation. This plugin turns it into
+  // the docs folder and its sidebar whenever the site starts or builds.
+  plugins: [readmeDocsPlugin],
+
   themeConfig: {
-    // Replace with your project's social card
-    image: 'img/docusaurus-social-card.jpg',
+    image: 'icon.png',
+    metadata: [
+      {
+        name: 'keywords',
+        content:
+          'Android IP camera, IP camera, RTSP, ONVIF, MJPEG, security camera, self-hosted',
+      },
+      {name: 'theme-color', content: '#1a237e'},
+    ],
     colorMode: {
+      defaultMode: 'light',
+      disableSwitch: false,
+      // Follow the browser/system preference until the visitor picks a theme.
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'My Site',
+      title: 'Android IP Camera',
       logo: {
-        alt: 'My Site Logo',
-        src: 'img/logo.svg',
+        alt: 'Android IP Camera logo',
+        src: 'icon.png',
       },
+      hideOnScroll: true,
       items: [
         {
           type: 'docSidebar',
-          sidebarId: 'tutorialSidebar',
+          sidebarId: 'docs',
           position: 'left',
-          label: 'Tutorial',
+          label: 'Documentation',
         },
-        {to: '/blog', label: 'Blog', position: 'left'},
         {
-          href: 'https://github.com/facebook/docusaurus',
+          to: '/docs/getting-started#install',
+          label: 'Install',
+          position: 'left',
+        },
+        {
+          to: '/docs/server-api',
+          label: 'API',
+          position: 'left',
+        },
+        {
+          href: repoUrl,
           label: 'GitHub',
+          position: 'right',
+        },
+        {
+          href: fDroidUrl,
+          label: 'F-Droid',
           position: 'right',
         },
       ],
     },
     footer: {
       style: 'dark',
+      logo: {
+        alt: 'Android IP Camera logo',
+        src: 'icon.png',
+        width: 44,
+        height: 44,
+      },
       links: [
         {
-          title: 'Docs',
+          title: 'Documentation',
           items: [
+            {label: 'Getting Started', to: '/docs/getting-started'},
+            {label: 'Install', to: '/docs/getting-started#install'},
+            {label: 'Frigate Configuration', to: '/docs/frigate'},
+            {label: 'Server API Reference', to: '/docs/server-api'},
+          ],
+        },
+        {
+          title: 'Project',
+          items: [
+            {label: 'GitHub', href: repoUrl},
+            {label: 'Releases', href: `${repoUrl}/releases`},
+            {label: 'Issues', href: `${repoUrl}/issues`},
             {
-              label: 'Tutorial',
-              to: '/docs/intro',
+              label: 'Reproducible Builds',
+              to: '/docs/reproducible-builds',
             },
           ],
         },
         {
-          title: 'Community',
+          title: 'Get the app',
           items: [
+            {label: 'Obtainium', href: obtainiumUrl},
             {
-              label: 'Stack Overflow',
-              href: 'https://stackoverflow.com/questions/tagged/docusaurus',
+              label: 'GitHub Releases',
+              href: `${repoUrl}/releases`,
             },
-            {
-              label: 'Discord',
-              href: 'https://discordapp.com/invite/docusaurus',
-            },
-            {
-              label: 'X',
-              href: 'https://x.com/docusaurus',
-            },
-          ],
-        },
-        {
-          title: 'More',
-          items: [
-            {
-              label: 'Blog',
-              to: '/blog',
-            },
-            {
-              label: 'GitHub',
-              href: 'https://github.com/facebook/docusaurus',
-            },
+            {label: 'F-Droid', href: fDroidUrl},
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} My Project, Inc. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} DigitallyRefined. Built with Docusaurus.`,
     },
     prism: {
       theme: prismThemes.github,
-      darkTheme: prismThemes.dracula,
+      darkTheme: prismThemes.oneDark,
+    },
+    tableOfContents: {
+      minHeadingLevel: 2,
+      maxHeadingLevel: 4,
+    },
+    docs: {
+      sidebar: {
+        // Keep the desktop navigation permanently visible.
+        hideable: false,
+        autoCollapseCategories: false,
+      },
     },
   } satisfies Preset.ThemeConfig,
 };

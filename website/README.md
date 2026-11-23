@@ -1,43 +1,89 @@
-# Website
+# Android IP Camera website
 
-This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
+The project website and documentation, built with
+[Docusaurus](https://docusaurus.io/).
 
-## Installation
+The documentation is **generated from the repository's `README.md`** by
+[`plugins/readme-docs`](plugins/readme-docs/index.ts). Do not edit files in
+`docs/`: the plugin recreates the folder every time the site starts or builds.
+Edit the root `README.md` instead, then restart the dev server so the generated
+pages and sidebar are rebuilt.
+
+The site does **not** keep copies of the app artwork. The logo, favicon and
+screenshots — including `screenshot.webp` — live in the Fastlane image
+directory, mounted at `/workspace/assets` in the container and exposed through
+Docusaurus's `staticDirectories` setting. They are copied into `build/` at build
+time.
+
+## Local development
+
+Run from the repository root:
+
+```bash
+docker rm -f nodejs
+
+docker run -d --name nodejs \
+  -w /workspace/website \
+  -v "$PWD/website:/workspace/website" \
+  -v "$PWD/README.md:/workspace/README.md:ro" \
+  -v "$PWD/fastlane/metadata/android/en-US/images:/workspace/assets:ro" \
+  -e DOCUSAURUS_ASSETS_DIR=/workspace/assets \
+  -p 3000:3000 \
+  node:lts \
+  npx docusaurus start --host 0.0.0.0 --poll 1000
+```
+
+The development server listens on <http://localhost:3000>.
+
+Outside the container:
 
 ```bash
 npm install
+npm start
 ```
 
-**Note**: feel free to use the package manager of your choice.
-
-## Local Development
-
-```bash
-npm run start
-```
-
-This command starts a local development server and opens up a browser window. Most changes are reflected live without having to restart the server.
+Without `DOCUSAURUS_ASSETS_DIR`, the images default to
+`../fastlane/metadata/android/en-US/images`. Set `README_PATH` if the README is
+not mounted at `/workspace/README.md` or found at `../README.md`.
 
 ## Build
+
+Run from the repository root:
+
+```bash
+docker run --rm \
+  -w /workspace/website \
+  -v "$PWD/website:/workspace/website" \
+  -v "$PWD/README.md:/workspace/README.md:ro" \
+  -v "$PWD/fastlane/metadata/android/en-US/images:/workspace/assets:ro" \
+  -e DOCUSAURUS_ASSETS_DIR=/workspace/assets \
+  node:lts \
+  sh -c 'npm install && npm run build'
+```
+
+Static output is written to `website/build/`. The generated documentation and
+sidebar are read from `website/docs/`. The plugin picks up the README from the
+repository root, `/README.md`, or the website folder, in that order.
+
+To build without Docker:
 
 ```bash
 npm run build
 ```
 
-This command generates static content into the `build` directory and can be served using any static contents hosting service.
+## Theme
+
+The theme follows the browser or operating system light/dark preference by
+default (`themeConfig.colorMode.respectPrefersColorScheme`), and keeps the
+navbar light/dark switch available for an explicit choice.
 
 ## Deployment
 
-Using SSH:
+`url` defaults to `https://digitallyrefined.github.io` and `baseUrl` defaults to
+`/`. For a GitHub project page, build with the repository subpath:
 
 ```bash
-USE_SSH=true npm run deploy
+DOCUSAURUS_URL=https://digitallyrefined.github.io \
+DOCUSAURUS_BASE_URL=/android-ip-camera/ \
+npm run build
 ```
-
-Not using SSH:
-
-```bash
-GIT_USER=<Your GitHub username> npm run deploy
-```
-
-If you are using GitHub Pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.

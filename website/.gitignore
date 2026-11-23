@@ -8,6 +8,9 @@
 .docusaurus
 .cache-loader
 
+# Documentation generated from /README.md by plugins/readme-docs
+/docs
+
 # Misc
 .DS_Store
 .env.local
