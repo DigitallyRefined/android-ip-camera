@@ -118,7 +118,15 @@ class H264StreamingEncoder(
                     else -> false
                 }
             }
-            encMutable.feed(image, image.imageInfo.timestamp / 1000, mirror, rotation, crop)
+            val grayscale = prefs.getBoolean(NightMode.PREF_GRAYSCALE, false)
+            encMutable.feed(
+                image,
+                image.imageInfo.timestamp / 1000,
+                mirror,
+                rotation,
+                crop,
+                grayscale = grayscale,
+            )
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "processFrame OOM: ${e.message}")
             synchronized(encoderLock) {
@@ -175,6 +183,7 @@ class H264StreamingEncoder(
                 }
             }
             val crop = CropRegion.read(prefs, camId)?.takeUnless { it.isFullFrame() }
+            val grayscale = prefs.getBoolean(NightMode.PREF_GRAYSCALE, false)
 
             bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return
             var current = bitmap
@@ -249,6 +258,11 @@ class H264StreamingEncoder(
                 }
             }
             val nv21 = convertBitmapToNV21(current)
+            if (grayscale) {
+                // YUV-domain monochrome: every Y sample is kept, V/U become neutral. No extra
+                // bitmap allocation or JPEG decode/encode is needed on this path.
+                Grayscale.neutralizeYuv420Chroma(nv21, current.width, current.height)
+            }
             enc.feedNv21(nv21, SystemClock.elapsedRealtimeNanos() / 1000)
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "processStillJpeg OOM: ${e.message}")

@@ -25,6 +25,7 @@ import androidx.preference.PreferenceManager
  */
 object NightMode {
     const val PREF = "night_mode"
+    const val PREF_GRAYSCALE = "night_grayscale"
     const val PREF_AUTO_FLASH = "night_auto_flash"
     const val PREF_AUTO_FLASH_SECONDS = "night_auto_flash_seconds"
     const val DEFAULT_AUTO_FLASH_SECONDS = 10
@@ -61,6 +62,17 @@ object NightMode {
 
     fun setEnabled(context: Context, enabled: Boolean) {
         PreferenceManager.getDefaultSharedPreferences(context).edit { putBoolean(PREF, enabled) }
+    }
+
+    /**
+     * Grayscale Night Mode removes chrominance from both the live GL pipeline and the night still
+     * pipeline. It is a post-processing option, default off, and never changes sensor exposure/ISO.
+     */
+    fun isGrayscaleEnabled(context: Context): Boolean =
+        PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_GRAYSCALE, false)
+
+    fun setGrayscaleEnabled(context: Context, enabled: Boolean) {
+        PreferenceManager.getDefaultSharedPreferences(context).edit { putBoolean(PREF_GRAYSCALE, enabled) }
     }
 
     /** Flash-on-motion is a global night-mode option, not per lens. */

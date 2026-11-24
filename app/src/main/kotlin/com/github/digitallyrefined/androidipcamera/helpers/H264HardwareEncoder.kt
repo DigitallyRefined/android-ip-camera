@@ -161,6 +161,8 @@ class H264HardwareEncoder(
         mirror: Boolean = false,
         rotation: Int = 0,
         crop: CropRegion? = null,
+        /** Keep every Y sample and neutralise U/V for Grayscale Night Mode. */
+        grayscale: Boolean = false,
     ) {
         if (useSurface) return
         synchronized(codecLock) {
@@ -174,8 +176,8 @@ class H264HardwareEncoder(
                     // we copy source pixels in reversed column order instead of post-mirroring.
                     val dstImage = codec.getInputImage(idx)
                     if (dstImage != null) {
-                        if (mirror) mirroredCopyYuv(image, dstImage)
-                        else copyYuv(image, dstImage)
+                        if (mirror) mirroredCopyYuv(image, dstImage, grayscale)
+                        else copyYuv(image, dstImage, grayscale)
                         val size = width * height * 3 / 2
                         codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
                         return
@@ -188,6 +190,7 @@ class H264HardwareEncoder(
                     var arr = yuv
                     if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
                     toYuv420(image, arr)
+                    if (grayscale) Grayscale.neutralizeYuv420Chroma(arr, width, height)
                     buf.clear(); buf.put(arr, 0, size)
                     codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
                     return
@@ -204,6 +207,7 @@ class H264HardwareEncoder(
                     var srcArr = yuv
                     if (srcArr == null || srcArr.size != srcSize) { srcArr = ByteArray(srcSize); yuv = srcArr }
                     toYuv420(image, srcArr, image.width, image.height)
+                    if (grayscale) Grayscale.neutralizeYuv420Chroma(srcArr, image.width, image.height)
                     val dstSize = width * height * 3 / 2
                     var dstArr = rotYuv
                     if (dstArr == null || dstArr.size != dstSize) { dstArr = ByteArray(dstSize); rotYuv = dstArr }
@@ -218,6 +222,7 @@ class H264HardwareEncoder(
                 var srcArr = yuv
                 if (srcArr == null || srcArr.size != srcSize) { srcArr = ByteArray(srcSize); yuv = srcArr }
                 toYuv420(image, srcArr, image.width, image.height)
+                if (grayscale) Grayscale.neutralizeYuv420Chroma(srcArr, image.width, image.height)
                 val dstSize = width * height * 3 / 2
                 var dstArr = rotYuv
                 if (dstArr == null || dstArr.size != dstSize) { dstArr = ByteArray(dstSize); rotYuv = dstArr }
@@ -489,7 +494,7 @@ class H264HardwareEncoder(
         }
     }
 
-    private fun copyYuv(src: ImageProxy, dst: Image) {
+    private fun copyYuv(src: ImageProxy, dst: Image, grayscale: Boolean = false) {
         val srcPlanes = src.planes
         val dstPlanes = dst.planes
 
@@ -499,8 +504,13 @@ class H264HardwareEncoder(
         // U and V planes
         val uvW = src.width / 2
         val uvH = src.height / 2
-        copyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
-        copyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
+        if (grayscale) {
+            fillPlane(dstPlanes[1], uvW, uvH)
+            fillPlane(dstPlanes[2], uvW, uvH)
+        } else {
+            copyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
+            copyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
+        }
     }
 
     /**
@@ -585,18 +595,64 @@ class H264HardwareEncoder(
 
     /** Like [copyYuv] but copies source pixels in reversed column order to achieve a horizontal
      *  mirror. Uses the [getInputImage] path so codec stride/padding requirements are met. */
-    private fun mirroredCopyYuv(src: ImageProxy, dst: Image) {
+    private fun mirroredCopyYuv(src: ImageProxy, dst: Image, grayscale: Boolean = false) {
         val srcPlanes = src.planes
         val dstPlanes = dst.planes
         mirroredCopyPlane(srcPlanes[0], dstPlanes[0], src.width, src.height)
         val uvW = src.width / 2
         val uvH = src.height / 2
-        mirroredCopyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
-        mirroredCopyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
+        if (grayscale) {
+            fillPlane(dstPlanes[1], uvW, uvH)
+            fillPlane(dstPlanes[2], uvW, uvH)
+        } else {
+            mirroredCopyPlane(srcPlanes[1], dstPlanes[1], uvW, uvH)
+            mirroredCopyPlane(srcPlanes[2], dstPlanes[2], uvW, uvH)
+        }
     }
 
     private var planeRowBuf: ByteArray? = null
     private var planeDstRowBuf: ByteArray? = null
+    private var neutralRowBuf: ByteArray? = null
+
+    /**
+     * Write a neutral chroma value into every visible sample of a codec input [Image.Plane],
+     * honouring its rowStride/pixelStride. Interleaved sibling bytes are preserved so the U and V
+     * plane fills do not corrupt each other's layout.
+     */
+    private fun fillPlane(dst: Image.Plane, w: Int, h: Int) {
+        val buf = dst.buffer
+        val rowStride = dst.rowStride
+        val pixelStride = dst.pixelStride
+        val value = Grayscale.NEUTRAL_CHROMA.toByte()
+        if (pixelStride == 1) {
+            var row = neutralRowBuf
+            if (row == null || row.size < w) { row = ByteArray(w); neutralRowBuf = row }
+            java.util.Arrays.fill(row, 0, w, value)
+            for (r in 0 until h) {
+                val start = r * rowStride
+                val count = minOf(w, buf.limit() - start)
+                if (count <= 0) break
+                buf.position(start)
+                buf.put(row, 0, count)
+            }
+        } else {
+            var row = planeRowBuf
+            if (row == null || row.size < rowStride) { row = ByteArray(rowStride); planeRowBuf = row }
+            for (r in 0 until h) {
+                val start = r * rowStride
+                val count = minOf(rowStride, buf.limit() - start)
+                if (count <= 0) break
+                buf.position(start)
+                buf.get(row, 0, count)
+                for (c in 0 until w) {
+                    val idx = c * pixelStride
+                    if (idx < count) row[idx] = value
+                }
+                buf.position(start)
+                buf.put(row, 0, count)
+            }
+        }
+    }
 
     private fun copyPlane(
         src: ImageProxy.PlaneProxy,

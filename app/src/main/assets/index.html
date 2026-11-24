@@ -854,6 +854,16 @@
               Rear camera &amp; H.264 only
             </div>
 
+            <label for="nightGrayscaleCheckbox" style="margin-top:14px;">
+              <input type="checkbox" id="nightGrayscaleCheckbox"
+                onchange="setNightGrayscale(this.checked)" style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">Grayscale Night Mode</span>
+            </label>
+            <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
+              Removes colour from night footage to reduce visible colour noise. Applies live to
+              video and night stills on both MJPEG and H.264, without changing exposure or ISO.
+            </div>
+
             <div style="margin-top:12px;">
               <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
             </div>
@@ -1504,6 +1514,21 @@
       }
     }
 
+    function setNightGrayscale(enabled) {
+      const checkbox = getElById('nightGrayscaleCheckbox');
+      if (checkbox) checkbox.checked = !!enabled;
+      // Post-processing only: the server applies it live to the GL pipe and the next stills.
+      sendControl('night_grayscale', enabled ? 'true' : 'false');
+    }
+
+    function updateNightGrayscaleUi(night) {
+      const checkbox = getElById('nightGrayscaleCheckbox');
+      if (!checkbox) return;
+      if (night.grayscale !== undefined) {
+        checkbox.checked = nightModeTruthy(night.grayscale);
+      }
+    }
+
     function applyNightExposureUi(settings) {
       const box = getElById('nightExposureControls');
       if (!box || !settings) return;
@@ -1868,6 +1893,7 @@
         nightModeTruthy(night.available),
         nightModeTruthy(night.enabled)
       );
+      updateNightGrayscaleUi(night);
       updateAutoNightModeUi(night);
       updateAutoFlashUi(night);
     }
@@ -1904,7 +1930,8 @@
         param === 'recording_storage_limit_percent' || param.startsWith('rtsp_') ||
         param === 'stream_bitrate' || param === 'stream_bitrate_mode' ||
         param === 'stream_keyframe_interval' || param === 'stream_denoise' ||
-        param === 'night_mode' || param === 'night_exposure' || param === 'night_iso' ||
+        param === 'night_mode' || param === 'night_grayscale' ||
+        param === 'night_exposure' || param === 'night_iso' ||
         param === 'auto_night_mode' || param === 'auto_night_offset' ||
         param === 'auto_night_lux' || param === 'night_auto_flash' ||
         param === 'night_auto_flash_seconds') return null;
