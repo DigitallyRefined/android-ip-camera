@@ -1,6 +1,8 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.camera.core.ImageProxy
 import androidx.preference.PreferenceManager
@@ -144,6 +146,51 @@ class MotionMonitor(
             detector.process({ i -> nv21[i].toInt() and 0xFF }, width, height, width, 1, now)
         } catch (e: Exception) {
             Log.w(TAG, "motion frame skipped: ${e.message}")
+        }
+    }
+
+    /**
+     * Night mode streams still JPEGs instead of video frames. Decode a small copy and feed its
+     * luma into the same detector, so motion-triggered recordings and flash keep working while
+     * night mode owns the camera.
+     */
+    @Synchronized
+    fun processJpegFrame(jpeg: ByteArray) {
+        if (!enabled) return
+        try {
+            val now = System.currentTimeMillis()
+            if (now - lastSampleMs < SAMPLE_INTERVAL_MS) return
+            lastSampleMs = now
+
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, bounds)
+            var sample = 1
+            while (bounds.outWidth / sample > 320 || bounds.outHeight / sample > 180) sample *= 2
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, options) ?: return
+            try {
+                val width = bitmap.width
+                val height = bitmap.height
+                if (width < MotionDetectorCore.GRID_W || height < MotionDetectorCore.GRID_H) return
+                val pixels = IntArray(width * height)
+                bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+                val luma = ByteArray(pixels.size)
+                for (i in pixels.indices) {
+                    val p = pixels[i]
+                    val r = (p shr 16) and 0xFF
+                    val g = (p shr 8) and 0xFF
+                    val b = p and 0xFF
+                    luma[i] = ((r * 77 + g * 150 + b * 29) shr 8).toByte()
+                }
+                detector.process({ i -> luma[i].toInt() and 0xFF }, width, height, width, 1, now)
+            } finally {
+                bitmap.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "motion JPEG frame skipped: ${e.message}")
         }
     }
 

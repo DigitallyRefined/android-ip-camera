@@ -629,6 +629,82 @@
               </div>
             </div>
 
+            <details id="nightModeAdvanced" class="advanced-stream" style="display:none; margin-top:14px;">
+              <summary>Automatic modes</summary>
+
+              <div id="autoNightModeRow" style="margin-bottom:8px;">
+                <select id="autoNightModeSelect" onchange="setAutoNightMode(this.value)">
+                  <option value="off">Off</option>
+                  <option value="gps">GPS (sunrise/sunset)</option>
+                  <option value="lux">LUX (ambient light sensor)</option>
+                  <option value="gps_lux">GPS or LUX</option>
+                </select>
+              </div>
+              <div class="hint" style="margin:0 0 12px; font-size:12px; color:#ccc">
+                Choose how automatic night mode decides it is dark. GPS follows civil twilight (−6° sun
+                elevation), LUX follows the phone's ambient light sensor, and GPS or LUX uses either.
+              </div>
+
+              <div id="autoNightOffsetRow" style="display:none;">
+                <label for="autoNightOffset">GPS offset (minutes)</label>
+                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                  <input id="autoNightOffset" type="number" min="-999" max="999" step="1"
+                    inputmode="numeric" value="0" onchange="sendAutoNightOffset(this.value)"
+                    style="width:110px; margin-top:0;">
+                  <span id="autoNightWindow" style="font-size:12px; color:#aaa; font-weight:600;">
+                    Night mode --:-- – --:--
+                  </span>
+                </div>
+                <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                  Shifts both GPS switches later (positive) or earlier (negative).
+                </div>
+              </div>
+
+              <div id="autoNightLuxRow" style="display:none; margin-top:12px;">
+                <label for="autoNightLux">LUX switch-on threshold</label>
+                <input id="autoNightLux" type="number" min="0" max="100000" step="1"
+                  inputmode="numeric" value="5" onchange="sendAutoNightLux(this.value)"
+                  style="width:110px; margin-top:0;">
+                <div id="autoNightLuxHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                  Night mode turns on below this value and off at or above it. Default 5 LUX.
+                </div>
+              </div>
+
+              <div id="autoNightSwitchingRow"
+                style="display:none; margin:16px 0 12px; border-top:1px solid #333; padding-top:12px;">
+                <label style="margin:0 0 4px;">
+                  <input type="checkbox" id="autoNightSwitchingCheckbox"
+                    onchange="setAutoNightModeSwitching(this.checked)" style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">Automatic night mode switching</span>
+                </label>
+                <div class="hint" style="margin:0; font-size:12px; color:#ccc">
+                  Turn this off to use the selected schedule only for torch on motion, without
+                  automatically switching night mode.
+                </div>
+              </div>
+
+              <div id="autoFlashSection" style="margin-top:0;">
+                <label style="margin:0 0 6px;" onclick="onAutoFlashLocked(event)">
+                  <input type="checkbox" id="autoFlashCheckbox"
+                    onchange="setAutoFlash(this.checked)" style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">Torch on motion</span>
+                </label>
+                <div id="autoFlashHint" class="hint" style="margin:0; font-size:12px; color:#ccc">
+                  While the automatic night-mode schedule says it is dark, motion switches to normal video
+                  and turns on the torch. Night mode returns after motion ends and the timer expires.
+                </div>
+                <div id="autoFlashDurationRow" style="display:none; margin-top:10px;">
+                  <label for="autoFlashSeconds">Flash-on time after motion (seconds)</label>
+                  <input id="autoFlashSeconds" type="number" min="1" max="99" step="1" value="10"
+                    inputmode="numeric" onchange="sendAutoFlashSeconds(this.value)"
+                    style="width:90px; margin-top:0;">
+                  <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                    Keep the flash on this many seconds after motion clears. Up to 2 digits, 1–99.
+                  </div>
+                </div>
+              </div>
+            </details>
+
             <p class="group-title">Rotation &amp; Mirror</p>
 
             <div style="margin-bottom: 12px">
@@ -1531,6 +1607,216 @@
       setTimeout(() => loadDeviceInfo(true), 900);
     }
 
+    // ---- Automatic night mode: GPS civil twilight, LUX sensor, or both ----
+    let autoNightLocationGranted = true;
+    let autoNightLuxAvailable = true;
+    let autoNightModeValue = 'off';
+    let autoNightSwitching = false;
+
+    function normalizeAutoNightMode(value) {
+      return ['off', 'gps', 'lux', 'gps_lux'].includes(value) ? value : 'off';
+    }
+
+    function autoNightModeIncludesGps(mode) {
+      return mode === 'gps' || mode === 'gps_lux';
+    }
+
+    function autoNightModeIncludesLux(mode) {
+      return mode === 'lux' || mode === 'gps_lux';
+    }
+
+    function updateAutoNightRows(mode) {
+      const active = mode !== 'off';
+      const gpsRow = getElById('autoNightOffsetRow');
+      if (gpsRow) gpsRow.style.display = active && autoNightModeIncludesGps(mode) ? '' : 'none';
+      const luxRow = getElById('autoNightLuxRow');
+      if (luxRow) luxRow.style.display = active && autoNightModeIncludesLux(mode) ? '' : 'none';
+    }
+
+    function updateAutoNightSwitchingRow(mode) {
+      const row = getElById('autoNightSwitchingRow');
+      const checkbox = getElById('autoNightSwitchingCheckbox');
+      const active = mode !== 'off';
+      if (row) row.style.display = active ? '' : 'none';
+      if (checkbox) {
+        checkbox.checked = autoNightSwitching;
+        checkbox.disabled = !active;
+      }
+    }
+
+    function updateAutoNightModeUi(night) {
+      const section = getElById('nightModeAdvanced');
+      if (!section) return;
+      section.style.display = nightModeTruthy(night.available) ? '' : 'none';
+      if (night.autoLocationGranted !== undefined) {
+        autoNightLocationGranted = nightModeTruthy(night.autoLocationGranted);
+      }
+      if (night.autoLuxAvailable !== undefined) {
+        autoNightLuxAvailable = nightModeTruthy(night.autoLuxAvailable);
+      }
+      if (night.autoSwitching !== undefined) {
+        autoNightSwitching = nightModeTruthy(night.autoSwitching);
+      }
+      const mode = normalizeAutoNightMode(typeof night.autoMode === 'string'
+        ? night.autoMode
+        : (nightModeTruthy(night.auto) ? 'gps' : 'off'));
+      autoNightModeValue = mode;
+      const select = getElById('autoNightModeSelect');
+      if (select) select.value = mode;
+      updateAutoNightSwitchingRow(mode);
+      const offset = getElById('autoNightOffset');
+      if (offset && night.autoOffsetMinutes != null && document.activeElement !== offset) {
+        const n = parseInt(night.autoOffsetMinutes, 10);
+        offset.value = String(Number.isFinite(n) ? Math.max(-999, Math.min(999, n)) : 0);
+      }
+      const windowEl = getElById('autoNightWindow');
+      if (windowEl) {
+        const start = typeof night.autoStart === 'string' ? night.autoStart : '';
+        const end = typeof night.autoEnd === 'string' ? night.autoEnd : '';
+        const acquiring = nightModeTruthy(night.autoLocationAcquiring);
+        windowEl.textContent = start && end
+          ? `Night mode ${start} – ${end}`
+          : acquiring
+            ? 'Acquiring GPS position…'
+            : 'Night mode times unknown';
+        windowEl.title = 'Current or next automatic night-mode period (phone local time)';
+      }
+      const lux = getElById('autoNightLux');
+      if (lux && night.autoLuxThreshold != null && document.activeElement !== lux) {
+        const n = parseInt(night.autoLuxThreshold, 10);
+        lux.value = String(Number.isFinite(n) ? Math.max(0, Math.min(100000, n)) : 5);
+      }
+      const luxHint = getElById('autoNightLuxHint');
+      if (luxHint) {
+        luxHint.textContent = autoNightLuxAvailable
+          ? 'Night mode turns on below this value and off at or above it. Default 5 LUX.'
+          : 'No ambient light sensor detected on this phone; LUX switching is unavailable.';
+      }
+      updateAutoNightRows(mode);
+      updateAutoFlashAvailability();
+    }
+
+    function setAutoNightMode(value) {
+      const select = getElById('autoNightModeSelect');
+      const mode = normalizeAutoNightMode(value);
+      if (mode !== 'off' && autoNightModeIncludesGps(mode) && !autoNightLocationGranted) {
+        if (select) select.value = autoNightModeValue;
+        alert('Location permission is required for GPS automatic night mode. Enable location access for Android IP Camera in Android Settings, then try again.');
+        return;
+      }
+      if (mode === 'lux' && !autoNightLuxAvailable) {
+        if (select) select.value = autoNightModeValue;
+        alert('This phone has no ambient light sensor, so LUX automatic night mode cannot be used. Choose GPS instead.');
+        return;
+      }
+      autoNightModeValue = mode;
+      if (select) select.value = mode;
+      updateAutoNightSwitchingRow(mode);
+      updateAutoNightRows(mode);
+      updateAutoFlashAvailability();
+      sendControl('auto_night_mode', mode);
+      // Auto mode can flip night mode immediately, and the server turns it back off if a required
+      // permission or sensor disappeared after this page loaded.
+      setTimeout(() => loadDeviceInfo(true), 800);
+      // A first location fix can take a few seconds; refresh again so the schedule appears then.
+      if (autoNightModeIncludesGps(mode)) setTimeout(() => loadDeviceInfo(true), 12000);
+    }
+
+    function setAutoNightModeSwitching(enabled) {
+      const checkbox = getElById('autoNightSwitchingCheckbox');
+      if (autoNightModeValue === 'off') {
+        if (checkbox) checkbox.checked = autoNightSwitching;
+        return;
+      }
+      autoNightSwitching = enabled;
+      if (checkbox) checkbox.checked = enabled;
+      sendControl('auto_night_switching', enabled ? 'true' : 'false');
+      setTimeout(() => loadDeviceInfo(true), 800);
+    }
+
+    function sendAutoNightOffset(value) {
+      const offset = getElById('autoNightOffset');
+      let minutes = parseInt(value, 10);
+      if (!Number.isFinite(minutes)) minutes = 0;
+      minutes = Math.max(-999, Math.min(999, minutes));
+      if (offset) offset.value = String(minutes);
+      sendControl('auto_night_offset', String(minutes));
+    }
+
+    function sendAutoNightLux(value) {
+      const luxInput = getElById('autoNightLux');
+      let lux = Math.round(parseFloat(value));
+      if (!Number.isFinite(lux)) lux = 5;
+      lux = Math.max(0, Math.min(100000, lux));
+      if (luxInput) luxInput.value = String(lux);
+      sendControl('auto_night_lux', String(lux));
+    }
+
+    // ---- Motion-triggered flash while night mode is active ----
+    function updateAutoFlashAvailability() {
+      const checkbox = getElById('autoFlashCheckbox');
+      if (!checkbox) return;
+      const scheduleActive = autoNightModeValue !== 'off';
+      const allowed = scheduleActive && recordingMode !== 'off';
+      checkbox.disabled = !allowed;
+      const hint = getElById('autoFlashHint');
+      if (hint) {
+        hint.textContent = recordingMode === 'off'
+          ? 'Motion detection is off in On demand recording mode. Choose Notify on motion, Motion clips, or Continuous recording in Settings → Recording Mode to use this.'
+          : 'While the automatic night-mode schedule says it is dark, motion switches to normal video and turns on the torch. Night mode returns after motion ends and the timer expires.';
+      }
+      const section = getElById('autoFlashSection');
+      if (section) {
+        section.style.display = scheduleActive ? '' : 'none';
+        section.style.opacity = allowed ? '1' : '0.65';
+      }
+      const row = getElById('autoFlashDurationRow');
+      if (row) row.style.display = scheduleActive && checkbox.checked ? '' : 'none';
+    }
+
+    function updateAutoFlashUi(night) {
+      const checkbox = getElById('autoFlashCheckbox');
+      if (checkbox && night.autoFlash !== undefined) {
+        checkbox.checked = nightModeTruthy(night.autoFlash);
+      }
+      const seconds = getElById('autoFlashSeconds');
+      if (seconds && night.autoFlashSeconds != null && document.activeElement !== seconds) {
+        const n = parseInt(night.autoFlashSeconds, 10);
+        seconds.value = String(Number.isFinite(n) ? Math.max(1, Math.min(99, n)) : 10);
+      }
+      updateAutoFlashAvailability();
+    }
+
+    function onAutoFlashLocked(event) {
+      const checkbox = getElById('autoFlashCheckbox');
+      if (!checkbox || !checkbox.disabled) return;
+      event.preventDefault();
+      event.stopPropagation();
+      alert('Flash on motion needs motion detection. Open Settings → Recording Mode and choose Notify on motion, Motion clips, or Continuous recording instead of On demand.');
+    }
+
+    function setAutoFlash(enabled) {
+      const checkbox = getElById('autoFlashCheckbox');
+      if (enabled && recordingMode === 'off') {
+        if (checkbox) checkbox.checked = false;
+        alert('Flash on motion needs motion detection. Open Settings → Recording Mode and choose Notify on motion, Motion clips, or Continuous recording instead of On demand.');
+        return;
+      }
+      const row = getElById('autoFlashDurationRow');
+      if (row) row.style.display = enabled ? '' : 'none';
+      sendControl('night_auto_flash', enabled ? 'true' : 'false');
+      setTimeout(() => loadDeviceInfo(true), 600);
+    }
+
+    function sendAutoFlashSeconds(value) {
+      const input = getElById('autoFlashSeconds');
+      let seconds = parseInt(value, 10);
+      if (!Number.isFinite(seconds)) seconds = 10;
+      seconds = Math.max(1, Math.min(99, seconds));
+      if (input) input.value = String(seconds);
+      sendControl('night_auto_flash_seconds', String(seconds));
+    }
+
     let nightModeLoadingTimer = null;
     let nightModeLoadingMinUntil = 0;
     function setNightModeLoading(show, message, minDurationMs = 0) {
@@ -1582,6 +1868,8 @@
         nightModeTruthy(night.available),
         nightModeTruthy(night.enabled)
       );
+      updateAutoNightModeUi(night);
+      updateAutoFlashUi(night);
     }
 
     // ---- Recording mode: on demand / notify only / motion clips / continuous ----
@@ -1594,6 +1882,7 @@
       document.querySelectorAll('input[name="recordingMode"]').forEach(radio => {
         radio.checked = radio.value === recordingMode;
       });
+      updateAutoFlashAvailability();
     }
 
     function setRecordingMode(mode) {
@@ -1615,7 +1904,10 @@
         param === 'recording_storage_limit_percent' || param.startsWith('rtsp_') ||
         param === 'stream_bitrate' || param === 'stream_bitrate_mode' ||
         param === 'stream_keyframe_interval' || param === 'stream_denoise' ||
-        param === 'night_mode' || param === 'night_exposure' || param === 'night_iso') return null;
+        param === 'night_mode' || param === 'night_exposure' || param === 'night_iso' ||
+        param === 'auto_night_mode' || param === 'auto_night_offset' ||
+        param === 'auto_night_lux' || param === 'night_auto_flash' ||
+        param === 'night_auto_flash_seconds') return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -2487,6 +2779,8 @@
         sendControl('night_mode', 'false');
       }
       updateNightModeUi(nightSupported, nightSupported ? getElById('nightModeCheckbox')?.checked : false);
+      const nightAdvanced = getElById('nightModeAdvanced');
+      if (nightAdvanced) nightAdvanced.style.display = nightSupported ? '' : 'none';
       // Night exposure ranges are per lens; refresh /info.json after the server switches cameras.
       setTimeout(() => loadDeviceInfo(true), 700);
 

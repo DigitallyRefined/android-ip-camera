@@ -167,6 +167,20 @@ class StreamingService : LifecycleService() {
     @Volatile private var nightCaptureIso: Int? = null
     private var nightModeJob: kotlinx.coroutines.Job? = null
     private var nightModeGeneration = 0
+    /** Polls the sun position for the auto-night-mode option; runs for the service lifetime. */
+    private var autoNightModeJob: kotlinx.coroutines.Job? = null
+    /** Last automatic-night-mode decision: true = schedule says night, null = unknown/disabled. */
+    @Volatile private var autoNightScheduleOn: Boolean? = null
+
+    /**
+     * Motion-triggered flash cycle. While active the night stills are paused, the torch is held on,
+     * and the off timer runs once motion clears. When it ends, night mode is restored.
+     */
+    @Volatile private var autoFlashCycleActive = false
+    @Volatile private var autoFlashNightPaused = false
+    @Volatile private var autoFlashManualTorch = false
+    private var autoFlashOffJob: kotlinx.coroutines.Job? = null
+    private var autoFlashTorchJob: kotlinx.coroutines.Job? = null
 
     /** Latest good full-res capture per camera ("front"/"back"), with the time it was taken. */
     private data class CachedSnapshot(val jpeg: ByteArray, val atMs: Long)
@@ -242,6 +256,8 @@ class StreamingService : LifecycleService() {
         private const val NIGHT_MODE_MAX_FAILURES = 5
         /** Delay between failed night captures before retrying. */
         private const val NIGHT_MODE_RETRY_DELAY_MS = 2_000L
+        /** How often to re-evaluate the sun position for automatic night mode. */
+        private const val AUTO_NIGHT_POLL_MS = 30_000L
         const val ACTION_STOP_SERVICE = "com.github.digitallyrefined.androidipcamera.STOP_SERVICE"
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
@@ -338,6 +354,7 @@ class StreamingService : LifecycleService() {
             nightModeEnabled = false
             NightMode.setEnabled(this, false)
         }
+        startAutoNightModeLoop()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             registerReceiver(notificationChannelReceiver,
                 IntentFilter(NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED))
@@ -398,7 +415,7 @@ class StreamingService : LifecycleService() {
                 startForeground(
                     NOTIFICATION_ID,
                     buildForegroundNotification(cameraActive = true),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    foregroundServiceTypes()
                 )
                 markForegroundStarted(whileInUseAllowed = true)
                 return true
@@ -439,9 +456,11 @@ class StreamingService : LifecycleService() {
     /**
      * Retries the camera/microphone foreground service types. Safe to call repeatedly; only
      * startForeground() with the real types is attempted while the app is in the foreground.
+     * [force] re-applies the types even when they are already claimed, so a location permission
+     * granted later can be added without restarting the service.
      */
-    fun ensureForegroundTypes(): Boolean {
-        if (whileInUseForegroundAllowed) return true
+    fun ensureForegroundTypes(force: Boolean = false): Boolean {
+        if (whileInUseForegroundAllowed && !force) return true
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             whileInUseForegroundAllowed = true
             return true
@@ -450,15 +469,30 @@ class StreamingService : LifecycleService() {
             startForeground(
                 NOTIFICATION_ID,
                 buildForegroundNotification(cameraActive = true),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                foregroundServiceTypes()
             )
             markForegroundStarted(whileInUseAllowed = true)
-            Log.i(TAG, "Foreground service promoted to camera/microphone types")
+            Log.i(TAG, "Foreground service types applied: ${foregroundServiceTypes()}")
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "Still not allowed to use camera/microphone in a foreground service", e)
             false
         }
+    }
+
+    /**
+     * The foreground types to claim. Location is only included when the app may use it; otherwise
+     * startForeground() rejects the whole call and streaming would lose camera/microphone access.
+     * It keeps automatic night mode working while the app is in the background.
+     */
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun foregroundServiceTypes(): Int {
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        if (AutoNightMode.hasLocationPermission(this)) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        }
+        return types
     }
 
     private fun buildForegroundNotification(cameraActive: Boolean): Notification {
@@ -747,6 +781,7 @@ class StreamingService : LifecycleService() {
                 Log.i(TAG, "Motion ${if (active) "started" else "ended"}")
                 onvifServer?.setMotion(active)
                 handleMotionRecording(active)
+                handleAutoFlashMotion(active)
             }
             rtspServer = RtspServer(
                 AndroidRtspHost(
@@ -1709,6 +1744,111 @@ class StreamingService : LifecycleService() {
     }
 
     /**
+     * Keep night mode in step with civil twilight while automatic night mode is enabled. The
+     * position is cached by [AutoNightMode], so most ticks are only the cheap solar calculation.
+     */
+    private fun startAutoNightModeLoop() {
+        if (autoNightModeJob != null) return
+        autoNightModeJob = lifecycleScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                try {
+                    evaluateAutoNightMode()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Auto night mode check failed: ${e.message}")
+                }
+                delay(AUTO_NIGHT_POLL_MS)
+            }
+        }
+    }
+
+    private fun evaluateAutoNightMode() {
+        val mode = AutoNightMode.mode(this)
+        if (mode == AutoNightMode.MODE_OFF) {
+            autoNightScheduleOn = null
+            return
+        }
+        if (autoFlashCycleActive) return
+        val camera = camId()
+        if (!NightMode.supports(this, camera)) {
+            autoNightScheduleOn = null
+            return
+        }
+
+        val gpsNight = if (AutoNightMode.modeIncludesGps(mode)) {
+            val location = AutoNightMode.resolveLocation(this)
+            if (location == null) {
+                Log.d(TAG, "Auto night mode ($mode) is waiting for a location fix")
+                null
+            } else {
+                AutoNightMode.isNight(
+                    System.currentTimeMillis(),
+                    location.latitude,
+                    location.longitude,
+                    AutoNightMode.offsetMinutes(this),
+                )
+            }
+        } else {
+            null
+        }
+
+        val luxNight = if (AutoNightMode.modeIncludesLux(mode)) {
+            val lux = AutoNightMode.readLux(this)
+            if (lux == null) {
+                Log.d(TAG, "Auto night mode ($mode) is waiting for a light sensor reading")
+                null
+            } else {
+                lux < AutoNightMode.luxThreshold(this)
+            }
+        } else {
+            null
+        }
+
+        val shouldBeOn = AutoNightMode.shouldBeNight(mode, gpsNight, luxNight) ?: run {
+            autoNightScheduleOn = null
+            return
+        }
+        autoNightScheduleOn = shouldBeOn
+        if (!AutoNightMode.isSwitchingEnabled(this)) return
+        if (shouldBeOn == nightModeEnabled) return
+        Log.i(TAG, "Auto night mode ($mode): turning night mode ${if (shouldBeOn) "on" else "off"}")
+        setNightModeEnabled(shouldBeOn)
+    }
+
+    /**
+     * Applies a night-mode change from the web UI or the automatic sun schedule. Unsupported
+     * cameras are rejected so a stale client cannot leave a mode stored that the lens cannot run.
+     */
+    @Synchronized
+    private fun setNightModeEnabled(next: Boolean) {
+        // Automatic night mode must not fight the motion-flash cycle; the cycle restores it when done.
+        if (next && autoFlashCycleActive) return
+        if (next && !NightMode.supports(this, camId())) {
+            Log.w(TAG, "Ignoring night_mode=on: ${camId()} has no night-mode still pipeline")
+            return
+        }
+        if (nightModeEnabled == next) return
+        nightModeEnabled = next
+        NightMode.setEnabled(this, next)
+        // Automatic changes can happen with nobody watching. Do not wake the camera just to hold a
+        // night session open; the next viewer starts the mode that is stored now. A connected
+        // viewer, the on-phone preview, motion detection or a recording still restart immediately.
+        val cameraInDemand = hasActiveClients() || currentSurfaceProvider != null
+        if (!cameraInDemand) return
+        if (next) {
+            debouncedStartCamera(force = true)
+        } else {
+            // Release the still session before rebinding video. Camera extension sessions can take
+            // a moment to close, and starting CameraX immediately can freeze on the last night photo.
+            launchMain {
+                stopNightModeCamera()
+                captureRunning = false
+                delay(1000)
+                if (!nightModeEnabled) startCamera(force = true)
+            }
+        }
+    }
+
+    /**
      * Opens the still-only night session used in place of live video. Camera extensions can spend
      * several seconds merging a night photo, so capture runs on its own coroutine and each resulting
      * JPEG is fed to the active streaming encoder.
@@ -1808,6 +1948,9 @@ class StreamingService : LifecycleService() {
                 }
                 failures = 0
                 if (!hasActiveClients() && currentSurfaceProvider == null) break
+                // Night stills are the only frames available in this mode; motion detection (and
+                // therefore motion-triggered flash/recording) has to run on them too.
+                motionMonitor?.processJpegFrame(jpeg)
                 val size = nightCaptureSize
                 val maxW = size?.width ?: 0
                 val maxH = size?.height ?: 0
@@ -2486,28 +2629,7 @@ class StreamingService : LifecycleService() {
                     "off", "false", "0" -> false
                     else -> return
                 }
-                // Do not let an unsupported camera store a mode it can never run; the web UI only
-                // shows the checkbox when /info.json reports support, but stale clients may still ask.
-                if (next && !NightMode.supports(this, camId())) {
-                    Log.w(TAG, "Ignoring night_mode=on: ${camId()} has no night-mode still pipeline")
-                    return
-                }
-                nightModeEnabled = next
-                NightMode.setEnabled(this, next)
-                if (next) {
-                    debouncedStartCamera(force = true)
-                } else {
-                    // Release the still session before rebinding video. Camera extension sessions can
-                    // take a moment to close, and starting CameraX immediately can leave the preview
-                    // frozen on the last night photo.
-                    launchMain {
-                        stopNightModeCamera()
-                        captureRunning = false
-                        // Camera extension sessions can take a moment to release the camera.
-                        delay(1000)
-                        if (!nightModeEnabled) startCamera(force = true)
-                    }
-                }
+                setNightModeEnabled(next)
             }
             "night_exposure" -> {
                 val camera = camId()
@@ -2526,6 +2648,79 @@ class StreamingService : LifecycleService() {
                     ?: return
                 NightMode.setIso(this, camera, iso)
                 if (nightModeEnabled) debouncedStartCamera(force = true)
+            }
+            "auto_night_mode" -> {
+                var mode = AutoNightMode.normalizeMode(value)
+                if (mode != AutoNightMode.MODE_OFF) {
+                    if (AutoNightMode.modeIncludesGps(mode) && !AutoNightMode.hasLocationPermission(this)) {
+                        Log.w(TAG, "Ignoring auto_night_mode=$mode: location permission is not granted")
+                        mode = AutoNightMode.MODE_OFF
+                    } else if (mode == AutoNightMode.MODE_LUX && !AutoNightMode.hasLightSensor(this)) {
+                        Log.w(TAG, "Ignoring auto_night_mode=$mode: no ambient light sensor")
+                        mode = AutoNightMode.MODE_OFF
+                    } else if (!NightMode.supports(this, camId())) {
+                        Log.w(TAG, "Ignoring auto_night_mode=$mode: ${camId()} has no night-mode still pipeline")
+                        mode = AutoNightMode.MODE_OFF
+                    }
+                }
+                AutoNightMode.setMode(this, mode)
+                if (mode == AutoNightMode.MODE_OFF) {
+                    autoNightScheduleOn = null
+                    endAutoFlashCycle(restoreNightMode = true)
+                } else {
+                    lifecycleScope.launch(Dispatchers.IO) { evaluateAutoNightMode() }
+                }
+            }
+            "auto_night_switching" -> {
+                val enabled = when (value.lowercase()) {
+                    "on", "true", "1" -> true
+                    "off", "false", "0" -> false
+                    else -> return
+                }
+                AutoNightMode.setSwitchingEnabled(this, enabled)
+                if (AutoNightMode.isEnabled(this)) {
+                    lifecycleScope.launch(Dispatchers.IO) { evaluateAutoNightMode() }
+                }
+            }
+            "auto_night_offset" -> {
+                val minutes = value.trim().toIntOrNull() ?: return
+                AutoNightMode.setOffsetMinutes(this, minutes)
+                if (AutoNightMode.modeIncludesGps(AutoNightMode.mode(this))) {
+                    lifecycleScope.launch(Dispatchers.IO) { evaluateAutoNightMode() }
+                }
+            }
+            "auto_night_lux" -> {
+                val lux = value.trim().toIntOrNull()
+                    ?: value.trim().toFloatOrNull()?.let { Math.round(it) }
+                    ?: return
+                AutoNightMode.setLuxThreshold(this, lux)
+                if (AutoNightMode.modeIncludesLux(AutoNightMode.mode(this))) {
+                    lifecycleScope.launch(Dispatchers.IO) { evaluateAutoNightMode() }
+                }
+            }
+            "night_auto_flash" -> {
+                val next = when (value.lowercase()) {
+                    "on", "true", "1" -> true
+                    "off", "false", "0" -> false
+                    else -> return
+                }
+                if (next && MotionMonitor.modeFor(this) == MotionMonitor.MODE_OFF) {
+                    Log.w(TAG, "Ignoring night_auto_flash=on: recording mode is On demand")
+                    NightMode.setAutoFlashEnabled(this, false)
+                    return
+                }
+                NightMode.setAutoFlashEnabled(this, next)
+                if (next) {
+                    if (nightModeEnabled && motionMonitor?.detector?.active == true) {
+                        startAutoFlashCycle()
+                    }
+                } else {
+                    endAutoFlashCycle(restoreNightMode = true)
+                }
+            }
+            "night_auto_flash_seconds" -> {
+                val seconds = value.trim().toIntOrNull() ?: return
+                NightMode.setAutoFlashSeconds(this, seconds)
             }
             "torch" -> {
                 val current = backend?.getTorch()
@@ -2972,6 +3167,9 @@ class StreamingService : LifecycleService() {
         val recorder = localRecorder
         when (mode) {
             MotionMonitor.MODE_OFF -> {
+                // Motion detection is unavailable in On demand mode, so a flash cycle cannot get
+                // its ending event. End it now instead of leaving the torch on indefinitely.
+                endAutoFlashCycle(restoreNightMode = true)
                 stopContinuousRecording()
                 motionStopJob?.cancel()
                 motionStopJob = null
@@ -3079,6 +3277,106 @@ class StreamingService : LifecycleService() {
             }
         } else if (monitor.recordingOnMotion) {
             scheduleMotionRecordingStop()
+        }
+    }
+
+    // ---------------- motion-triggered flash (night mode helper) ----------------
+
+    /**
+     * Night mode's stills are dark and slow. When "Flash on motion" is enabled and the automatic
+     * night-mode schedule currently says it is night, motion pauses the night stills, switches to
+     * normal video, and lights the torch. Once motion clears, the flash stays on for the configured
+     * number of seconds; motion during that wait restarts the timer. When the timer finally expires,
+     * the torch goes off and night mode returns.
+     */
+    private fun handleAutoFlashMotion(active: Boolean) {
+        if (!NightMode.autoFlashEnabled(this)) return
+        if (motionMonitor?.enabled != true) return
+        if (active) {
+            autoFlashOffJob?.cancel()
+            autoFlashOffJob = null
+            if (autoFlashCycleActive) return
+            // Auto flash follows the automatic night-mode schedule, not the manual night-mode
+            // switch. It only runs while that schedule currently says it is night.
+            if (autoNightScheduleOn != true) return
+            startAutoFlashCycle()
+        } else if (autoFlashCycleActive) {
+            scheduleAutoFlashOff()
+        }
+    }
+
+    @Synchronized
+    private fun startAutoFlashCycle() {
+        if (autoFlashCycleActive) return
+        autoFlashCycleActive = true
+        autoFlashNightPaused = nightModeEnabled
+        autoFlashOffJob?.cancel()
+        autoFlashOffJob = null
+        if (nightModeEnabled) setNightModeEnabled(false)
+        applyAutoFlashTorch(true)
+        startAutoFlashTorchLoop()
+        Log.i(TAG, "Auto flash: motion detected; night mode paused and torch on")
+    }
+
+    private fun scheduleAutoFlashOff() {
+        autoFlashOffJob?.cancel()
+        val seconds = NightMode.autoFlashSeconds(this)
+        autoFlashOffJob = lifecycleScope.launch(Dispatchers.IO) {
+            delay(seconds * 1000L)
+            // Motion during the wait restarts this timer; never end the cycle while motion is active.
+            if (autoFlashCycleActive && motionMonitor?.detector?.active != true) {
+                endAutoFlashCycle(restoreNightMode = true)
+            }
+        }
+    }
+
+    @Synchronized
+    private fun endAutoFlashCycle(restoreNightMode: Boolean) {
+        if (!autoFlashCycleActive) return
+        autoFlashCycleActive = false
+        autoFlashOffJob?.cancel()
+        autoFlashOffJob = null
+        autoFlashTorchJob?.cancel()
+        autoFlashTorchJob = null
+        val manualTorch = PreferenceManager.getDefaultSharedPreferences(this)
+            .getString(PREF_CAMERA_TORCH, "off") == "on"
+        applyAutoFlashTorch(manualTorch)
+        val restore = restoreNightMode && autoFlashNightPaused
+        autoFlashNightPaused = false
+        if (restore) setNightModeEnabled(true)
+        Log.i(TAG, "Auto flash: motion cleared; ${if (restore) "night mode restored" else "torch off"}")
+    }
+
+    /** Turn the torch on or off for the auto-flash cycle, routing through the device when needed. */
+    private fun applyAutoFlashTorch(on: Boolean) {
+        launchMain {
+            val b = backend
+            if (b != null && b.hasFlashUnit) b.setTorch(on)
+            if (on) {
+                if (b?.hasFlashUnit != true) setDeviceTorch(true)
+            } else {
+                setDeviceTorch(false)
+            }
+        }
+    }
+
+    /**
+     * Keep the torch held while the cycle is active. The camera is restarted when night mode is
+     * paused, so a single enableTorch() call can lose the race with the settling HAL.
+     */
+    private fun startAutoFlashTorchLoop() {
+        autoFlashTorchJob?.cancel()
+        autoFlashTorchJob = lifecycleScope.launch(Dispatchers.Main) {
+            while (isActive && autoFlashCycleActive) {
+                val b = backend
+                if (b?.hasFlashUnit == true) {
+                    if (!b.getTorch()) b.setTorch(true)
+                    if (deviceTorchOn) setDeviceTorch(false)
+                } else {
+                    setDeviceTorch(true)
+                }
+                delay(500)
+            }
         }
     }
 
