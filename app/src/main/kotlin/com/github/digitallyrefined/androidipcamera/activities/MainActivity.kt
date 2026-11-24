@@ -84,7 +84,7 @@ class MainActivity : AppCompatActivity() {
             // The service may have been restarted in the background (where Android does not
             // allow camera/microphone foreground service types). The activity is now in the
             // foreground, so retry the types before starting the server and camera.
-            streamingService?.ensureForegroundTypes()
+            streamingService?.ensureForegroundTypes(force = true)
 
             // Initialize Server
             streamingService?.startStreamingServer()
@@ -504,6 +504,9 @@ class MainActivity : AppCompatActivity() {
                 if (!hasAudioPermission()) {
                     Toast.makeText(this, "Microphone permission denied audio streaming disabled", Toast.LENGTH_LONG).show()
                 }
+                if (!hasLocationPermission()) {
+                    Toast.makeText(this, "Location permission denied automatic night mode disabled", Toast.LENGTH_LONG).show()
+                }
                 startService()
             } else {
                 androidx.appcompat.app.AlertDialog.Builder(this)
@@ -634,6 +637,9 @@ class MainActivity : AppCompatActivity() {
     }
     private fun hasAudioPermission() =
         ContextCompat.checkSelfPermission(baseContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    private fun hasLocationPermission() =
+        ContextCompat.checkSelfPermission(baseContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(baseContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     companion object {
         private const val TAG = "MainActivity"
@@ -660,12 +666,15 @@ class MainActivity : AppCompatActivity() {
         private val OPTIONAL_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             arrayOf(
                 Manifest.permission.RECORD_AUDIO,
-                Manifest.permission.NEARBY_WIFI_DEVICES
+                Manifest.permission.NEARBY_WIFI_DEVICES,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
             )
         } else {
             arrayOf(
                 Manifest.permission.RECORD_AUDIO,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
             )
         }
     }

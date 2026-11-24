@@ -1520,6 +1520,20 @@ class StreamingServerHelper(
         val nightIsoMin: Int?,
         val nightIsoMax: Int?,
         val nightIso: Int?,
+        /** Automatic night mode: "off", "gps", "lux" or "gps_lux". */
+        val nightAutoMode: String,
+        val nightAuto: Boolean,
+        val nightAutoOffsetMinutes: Int,
+        /** Whether location permission is granted, so the UI can explain why GPS mode is unavailable. */
+        val nightAutoLocationGranted: Boolean,
+        /** True while a GPS fix is actively being acquired. */
+        val nightAutoLocationAcquiring: Boolean,
+        val nightAutoLuxThreshold: Int,
+        /** Whether the phone has an ambient-light sensor for LUX mode. */
+        val nightAutoLuxAvailable: Boolean,
+        /** Phone-local start and end of the current/upcoming automatic night-mode period. */
+        val nightAutoStart: String?,
+        val nightAutoEnd: String?,
     )
 
     private data class DeviceInfo(
@@ -1624,6 +1638,15 @@ class StreamingServerHelper(
                     put("isoMin", settings.nightIsoMin ?: JSONObject.NULL)
                     put("isoMax", settings.nightIsoMax ?: JSONObject.NULL)
                     put("iso", settings.nightIso ?: JSONObject.NULL)
+                    put("auto", settings.nightAuto)
+                    put("autoMode", settings.nightAutoMode)
+                    put("autoOffsetMinutes", settings.nightAutoOffsetMinutes)
+                    put("autoLocationGranted", settings.nightAutoLocationGranted)
+                    put("autoLocationAcquiring", settings.nightAutoLocationAcquiring)
+                    put("autoLuxThreshold", settings.nightAutoLuxThreshold)
+                    put("autoLuxAvailable", settings.nightAutoLuxAvailable)
+                    put("autoStart", settings.nightAutoStart ?: JSONObject.NULL)
+                    put("autoEnd", settings.nightAutoEnd ?: JSONObject.NULL)
                 })
                 put("streamBitrateKbps", JSONObject().apply {
                     put("h264", settings.streamBitrateKbps.h264)
@@ -1796,6 +1819,20 @@ class StreamingServerHelper(
         val mjpegW = Math.round(effectiveW * scale).coerceAtLeast(1)
         val mjpegH = Math.round(effectiveH * scale).coerceAtLeast(1)
         val nightManual = NightMode.manualExposure(context, cameraId)
+        val autoMode = AutoNightMode.mode(context)
+        val autoOffset = AutoNightMode.offsetMinutes(context)
+        val autoWindow = if (AutoNightMode.modeIncludesGps(autoMode)) {
+            AutoNightMode.cachedLocation(context)?.let { point ->
+                AutoNightMode.nightWindow(
+                    System.currentTimeMillis(),
+                    point.latitude,
+                    point.longitude,
+                    autoOffset,
+                )
+            }
+        } else {
+            null
+        }
         return StreamSettings(
             cameraId = cameraId,
             resolution = quality,
@@ -1852,6 +1889,15 @@ class StreamingServerHelper(
             nightIsoMin = nightManual?.minIso,
             nightIsoMax = nightManual?.maxIso,
             nightIso = nightManual?.let { NightMode.currentIso(context, cameraId, it) },
+            nightAuto = AutoNightMode.isEnabled(context),
+            nightAutoMode = autoMode,
+            nightAutoOffsetMinutes = autoOffset,
+            nightAutoLocationGranted = AutoNightMode.hasLocationPermission(context),
+            nightAutoLocationAcquiring = AutoNightMode.isAcquiringLocation(),
+            nightAutoLuxThreshold = AutoNightMode.luxThreshold(context),
+            nightAutoLuxAvailable = AutoNightMode.hasLightSensor(context),
+            nightAutoStart = autoWindow?.let { AutoNightMode.formatLocalTime(context, it.startMs) },
+            nightAutoEnd = autoWindow?.let { AutoNightMode.formatLocalTime(context, it.endMs) },
         )
     }
 

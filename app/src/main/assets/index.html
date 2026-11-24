@@ -629,6 +629,48 @@
               </div>
             </div>
 
+            <details id="nightModeAdvanced" class="advanced-stream" style="display:none; margin-top:14px;">
+              <summary>Advanced</summary>
+
+              <label for="autoNightModeSelect">Automatic night mode</label>
+              <select id="autoNightModeSelect" onchange="setAutoNightMode(this.value)"
+                style="margin-bottom:8px">
+                <option value="off">Off</option>
+                <option value="gps">GPS (sunrise/sunset)</option>
+                <option value="lux">LUX (ambient light sensor)</option>
+                <option value="gps_lux">GPS or LUX</option>
+              </select>
+              <div class="hint" style="margin:0 0 12px; font-size:12px; color:#ccc">
+                GPS follows civil twilight (−6° sun elevation). LUX follows the phone's ambient light
+                sensor. GPS or LUX turns night mode on when either condition says it is dark.
+              </div>
+
+              <div id="autoNightOffsetRow" style="display:none;">
+                <label for="autoNightOffset">GPS offset (minutes)</label>
+                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                  <input id="autoNightOffset" type="number" min="-999" max="999" step="1"
+                    inputmode="numeric" value="0" onchange="sendAutoNightOffset(this.value)"
+                    style="width:110px; margin-top:0;">
+                  <span id="autoNightWindow" style="font-size:12px; color:#aaa; font-weight:600;">
+                    Night mode --:-- – --:--
+                  </span>
+                </div>
+                <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                  Shifts both GPS switches later (positive) or earlier (negative). Up to 3 digits, −999 to 999.
+                </div>
+              </div>
+
+              <div id="autoNightLuxRow" style="display:none; margin-top:12px;">
+                <label for="autoNightLux">LUX switch-on threshold</label>
+                <input id="autoNightLux" type="number" min="0" max="100000" step="1"
+                  inputmode="numeric" value="5" onchange="sendAutoNightLux(this.value)"
+                  style="width:110px; margin-top:0;">
+                <div id="autoNightLuxHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                  Night mode turns on below this value and off at or above it. Default 5 LUX.
+                </div>
+              </div>
+            </details>
+
             <p class="group-title">Rotation &amp; Mirror</p>
 
             <div style="margin-bottom: 12px">
@@ -1531,6 +1573,119 @@
       setTimeout(() => loadDeviceInfo(true), 900);
     }
 
+    // ---- Automatic night mode: GPS civil twilight, LUX sensor, or both ----
+    let autoNightLocationGranted = true;
+    let autoNightLuxAvailable = true;
+    let autoNightModeValue = 'off';
+
+    function normalizeAutoNightMode(value) {
+      return ['gps', 'lux', 'gps_lux'].includes(value) ? value : 'off';
+    }
+
+    function autoNightModeIncludesGps(mode) {
+      return mode === 'gps' || mode === 'gps_lux';
+    }
+
+    function autoNightModeIncludesLux(mode) {
+      return mode === 'lux' || mode === 'gps_lux';
+    }
+
+    function updateAutoNightRows(mode) {
+      const gpsRow = getElById('autoNightOffsetRow');
+      if (gpsRow) gpsRow.style.display = autoNightModeIncludesGps(mode) ? '' : 'none';
+      const luxRow = getElById('autoNightLuxRow');
+      if (luxRow) luxRow.style.display = autoNightModeIncludesLux(mode) ? '' : 'none';
+    }
+
+    function updateAutoNightModeUi(night) {
+      const section = getElById('nightModeAdvanced');
+      if (!section) return;
+      section.style.display = nightModeTruthy(night.available) ? '' : 'none';
+      let mode = 'off';
+      if (typeof night.autoMode === 'string') mode = normalizeAutoNightMode(night.autoMode);
+      else if (nightModeTruthy(night.auto)) mode = 'gps';
+      autoNightModeValue = mode;
+      const select = getElById('autoNightModeSelect');
+      if (select) select.value = mode;
+      if (night.autoLocationGranted !== undefined) {
+        autoNightLocationGranted = nightModeTruthy(night.autoLocationGranted);
+      }
+      if (night.autoLuxAvailable !== undefined) {
+        autoNightLuxAvailable = nightModeTruthy(night.autoLuxAvailable);
+      }
+      const offset = getElById('autoNightOffset');
+      if (offset && night.autoOffsetMinutes != null && document.activeElement !== offset) {
+        const n = parseInt(night.autoOffsetMinutes, 10);
+        offset.value = String(Number.isFinite(n) ? Math.max(-999, Math.min(999, n)) : 0);
+      }
+      const windowEl = getElById('autoNightWindow');
+      if (windowEl) {
+        const start = typeof night.autoStart === 'string' ? night.autoStart : '';
+        const end = typeof night.autoEnd === 'string' ? night.autoEnd : '';
+        const acquiring = nightModeTruthy(night.autoLocationAcquiring);
+        windowEl.textContent = start && end
+          ? `Night mode ${start} – ${end}`
+          : acquiring
+            ? 'Acquiring GPS position…'
+            : 'Night mode times unknown';
+        windowEl.title = 'Current or next automatic night-mode period (phone local time)';
+      }
+      const lux = getElById('autoNightLux');
+      if (lux && night.autoLuxThreshold != null && document.activeElement !== lux) {
+        const n = parseInt(night.autoLuxThreshold, 10);
+        lux.value = String(Number.isFinite(n) ? Math.max(0, Math.min(100000, n)) : 5);
+      }
+      const luxHint = getElById('autoNightLuxHint');
+      if (luxHint) {
+        luxHint.textContent = autoNightLuxAvailable
+          ? 'Night mode turns on below this value and off at or above it. Default 5 LUX.'
+          : 'No ambient light sensor detected on this phone; LUX switching is unavailable.';
+      }
+      updateAutoNightRows(mode);
+    }
+
+    function setAutoNightMode(value) {
+      const select = getElById('autoNightModeSelect');
+      const mode = normalizeAutoNightMode(value);
+      if (mode !== 'off' && autoNightModeIncludesGps(mode) && !autoNightLocationGranted) {
+        if (select) select.value = autoNightModeValue;
+        alert('Location permission is required for GPS automatic night mode. Enable location access for Android IP Camera in Android Settings, then try again.');
+        return;
+      }
+      if (mode === 'lux' && !autoNightLuxAvailable) {
+        if (select) select.value = autoNightModeValue;
+        alert('This phone has no ambient light sensor, so LUX automatic night mode cannot be used. Choose GPS instead.');
+        return;
+      }
+      autoNightModeValue = mode;
+      if (select) select.value = mode;
+      updateAutoNightRows(mode);
+      sendControl('auto_night_mode', mode);
+      // Auto mode can flip night mode immediately, and the server turns it back off if a required
+      // permission or sensor disappeared after this page loaded.
+      setTimeout(() => loadDeviceInfo(true), 800);
+      // A first location fix can take a few seconds; refresh again so the schedule appears then.
+      if (autoNightModeIncludesGps(mode)) setTimeout(() => loadDeviceInfo(true), 12000);
+    }
+
+    function sendAutoNightOffset(value) {
+      const offset = getElById('autoNightOffset');
+      let minutes = parseInt(value, 10);
+      if (!Number.isFinite(minutes)) minutes = 0;
+      minutes = Math.max(-999, Math.min(999, minutes));
+      if (offset) offset.value = String(minutes);
+      sendControl('auto_night_offset', String(minutes));
+    }
+
+    function sendAutoNightLux(value) {
+      const luxInput = getElById('autoNightLux');
+      let lux = Math.round(parseFloat(value));
+      if (!Number.isFinite(lux)) lux = 5;
+      lux = Math.max(0, Math.min(100000, lux));
+      if (luxInput) luxInput.value = String(lux);
+      sendControl('auto_night_lux', String(lux));
+    }
+
     let nightModeLoadingTimer = null;
     let nightModeLoadingMinUntil = 0;
     function setNightModeLoading(show, message, minDurationMs = 0) {
@@ -1582,6 +1737,7 @@
         nightModeTruthy(night.available),
         nightModeTruthy(night.enabled)
       );
+      updateAutoNightModeUi(night);
     }
 
     // ---- Recording mode: on demand / notify only / motion clips / continuous ----
@@ -1615,7 +1771,9 @@
         param === 'recording_storage_limit_percent' || param.startsWith('rtsp_') ||
         param === 'stream_bitrate' || param === 'stream_bitrate_mode' ||
         param === 'stream_keyframe_interval' || param === 'stream_denoise' ||
-        param === 'night_mode' || param === 'night_exposure' || param === 'night_iso') return null;
+        param === 'night_mode' || param === 'night_exposure' || param === 'night_iso' ||
+        param === 'auto_night_mode' || param === 'auto_night_offset' ||
+        param === 'auto_night_lux') return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -2487,6 +2645,8 @@
         sendControl('night_mode', 'false');
       }
       updateNightModeUi(nightSupported, nightSupported ? getElById('nightModeCheckbox')?.checked : false);
+      const nightAdvanced = getElById('nightModeAdvanced');
+      if (nightAdvanced) nightAdvanced.style.display = nightSupported ? '' : 'none';
       // Night exposure ranges are per lens; refresh /info.json after the server switches cameras.
       setTimeout(() => loadDeviceInfo(true), 700);
 
