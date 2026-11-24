@@ -776,72 +776,6 @@
             </select>
             <div class="hint" id="streamSummary" style="margin: 0 0 16px; font-size: 12px; color: #ccc"></div>
 
-            <p class="group-title">Text Overlay (OSD)</p>
-
-            <label style="margin:0 0 4px;">
-              <input type="checkbox" id="osdEnabledCheckbox" onchange="setOsdEnabled(this.checked)"
-                style="margin:0;vertical-align:middle;">
-              <span style="vertical-align:middle;">📝 Burn status text into the video</span>
-            </label>
-            <div class="hint" style="margin:0 0 12px; font-size:12px; color:#ccc">
-              Applies to the H.264 and MJPEG streams themselves, so RTSP clients and recordings see
-              the same text as the web preview.
-            </div>
-
-            <div id="osdOptions" style="display:none;">
-              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 12px;">
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdTimeCheckbox" onchange="setOsdField('time', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">🕒 Time</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdDateCheckbox" onchange="setOsdField('date', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">📅 Date</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdBatteryCheckbox" onchange="setOsdField('battery', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">🔋 Battery</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdWifiCheckbox" onchange="setOsdField('wifi', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">🛜 Wi-Fi</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdTemperatureCheckbox"
-                    onchange="setOsdField('temperature', this.checked)" style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">🌡️ Temperature</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdCameraNameCheckbox"
-                    onchange="setOsdField('camera_name_enabled', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">📷 Camera name</span>
-                </label>
-              </div>
-
-              <label for="osdCameraNameInput" style="margin-top:12px;">Camera name</label>
-              <input type="text" id="osdCameraNameInput" maxlength="40" placeholder="Back 0"
-                onchange="sendControl('osd_camera_name', this.value)"
-                onblur="sendControl('osd_camera_name', this.value)">
-              <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                Leave blank to use the selected lens.
-              </div>
-            </div>
-
-            <p class="group-title">Overheat Protection</p>
-
-            <label for="overheatPauseC">Pause streaming at battery temperature (°C)</label>
-            <input id="overheatPauseC" type="number" min="0" max="100" step="1" inputmode="numeric"
-              value="0" onchange="sendControl('overheat_pause_c', this.value)">
-            <div class="hint" style="margin:4px 0 16px; font-size:12px; color:#ccc">
-              0 disables. Above this temperature streaming stops (the same as /control/stop) and
-              resumes after the battery cools 3°C.
-            </div>
-
             <details id="advancedStreamSection" class="advanced-stream">
               <summary>Advanced stream settings</summary>
 
@@ -935,6 +869,16 @@
               <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
             </div>
 
+            <p class="group-title">Overheat Protection</p>
+
+            <label for="overheatPauseC">Pause streaming at battery temperature (°C)</label>
+            <input id="overheatPauseC" type="number" min="0" max="100" step="1" inputmode="numeric"
+              value="0" onchange="sendControl('overheat_pause_c', this.value)">
+            <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+              0 disables. Above this temperature streaming stops (the same as /control/stop) and
+              resumes after the battery cools 3°C.
+            </div>
+
             <p class="group-title">Recording Mode</p>
 
             <div class="mode-list" role="radiogroup" aria-label="Recording mode">
@@ -1022,6 +966,60 @@
               <button id="resetCropBtn" class="btn" style="flex:1 1 0; min-width:0;">Reset Crop</button>
             </div>
           </div>
+
+          <details id="osdSection" class="setting-group">
+            <summary>Text Overlay (OSD)</summary>
+
+            <label style="margin:0 0 15px;">
+              <input type="checkbox" id="osdEnabledCheckbox" onchange="setOsdEnabled(this.checked)"
+                style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">📝 Burn status text into the video</span>
+            </label>
+
+            <div id="osdOptions" style="display:none;">
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 12px;">
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdTimeCheckbox" onchange="setOsdField('time', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">🕒 Time</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdDateCheckbox" onchange="setOsdField('date', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">📅 Date</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdBatteryCheckbox" onchange="setOsdField('battery', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">🔋 Battery</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdWifiCheckbox" onchange="setOsdField('wifi', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">🛜 Wi-Fi</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdTemperatureCheckbox"
+                    onchange="setOsdField('temperature', this.checked)" style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">🌡️ Temperature</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdCameraNameCheckbox"
+                    onchange="setOsdField('camera_name_enabled', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">📷 Camera name</span>
+                </label>
+              </div>
+
+              <label for="osdCameraNameInput" style="margin-top:12px;">Camera name</label>
+              <input type="text" id="osdCameraNameInput" maxlength="40" placeholder="Back 0"
+                onchange="sendControl('osd_camera_name', this.value)"
+                onblur="sendControl('osd_camera_name', this.value)">
+              <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                Leave blank to use the selected lens.
+              </div>
+            </div>
+          </details>
 
           <details id="substreamSection" class="setting-group" style="display:none">
             <summary>Substream</summary>
@@ -1127,6 +1125,9 @@
     let deviceHasFlash = false;
     let cameraList = [];
     let recordingMode = 'off';
+    // When the burned-in OSD is active, the HTML status badge would duplicate the same values.
+    let osdEnabled = false;
+    let statusOverlayReady = false;
 
     // Crop selection: normalised 0..1 rectangle in the displayed (rotated) frame.
     let cropRegion = null;
@@ -2150,11 +2151,27 @@
       if (options) options.style.display = enabled ? '' : 'none';
     }
 
+    function updateStatusOverlayVisibility() {
+      const overlay = getElById('statusOverlay');
+      if (!overlay) return;
+      const batteryEl = getElById('batteryStatus');
+      const wifiEl = getElById('wifiStatus');
+      const tempEl = getElById('tempStatus');
+      const hasStatus = statusOverlayReady && !osdEnabled && (
+        (batteryEl && batteryEl.style.display !== 'none') ||
+        (wifiEl && wifiEl.style.display !== 'none') ||
+        (tempEl && tempEl.style.display !== 'none')
+      );
+      overlay.style.display = hasStatus ? 'flex' : 'none';
+    }
+
     function setOsdEnabled(enabled) {
+      osdEnabled = !!enabled;
       const checkbox = getElById('osdEnabledCheckbox');
-      if (checkbox) checkbox.checked = !!enabled;
-      updateOsdOptions(!!enabled);
-      sendControl('osd_enabled', enabled ? 'true' : 'false');
+      if (checkbox) checkbox.checked = osdEnabled;
+      updateOsdOptions(osdEnabled);
+      updateStatusOverlayVisibility();
+      sendControl('osd_enabled', osdEnabled ? 'true' : 'false');
     }
 
     function setOsdField(field, enabled) {
@@ -2180,6 +2197,8 @@
         name.value = osd.name;
       }
       updateOsdOptions(!!osd.enabled);
+      osdEnabled = !!osd.enabled;
+      updateStatusOverlayVisibility();
     }
 
     function applyOverheatSettings(settings) {
@@ -3154,7 +3173,6 @@
       const batteryEl = getElById('batteryStatus');
       const wifiEl = getElById('wifiStatus');
       const tempEl = getElById('tempStatus');
-      const overlay = getElById('statusOverlay');
 
       if (batteryEl && typeof data.batteryPercent === 'number') {
         if (data.batteryPercent < 0) {
@@ -3188,12 +3206,8 @@
         }
       }
 
-      if (overlay) {
-        const hasStatus = (batteryEl && batteryEl.style.display !== 'none') ||
-          (wifiEl && wifiEl.style.display !== 'none') ||
-          (tempEl && tempEl.style.display !== 'none');
-        overlay.style.display = hasStatus ? 'flex' : 'none';
-      }
+      statusOverlayReady = true;
+      updateStatusOverlayVisibility();
     }
 
     // The first decoded frame means the encoder/capture path is live, so its negotiated size is now
