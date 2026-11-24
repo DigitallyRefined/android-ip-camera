@@ -112,6 +112,10 @@ class StreamingService : LifecycleService() {
      *  session-bound torch, a setTorchMode torch survives process death. */
     @Volatile private var deviceTorchOn = false
     @Volatile private var localRecorder: LocalRecorder? = null
+    /** Shared OSD renderer, so MJPEG, the GL H.264 pipe and the CPU H.264 path agree. */
+    private val osdRenderer by lazy {
+        CameraOverlayRenderer(applicationContext) { currentOsdCameraName() }
+    }
     /** Serializes manual and motion-triggered recording start/stop transitions. */
     private val recordingLock = Any()
     /** Pending auto-stop for a motion-triggered recording (cancelled when motion resumes). */
@@ -169,6 +173,8 @@ class StreamingService : LifecycleService() {
     private var nightModeGeneration = 0
     /** Polls the sun position for the auto-night-mode option; runs for the service lifetime. */
     private var autoNightModeJob: kotlinx.coroutines.Job? = null
+    /** Optional battery-temperature guard; runs for the service lifetime. */
+    private var overheatJob: kotlinx.coroutines.Job? = null
     /** Last automatic-night-mode decision: true = schedule says night, null = unknown/disabled. */
     @Volatile private var autoNightScheduleOn: Boolean? = null
 
@@ -258,6 +264,8 @@ class StreamingService : LifecycleService() {
         private const val NIGHT_MODE_RETRY_DELAY_MS = 2_000L
         /** How often to re-evaluate the sun position for automatic night mode. */
         private const val AUTO_NIGHT_POLL_MS = 30_000L
+        /** How often to check the optional battery-temperature streaming guard. */
+        private const val OVERHEAT_POLL_MS = 30_000L
         const val ACTION_STOP_SERVICE = "com.github.digitallyrefined.androidipcamera.STOP_SERVICE"
         const val ACTION_RESTART_NOTIFICATION = "com.github.digitallyrefined.androidipcamera.RESTART_NOTIFICATION"
         const val ACTION_RESTART_SERVER = "com.github.digitallyrefined.androidipcamera.RESTART_SERVER"
@@ -355,6 +363,7 @@ class StreamingService : LifecycleService() {
             NightMode.setEnabled(this, false)
         }
         startAutoNightModeLoop()
+        startOverheatMonitor()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             registerReceiver(notificationChannelReceiver,
                 IntentFilter(NotificationManager.ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED))
@@ -776,7 +785,9 @@ class StreamingService : LifecycleService() {
             )
             // Initialize encoders with the streaming server helper
             h264StreamingEncoder = H264StreamingEncoder(this, streamingServerHelper!!) { Log.i(TAG, "H264: $it"); onLog?.invoke(it) }
+                .also { it.overlayRenderer = osdRenderer }
             mjpegStreamingEncoder = MjpegStreamingEncoder(this, streamingServerHelper!!) { Log.i(TAG, "MJPEG: $it"); onLog?.invoke(it) }
+                .also { it.overlayRenderer = osdRenderer }
             motionMonitor = MotionMonitor(this) { active ->
                 Log.i(TAG, "Motion ${if (active) "started" else "ended"}")
                 onvifServer?.setMotion(active)
@@ -1043,6 +1054,20 @@ class StreamingService : LifecycleService() {
         ContextCompat.checkSelfPermission(baseContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     private fun camId(): String = selectedCameraId ?: if (frontFacing) "front" else "back"
+
+    /**
+     * Camera-name line in the OSD. A user-set name wins; otherwise use the selected lens
+     * (e.g. "Back 3") so the burned-in text identifies the source without extra configuration.
+     */
+    private fun currentOsdCameraName(): String {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val custom = CameraOsd.sanitizeName(prefs.getString(CameraOsd.PREF_CAMERA_NAME, "").orEmpty())
+        if (custom.isNotEmpty()) return custom
+        val facing = if (frontFacing) "Front" else "Back"
+        val id = camId()
+        val physical = id.substringAfter(':', "")
+        return if (physical.isNotBlank()) "$facing $physical" else facing
+    }
 
     private data class CameraToken(val logicalId: String, val physicalId: String?)
 
@@ -1681,6 +1706,7 @@ class StreamingService : LifecycleService() {
                     it.denoise = readDenoisePref()
                     it.grayscale = readGrayscalePref()
                     it.crop = readCropPref()
+                    it.overlayRenderer = osdRenderer
                     it.start()
                     cameraXGlPipe = it
                 }
@@ -1758,6 +1784,54 @@ class StreamingService : LifecycleService() {
                     Log.w(TAG, "Auto night mode check failed: ${e.message}")
                 }
                 delay(AUTO_NIGHT_POLL_MS)
+            }
+        }
+    }
+
+    /**
+     * Optional battery-temperature guard. Uses the same streaming gate as `/control/stop`, so the
+     * camera stops once the last viewer is dropped. Streaming resumes when the battery cools by
+     * [OverheatProtection.RESUME_HYSTERESIS_C] degrees, or immediately when the threshold is set to 0.
+     */
+    private fun startOverheatMonitor() {
+        if (overheatJob != null) return
+        overheatJob = lifecycleScope.launch(Dispatchers.IO) {
+            var autoPaused = false
+            while (isActive) {
+                delay(OVERHEAT_POLL_MS)
+                try {
+                    val threshold = OverheatProtection.stored(this@StreamingService)
+                    if (threshold == OverheatProtection.DISABLED) {
+                        if (autoPaused) {
+                            autoPaused = false
+                            streamingServerHelper?.setStreamingEnabled(true)
+                            onLog?.invoke("Overheat protection disabled; streaming resumed")
+                        }
+                        continue
+                    }
+                    val temperature = DeviceStatus.temperatureC(this@StreamingService) ?: continue
+                    if (!autoPaused && temperature >= threshold) {
+                        if (streamingServerHelper?.isStreamingEnabled() == true) {
+                            autoPaused = true
+                            streamingServerHelper?.setStreamingEnabled(false)
+                            onLog?.invoke(
+                                "Overheat protection: battery " +
+                                    "${String.format(Locale.US, "%.1f", temperature)}°C >= ${threshold}°C; streaming paused"
+                            )
+                        }
+                    } else if (autoPaused &&
+                        temperature <= threshold - OverheatProtection.RESUME_HYSTERESIS_C
+                    ) {
+                        autoPaused = false
+                        streamingServerHelper?.setStreamingEnabled(true)
+                        onLog?.invoke(
+                            "Overheat protection: battery cooled to " +
+                                "${String.format(Locale.US, "%.1f", temperature)}°C; streaming resumed"
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Overheat check failed: ${e.message}")
+                }
             }
         }
     }
@@ -2192,6 +2266,7 @@ class StreamingService : LifecycleService() {
             it.denoise = readDenoisePref()
             it.grayscale = readGrayscalePref()
             it.crop = readCropPref()
+            it.overlayRenderer = osdRenderer
             it.start()
             // Camera1 renders at [cameraSize]; the pipe turns that frame into [frame].
             it.setCameraBufferSize(cameraSize.width, cameraSize.height)
@@ -2891,6 +2966,43 @@ class StreamingService : LifecycleService() {
                 cameraXGlPipe?.grayscale = next
                 Log.i(TAG, "Grayscale night mode=$next " +
                     "glPipe=${glPipe != null} cameraXGlPipe=${cameraXGlPipe != null}")
+            }
+            // Burned-in OSD. The renderer re-reads these preferences once per second, so changes
+            // apply to MJPEG, the GL surface path and the CPU H.264 path without a restart.
+            "osd_enabled" -> {
+                val next = CameraOsd.parseBoolean(value) ?: return
+                prefs.edit { putBoolean(CameraOsd.PREF_ENABLED, next) }
+            }
+            "osd_time" -> {
+                val next = CameraOsd.parseBoolean(value) ?: return
+                prefs.edit { putBoolean(CameraOsd.PREF_TIME, next) }
+            }
+            "osd_date" -> {
+                val next = CameraOsd.parseBoolean(value) ?: return
+                prefs.edit { putBoolean(CameraOsd.PREF_DATE, next) }
+            }
+            "osd_battery" -> {
+                val next = CameraOsd.parseBoolean(value) ?: return
+                prefs.edit { putBoolean(CameraOsd.PREF_BATTERY, next) }
+            }
+            "osd_wifi" -> {
+                val next = CameraOsd.parseBoolean(value) ?: return
+                prefs.edit { putBoolean(CameraOsd.PREF_WIFI, next) }
+            }
+            "osd_temperature" -> {
+                val next = CameraOsd.parseBoolean(value) ?: return
+                prefs.edit { putBoolean(CameraOsd.PREF_TEMPERATURE, next) }
+            }
+            "osd_camera_name_enabled" -> {
+                val next = CameraOsd.parseBoolean(value) ?: return
+                prefs.edit { putBoolean(CameraOsd.PREF_CAMERA_NAME_ENABLED, next) }
+            }
+            "osd_camera_name" -> {
+                prefs.edit { putString(CameraOsd.PREF_CAMERA_NAME, CameraOsd.sanitizeName(value)) }
+            }
+            "overheat_pause_c" -> {
+                val threshold = OverheatProtection.parse(value) ?: return
+                prefs.edit { putString(OverheatProtection.PREF, threshold.toString()) }
             }
             // RTSP sub stream and audio settings. The RTSP server reads them when a viewer
             // connects, so a change applies to the next connection (as the old Settings screen did).

@@ -175,7 +175,7 @@ class StreamingServerHelper(
      * otherwise an established MJPEG connection would keep the camera open indefinitely and "off"
      * would only apply to whoever connected next.
      */
-    private fun setStreamingEnabled(enabled: Boolean) {
+    fun setStreamingEnabled(enabled: Boolean) {
         PreferenceManager.getDefaultSharedPreferences(context).edit {
             putBoolean(PREF_STREAMING_ENABLED, enabled)
         }
@@ -1541,6 +1541,10 @@ class StreamingServerHelper(
         /** Motion-triggered flash/full-video cycle while night mode is active. */
         val nightAutoFlash: Boolean,
         val nightAutoFlashSeconds: Int,
+        /** Text burned into the stream itself (web, RTSP and recordings). */
+        val osd: CameraOsd.Settings,
+        /** Battery temperature in °C at which streaming pauses; 0 disables the guard. */
+        val overheatPauseC: Int,
     )
 
     private data class DeviceInfo(
@@ -1548,6 +1552,8 @@ class StreamingServerHelper(
         val cameras: List<InfoCamera>,
         val batteryPercent: Int,
         val wifiStrength: Int,
+        /** Battery temperature in degrees Celsius, or null when the device does not report it. */
+        val temperatureC: Double?,
         val settings: StreamSettings,
         val perCameraSettings: Map<String, Map<String, String>> = emptyMap(),
     ) {
@@ -1604,6 +1610,7 @@ class StreamingServerHelper(
             })
             put("batteryPercent", batteryPercent)
             put("wifiStrength", wifiStrength)
+            put("temperatureC", temperatureC ?: JSONObject.NULL)
             put("settings", JSONObject().apply {
                 // Keep global stream-level settings here; per-camera lens settings are exposed
                 // under `cameras[].lensSettings` and should be used by the UI.
@@ -1659,6 +1666,17 @@ class StreamingServerHelper(
                     put("autoFlash", settings.nightAutoFlash)
                     put("autoFlashSeconds", settings.nightAutoFlashSeconds)
                 })
+                put("osd", JSONObject().apply {
+                    put("enabled", settings.osd.enabled)
+                    put("time", settings.osd.time)
+                    put("date", settings.osd.date)
+                    put("battery", settings.osd.battery)
+                    put("wifi", settings.osd.wifi)
+                    put("temperature", settings.osd.temperature)
+                    put("cameraName", settings.osd.cameraNameEnabled)
+                    put("name", settings.osd.cameraName)
+                })
+                put("overheatPauseC", settings.overheatPauseC)
                 put("streamBitrateKbps", JSONObject().apply {
                     put("h264", settings.streamBitrateKbps.h264)
                     put("mjpeg", settings.streamBitrateKbps.mjpeg)
@@ -1782,6 +1800,7 @@ class StreamingServerHelper(
             cameras = cameraList,
             batteryPercent = getBatteryPercent(),
             wifiStrength = getWifiStrength(),
+            temperatureC = getTemperatureC(),
             settings = getStreamSettings(cameraList),
             perCameraSettings = perCamera,
         )
@@ -1913,6 +1932,8 @@ class StreamingServerHelper(
             nightAutoEnd = autoWindow?.let { AutoNightMode.formatLocalTime(context, it.endMs) },
             nightAutoFlash = NightMode.autoFlashEnabled(context),
             nightAutoFlashSeconds = NightMode.autoFlashSeconds(context),
+            osd = CameraOsd.read(prefs),
+            overheatPauseC = OverheatProtection.stored(prefs),
         )
     }
 
@@ -2287,49 +2308,12 @@ class StreamingServerHelper(
         }
     }
 
-    private fun getBatteryPercent(): Int = try {
-        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
-        bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
-    } catch (_: Exception) {
-        -1
-    }
+    private fun getBatteryPercent(): Int = DeviceStatus.batteryPercent(context)
 
-    private fun getWifiStrength(): Int = try {
-        val hasWifiPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        } else {
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        }
-        if (!hasWifiPermission) {
-            -1
-        } else {
-            val rssi = currentWifiInfo()?.rssi ?: -127
-            when {
-                rssi == -127 -> -1
-                rssi <= -100 -> 0
-                rssi >= -50 -> 100
-                else -> (rssi + 100) * 2
-            }
-        }
-    } catch (_: Exception) {
-        -1
-    }
+    private fun getTemperatureC(): Double? = DeviceStatus.temperatureC(context)
 
-    /** Current Wi-Fi connection info; Android 10+ exposes it through the active network's capabilities. */
-    private fun currentWifiInfo(): android.net.wifi.WifiInfo? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE)
-                as? android.net.ConnectivityManager
-            return cm?.getNetworkCapabilities(cm.activeNetwork)?.transportInfo as? android.net.wifi.WifiInfo
-        }
-        return legacyWifiInfo()
-    }
+    private fun getWifiStrength(): Int = DeviceStatus.wifiStrength(context)
 
-    @Suppress("DEPRECATION") // WifiManager.connectionInfo is the only option below API 29.
-    private fun legacyWifiInfo(): android.net.wifi.WifiInfo? =
-        (context.applicationContext.getSystemService(Context.WIFI_SERVICE)
-            as? android.net.wifi.WifiManager)?.connectionInfo
 
     private fun cleanupExpiredConnections() {
         val now = System.currentTimeMillis()

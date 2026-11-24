@@ -51,6 +51,9 @@ class H264HardwareEncoder(
     /** Optional recording callback. Called with (annexBBytes, isKeyframe, presentationTimeUs). */
     @Volatile var onRecordFrame: ((ByteArray, Boolean, Long) -> Unit)? = null
 
+    /** Optional burned-in OSD; evaluated once per frame in the byte-buffer/night paths. */
+    @Volatile var overlayProvider: ((Int, Int) -> CameraOverlayRenderer.Frame?)? = null
+
     /** Elapsed realtime of the last encoded output, so the service can tell a stalled encoder from a live one. */
     @Volatile var lastOutputAtMs = 0L
         private set
@@ -170,6 +173,7 @@ class H264HardwareEncoder(
             try {
                 val idx = codec.dequeueInputBuffer(2000)
                 if (idx < 0) return
+                val osd = overlayProvider?.invoke(width, height)
 
                 if (rotation % 360 == 0 && crop == null) {
                     // Always use getInputImage for proper stride handling; when mirror is needed
@@ -178,6 +182,7 @@ class H264HardwareEncoder(
                     if (dstImage != null) {
                         if (mirror) mirroredCopyYuv(image, dstImage, grayscale)
                         else copyYuv(image, dstImage, grayscale)
+                        if (osd != null) YuvOverlay.blendIntoImage(dstImage, osd, width, height)
                         val size = width * height * 3 / 2
                         codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
                         return
@@ -191,6 +196,7 @@ class H264HardwareEncoder(
                     if (arr == null || arr.size != size) { arr = ByteArray(size); yuv = arr }
                     toYuv420(image, arr)
                     if (grayscale) Grayscale.neutralizeYuv420Chroma(arr, width, height)
+                    if (osd != null) YuvOverlay.blendIntoDenseYuv(arr, width, height, semiPlanar, osd)
                     buf.clear(); buf.put(arr, 0, size)
                     codec.queueInputBuffer(idx, 0, size, ptsUs, 0)
                     return
@@ -212,6 +218,7 @@ class H264HardwareEncoder(
                     var dstArr = rotYuv
                     if (dstArr == null || dstArr.size != dstSize) { dstArr = ByteArray(dstSize); rotYuv = dstArr }
                     rotateYuv(srcArr, image.width, image.height, rotation, mirror, semiPlanar, dstArr, crop)
+                    if (osd != null) YuvOverlay.blendIntoDenseYuv(dstArr, width, height, semiPlanar, osd)
                     writeRotatedDenseToInputImage(dstImage, dstArr, width, height)
                     codec.queueInputBuffer(idx, 0, dstSize, ptsUs, 0)
                     return
@@ -227,6 +234,7 @@ class H264HardwareEncoder(
                 var dstArr = rotYuv
                 if (dstArr == null || dstArr.size != dstSize) { dstArr = ByteArray(dstSize); rotYuv = dstArr }
                 rotateYuv(srcArr, image.width, image.height, rotation, mirror, semiPlanar, dstArr)
+                if (osd != null) YuvOverlay.blendIntoDenseYuv(dstArr, width, height, semiPlanar, osd)
                 val buf = codec.getInputBuffer(idx)
                 if (buf == null) { codec.queueInputBuffer(idx, 0, 0, ptsUs, 0); return }
                 buf.clear(); buf.put(dstArr, 0, dstSize)
@@ -248,6 +256,8 @@ class H264HardwareEncoder(
         if (nv21.size < expected) return
         synchronized(codecLock) {
             if (!running) return
+            val osd = overlayProvider?.invoke(width, height)
+            if (osd != null) YuvOverlay.blendIntoNv21(nv21, width, height, osd)
             var idx = -1
             try {
                 idx = codec.dequeueInputBuffer(5000)
