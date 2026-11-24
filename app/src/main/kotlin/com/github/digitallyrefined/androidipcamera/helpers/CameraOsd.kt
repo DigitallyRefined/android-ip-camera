@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import androidx.core.graphics.createBitmap
 import androidx.preference.PreferenceManager
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -210,7 +211,7 @@ class CameraOverlayRenderer(
             pad.coerceAtMost(max(0, key.height - blockH))
         }
 
-        val bitmap = Bitmap.createBitmap(blockW, blockH, Bitmap.Config.ARGB_8888)
+        val bitmap = createBitmap(blockW, blockH, Bitmap.Config.ARGB_8888)
 
         val canvas = Canvas(bitmap)
         val background = Paint(Paint.ANTI_ALIAS_FLAG).apply {
