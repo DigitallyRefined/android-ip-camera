@@ -9,6 +9,7 @@ import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.opengl.GLUtils
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
@@ -60,6 +61,14 @@ class CameraGlPipe(
     private var program = 0
     private var aPos = 0; private var aTex = 0; private var uST = 0; private var uMirror = 0
     private var uDenoise = 0; private var uTexel = 0; private var uGrayscale = 0
+    /** Shared burned-in OSD renderer (null disables the overlay). */
+    @Volatile var overlayRenderer: CameraOverlayRenderer? = null
+    private var overlayProgram = 0
+    private var overlayAPos = 0
+    private var overlayATex = 0
+    private val overlayTextures = HashMap<Long, Int>()
+    private val overlayGenerations = HashMap<Long, Long>()
+    private val overlayQuad = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
     @Volatile var mirror = false
     /** Spatial noise-reduction strength, 0 (off) to 1 (widest radius). Read on every frame, so
      *  the slider takes effect without restarting the camera or rebuilding the encoder. */
@@ -100,6 +109,7 @@ class CameraGlPipe(
             initEgl()
             texId = createOesTexture()
             program = buildProgram()
+            overlayProgram = buildOverlayProgram()
             // SurfaceTexture's transform contains the camera's sensor orientation. Ignore it and
             // keep only the standard GL vertical flip, so the picture is never auto-rotated by the
             // sensor — only [rotation] turns it.
@@ -309,6 +319,84 @@ class CameraGlPipe(
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+        drawOverlay(
+            outW, outH,
+            if (cropRegion != null) 0 else contentX,
+            if (cropRegion != null) 0 else contentY,
+            if (cropRegion != null) outW else contentW,
+            if (cropRegion != null) outH else contentH,
+        )
+    }
+
+    /**
+     * Draw the burned-in OSD after the camera picture. Each output size (main stream and the RTSP
+     * sub stream) gets its own texture so alternating frame sizes do not re-upload every frame.
+     * The overlay is positioned against the picture's [contentX]/[contentY]/[contentW]/[contentH]
+     * rectangle, not the whole surface, so it never lands in a letterbox bar.
+     */
+    private fun drawOverlay(
+        outW: Int,
+        outH: Int,
+        contentX: Int,
+        contentY: Int,
+        contentW: Int,
+        contentH: Int,
+    ) {
+        val program = overlayProgram
+        val renderer = overlayRenderer ?: return
+        if (program == 0 || contentW < 2 || contentH < 2) return
+        val frame = renderer.frame(contentW, contentH) ?: return
+        val key = contentW.toLong() * 100_000L + contentH
+        val texture = overlayTextures.getOrPut(key) {
+            val ids = IntArray(1)
+            GLES20.glGenTextures(1, ids, 0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            ids[0]
+        }
+        if (overlayGenerations[key] != frame.generation) {
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, frame.bitmap, 0)
+            overlayGenerations[key] = frame.generation
+        }
+
+        val bw = frame.bitmap.width.toFloat()
+        val bh = frame.bitmap.height.toFloat()
+        val drawX = contentX + frame.x
+        val drawY = contentY + frame.y
+        val left = drawX.toFloat() / outW * 2f - 1f
+        val right = (drawX + bw) / outW * 2f - 1f
+        val top = 1f - drawY.toFloat() / outH * 2f
+        val bottom = 1f - (drawY + bh) / outH * 2f
+        overlayQuad.rewind()
+        // Bitmap row 0 is the top of the OSD, so map it to GL texture v=0 (the texture's first row).
+        overlayQuad.put(floatArrayOf(
+            left, top, 0f, 0f,
+            left, bottom, 0f, 1f,
+            right, top, 1f, 0f,
+            right, bottom, 1f, 1f,
+        ))
+        overlayQuad.position(0)
+
+        GLES20.glViewport(0, 0, outW, outH)
+        GLES20.glUseProgram(program)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        // Android Bitmaps are premultiplied, so use the premultiplied-alpha blend equation.
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
+        GLES20.glVertexAttribPointer(overlayAPos, 2, GLES20.GL_FLOAT, false, 16, overlayQuad)
+        GLES20.glEnableVertexAttribArray(overlayAPos)
+        overlayQuad.position(2)
+        GLES20.glVertexAttribPointer(overlayATex, 2, GLES20.GL_FLOAT, false, 16, overlayQuad)
+        GLES20.glEnableVertexAttribArray(overlayATex)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDisable(GLES20.GL_BLEND)
+        GLES20.glUseProgram(0)
     }
 
     private fun initEgl() {
@@ -340,8 +428,22 @@ class CameraGlPipe(
         return t[0]
     }
 
-    private fun buildProgram(): Int {
-        val vs = "attribute vec4 aPos; attribute vec4 aTex; uniform mat4 uST; varying vec2 vTex;\n" +
+    private fun buildOverlayProgram(): Int {
+        val vs = "attribute vec4 aPos; attribute vec2 aTex; varying vec2 vTex;\n" +
+                 "void main(){ gl_Position = aPos; vTex = aTex; }"
+        val fs = "precision mediump float; varying vec2 vTex; uniform sampler2D sTex;\n" +
+                 "void main(){ gl_FragColor = texture2D(sTex, vTex); }"
+        val p = linkProgram(vs, fs)
+        if (p == 0) {
+            Log.w(TAG, "OSD overlay shader rejected by the driver; overlay disabled")
+            return 0
+        }
+        overlayAPos = GLES20.glGetAttribLocation(p, "aPos")
+        overlayATex = GLES20.glGetAttribLocation(p, "aTex")
+        return p
+    }
+
+    private fun buildProgram(): Int {        val vs = "attribute vec4 aPos; attribute vec4 aTex; uniform mat4 uST; varying vec2 vTex;\n" +
                  "void main(){ gl_Position = aPos; vTex = (uST * aTex).xy; }"
         // Optional edge-preserving (bilateral) filter. It only runs when uDenoise > 0, so the
         // default pipeline keeps its single texture fetch. The GL thread updates uDenoise and

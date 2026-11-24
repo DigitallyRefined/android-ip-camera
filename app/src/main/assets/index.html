@@ -562,6 +562,7 @@
       <div id="statusOverlay" class="status-overlay" style="display: none;">
         <span id="wifiStatus" title="WiFi Strength">🛜 --%</span>
         <span id="batteryStatus" title="Battery Status">🔋 --%</span>
+        <span id="tempStatus" title="Phone Temperature" style="display: none;">🌡️ --°C</span>
       </div>
       <div id="streamLoading" class="stream-loading">Loading...</div>
       <canvas id='streamCanvas'></canvas>
@@ -868,6 +869,16 @@
               <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
             </div>
 
+            <p class="group-title">Overheat Protection</p>
+
+            <label for="overheatPauseC">Pause streaming at battery temperature (°C)</label>
+            <input id="overheatPauseC" type="number" min="0" max="100" step="1" inputmode="numeric"
+              value="0" onchange="sendControl('overheat_pause_c', this.value)">
+            <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+              0 disables. Above this temperature streaming stops (the same as /control/stop) and
+              resumes after the battery cools 3°C.
+            </div>
+
             <p class="group-title">Recording Mode</p>
 
             <div class="mode-list" role="radiogroup" aria-label="Recording mode">
@@ -955,6 +966,60 @@
               <button id="resetCropBtn" class="btn" style="flex:1 1 0; min-width:0;">Reset Crop</button>
             </div>
           </div>
+
+          <details id="osdSection" class="setting-group">
+            <summary>Text Overlay (OSD)</summary>
+
+            <label style="margin:0 0 15px;">
+              <input type="checkbox" id="osdEnabledCheckbox" onchange="setOsdEnabled(this.checked)"
+                style="margin:0;vertical-align:middle;">
+              <span style="vertical-align:middle;">📝 Burn status text into the video</span>
+            </label>
+
+            <div id="osdOptions" style="display:none;">
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 12px;">
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdTimeCheckbox" onchange="setOsdField('time', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">🕒 Time</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdDateCheckbox" onchange="setOsdField('date', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">📅 Date</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdBatteryCheckbox" onchange="setOsdField('battery', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">🔋 Battery</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdWifiCheckbox" onchange="setOsdField('wifi', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">🛜 Wi-Fi</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdTemperatureCheckbox"
+                    onchange="setOsdField('temperature', this.checked)" style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">🌡️ Temperature</span>
+                </label>
+                <label style="margin:0;">
+                  <input type="checkbox" id="osdCameraNameCheckbox"
+                    onchange="setOsdField('camera_name_enabled', this.checked)"
+                    style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">📷 Camera name</span>
+                </label>
+              </div>
+
+              <label for="osdCameraNameInput" style="margin-top:12px;">Camera name</label>
+              <input type="text" id="osdCameraNameInput" maxlength="40" placeholder="Back 0"
+                onchange="sendControl('osd_camera_name', this.value)"
+                onblur="sendControl('osd_camera_name', this.value)">
+              <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                Leave blank to use the selected lens.
+              </div>
+            </div>
+          </details>
 
           <details id="substreamSection" class="setting-group" style="display:none">
             <summary>Substream</summary>
@@ -1060,6 +1125,9 @@
     let deviceHasFlash = false;
     let cameraList = [];
     let recordingMode = 'off';
+    // When the burned-in OSD is active, the HTML status badge would duplicate the same values.
+    let osdEnabled = false;
+    let statusOverlayReady = false;
 
     // Crop selection: normalised 0..1 rectangle in the displayed (rotated) frame.
     let cropRegion = null;
@@ -1934,7 +2002,8 @@
         param === 'night_exposure' || param === 'night_iso' ||
         param === 'auto_night_mode' || param === 'auto_night_offset' ||
         param === 'auto_night_lux' || param === 'night_auto_flash' ||
-        param === 'night_auto_flash_seconds') return null;
+        param === 'night_auto_flash_seconds' || param.startsWith('osd_') ||
+        param === 'overheat_pause_c') return null;
       return param.replace(/_([a-z])/g, (m, c) => c.toUpperCase());
     }
 
@@ -2075,6 +2144,71 @@
     }
 
     document.querySelectorAll('[data-control]').forEach(bindControl);
+
+    // ---- Burned-in text overlay (OSD) ----
+    function updateOsdOptions(enabled) {
+      const options = getElById('osdOptions');
+      if (options) options.style.display = enabled ? '' : 'none';
+    }
+
+    function updateStatusOverlayVisibility() {
+      const overlay = getElById('statusOverlay');
+      if (!overlay) return;
+      const batteryEl = getElById('batteryStatus');
+      const wifiEl = getElById('wifiStatus');
+      const tempEl = getElById('tempStatus');
+      const hasStatus = statusOverlayReady && !osdEnabled && (
+        (batteryEl && batteryEl.style.display !== 'none') ||
+        (wifiEl && wifiEl.style.display !== 'none') ||
+        (tempEl && tempEl.style.display !== 'none')
+      );
+      overlay.style.display = hasStatus ? 'flex' : 'none';
+    }
+
+    function setOsdEnabled(enabled) {
+      osdEnabled = !!enabled;
+      const checkbox = getElById('osdEnabledCheckbox');
+      if (checkbox) checkbox.checked = osdEnabled;
+      updateOsdOptions(osdEnabled);
+      updateStatusOverlayVisibility();
+      sendControl('osd_enabled', osdEnabled ? 'true' : 'false');
+    }
+
+    function setOsdField(field, enabled) {
+      sendControl('osd_' + field, enabled ? 'true' : 'false');
+    }
+
+    function applyOsdSettings(settings) {
+      const osd = settings && settings.osd;
+      if (!osd) return;
+      const set = (id, value) => {
+        const el = getElById(id);
+        if (el) el.checked = !!value;
+      };
+      set('osdEnabledCheckbox', osd.enabled);
+      set('osdTimeCheckbox', osd.time);
+      set('osdDateCheckbox', osd.date);
+      set('osdBatteryCheckbox', osd.battery);
+      set('osdWifiCheckbox', osd.wifi);
+      set('osdTemperatureCheckbox', osd.temperature);
+      set('osdCameraNameCheckbox', osd.cameraName);
+      const name = getElById('osdCameraNameInput');
+      if (name && document.activeElement !== name && typeof osd.name === 'string') {
+        name.value = osd.name;
+      }
+      updateOsdOptions(!!osd.enabled);
+      osdEnabled = !!osd.enabled;
+      updateStatusOverlayVisibility();
+    }
+
+    function applyOverheatSettings(settings) {
+      if (!settings) return;
+      const input = getElById('overheatPauseC');
+      if (input && document.activeElement !== input && settings.overheatPauseC != null) {
+        const n = parseInt(settings.overheatPauseC, 10);
+        input.value = String(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0);
+      }
+    }
 
     // MJPEG's estimate (and the Auto summary) depends on the frame rate: rebuild both on change.
     const fpsControl = getElById('fps');
@@ -3038,7 +3172,7 @@
     function updateStatusOverlay(data) {
       const batteryEl = getElById('batteryStatus');
       const wifiEl = getElById('wifiStatus');
-      const overlay = getElById('statusOverlay');
+      const tempEl = getElById('tempStatus');
 
       if (batteryEl && typeof data.batteryPercent === 'number') {
         if (data.batteryPercent < 0) {
@@ -3063,11 +3197,17 @@
         }
       }
 
-      if (overlay) {
-        const hasStatus = (batteryEl && batteryEl.style.display !== 'none') ||
-          (wifiEl && wifiEl.style.display !== 'none');
-        overlay.style.display = hasStatus ? 'flex' : 'none';
+      if (tempEl) {
+        if (typeof data.temperatureC === 'number' && isFinite(data.temperatureC)) {
+          tempEl.style.display = 'flex';
+          tempEl.innerHTML = `🌡️ ${Math.round(data.temperatureC)}°C`;
+        } else {
+          tempEl.style.display = 'none';
+        }
       }
+
+      statusOverlayReady = true;
+      updateStatusOverlayVisibility();
     }
 
     // The first decoded frame means the encoder/capture path is live, so its negotiated size is now
@@ -3092,6 +3232,8 @@
           // checkbox in step even on polls that do not reapply every control.
           applyNightModeSettings(data.settings);
           applyNightExposureUi(data.settings);
+          applyOsdSettings(data.settings);
+          applyOverheatSettings(data.settings);
           if (applySettings) applyStreamSettings(data.settings);
           else updateServerStreamInfo(data.settings);
           renderCameraControls();

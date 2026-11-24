@@ -32,6 +32,8 @@ class H264StreamingEncoder(
 
     @Volatile var h264HardwareEncoder: H264HardwareEncoder? = null
         private set
+    /** Shared OSD renderer; the surface path uses the GL pipe, the byte-buffer path blends here. */
+    @Volatile var overlayRenderer: CameraOverlayRenderer? = null
     /**
      * Serializes encoder replacement between the analyzer (byte-buffer fallback) and the camera
      * thread (surface encoder). A stale analysis frame from a session that is being torn down could
@@ -155,10 +157,16 @@ class H264StreamingEncoder(
             encConfig.keyframeIntervalSec,
             encConfig.bitrateMode,
         ) { d, k, pts -> broadcastH264(d, k, pts) }
+        attachOverlay(enc)
         h264HardwareEncoder = enc
         enc.requestKeyFrame()
         streamingServerHelper?.resetH264Wait()
         return enc
+    }
+
+    /** Wire the shared OSD renderer into an encoder created here or by the camera backend. */
+    fun attachOverlay(enc: H264HardwareEncoder) {
+        enc.overlayProvider = { w, h -> overlayRenderer?.frame(w, h) }
     }
 
     /**
@@ -435,6 +443,7 @@ class H264StreamingEncoder(
     fun setEncoder(encoder: H264HardwareEncoder?) {
         synchronized(encoderLock) {
             invalidatePendingWrites()
+            encoder?.let { attachOverlay(it) }
             h264HardwareEncoder?.let { old ->
                 old.stop()
                 if (old.useSurface && old.hasSurfaceBeenProvided && !old.isReleased) {

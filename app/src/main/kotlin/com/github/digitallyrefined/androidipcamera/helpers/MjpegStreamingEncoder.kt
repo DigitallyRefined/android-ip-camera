@@ -4,6 +4,7 @@ import android.content.ComponentCallbacks2
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Matrix
 import android.util.Log
 import androidx.camera.core.ImageProxy
@@ -34,6 +35,9 @@ class MjpegStreamingEncoder(
 
     private val writerQueueCapacity = DeviceMemoryHelper.mjpegWriterQueueCapacity(context)
     private val writerGeneration = AtomicLong()
+
+    /** Shared OSD renderer; null disables the burned-in text overlay. */
+    @Volatile var overlayRenderer: CameraOverlayRenderer? = null
     private val networkWriter = ThreadPoolExecutor(
         1,
         1,
@@ -331,12 +335,14 @@ class MjpegStreamingEncoder(
             prefStringWithFallback(prefs, "mirror_$camId", "mirror_$phys")?.toBoolean() ?: false
         } else false
         val crop = CropRegion.read(prefs, camId)
+        val overlay = overlayRenderer
+        val overlayActive = overlay?.isActive() == true
         val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 ||
-            mirror || crop != null || grayscale || (maxWidth > 0 && maxHeight > 0)
+            mirror || crop != null || grayscale || (maxWidth > 0 && maxHeight > 0) || overlayActive
         return if (needsTransform) {
             applyTransformations(
                 jpegBytes, totalRotation, scaleFactor, contrastValue, jpegQuality, mirror, crop,
-                maxWidth, maxHeight, grayscale,
+                maxWidth, maxHeight, grayscale, if (overlayActive) overlay else null,
             )
         } else {
             jpegBytes
@@ -354,6 +360,7 @@ class MjpegStreamingEncoder(
         maxWidth: Int = 0,
         maxHeight: Int = 0,
         grayscale: Boolean = false,
+        overlay: CameraOverlayRenderer? = null,
     ): ByteArray {
         var bitmap: Bitmap? = null
         try {
@@ -362,6 +369,12 @@ class MjpegStreamingEncoder(
                     Bitmap.Config.RGB_565
                 } else {
                     Bitmap.Config.ARGB_8888
+                }
+                // The OSD needs to draw on the decoded frame. RGB_565 cannot represent the
+                // translucent overlay background, so skip it when the overlay is active.
+                if (overlay != null) {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inMutable = true
                 }
             }
             bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions)
@@ -457,6 +470,25 @@ class MjpegStreamingEncoder(
 
                     bitmap.recycle()
                     bitmap = processedBitmap
+                }
+
+                // Burn the OSD into the final (rotated, cropped, scaled) picture. This runs for
+                // camera frames and night-mode stills alike, so every MJPEG viewer and any
+                // "match stream" snapshot sees the same overlay.
+                if (overlay != null) {
+                    val osd = overlay.frame(bitmap.width, bitmap.height)
+                    if (osd != null) {
+                        if (!bitmap.isMutable) {
+                            val mutable = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                            if (mutable != null) {
+                                bitmap.recycle()
+                                bitmap = mutable
+                            }
+                        }
+                        if (bitmap.isMutable) {
+                            Canvas(bitmap).drawBitmap(osd.bitmap, osd.x.toFloat(), osd.y.toFloat(), null)
+                        }
+                    }
                 }
 
                 // Convert back to JPEG bytes

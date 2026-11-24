@@ -33,6 +33,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🏃‍➡️ Motion detection & notifications (via ONVIF), automatic recording on motion & continuous recording (with automatic deletion of old recordings) 
 * 🎛️ Remote web interface with controls for camera section, image rotation, manual video recording, audio/video sync, flash light toggle, resolution, zoom, exposure, contrast and optional GPU noise reduction
 * 🌙 Night-sight mode: on phones with a astrophotography/night-sight photo mode, camera still photos are continually taken & are streamed as video. An optional automatic mode can follow sunrise/sunset (−6° civil twilight), the phone's ambient light sensor, or either.
+* 📝 Optional burned-in text overlay (time, date, camera name, battery, Wi-Fi and battery temperature) for H.264/MJPEG streams, RTSP and recordings, plus an optional overheat-pause threshold.
 * ✂️ Crop the live stream (and snapshots) to a rectangle drawn over the preview; the crop is applied on the phone
 * ☁️ Optionally connect your device to a hosted or [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server) cloud [OpenTunnel](https://github.com/anomalyco/opentunnel) server for remote access when you're not on your home/work network
 * 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
@@ -242,7 +243,7 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Query Parameter:** `?camera=<id|front|back|toggle>` to query a specific camera sensor.
     * *Example:* `https://[ip_address]:[port]/video/snapshot?camera=back`
 * **Device Info and Capabilities JSON (`/info.json`)**
-  * **Usage:** Query available camera sensors, their supported resolutions (for the output path that lens actually uses), device battery percentage, Wi-Fi signal strength, individual camera lens settings and the current main-stream encoder settings, including the negotiated `effectiveResolution` and `streamDenoise`.
+  * **Usage:** Query available camera sensors, their supported resolutions (for the output path that lens actually uses), device battery percentage, battery temperature in degrees Celsius (`temperatureC`), Wi-Fi signal strength, individual camera lens settings, the burned-in overlay settings (`osd`) and the overheat-pause threshold (`overheatPauseC`), plus the current main-stream encoder settings, including the negotiated `effectiveResolution` and `streamDenoise`.
   * **Format:** `application/json`
 * **Start Recording (`/record/start`, POST)**
   * **Usage:** Start recording the live camera feed to a local MP4 file. The camera and H.264 encoder are started on demand if not already running. Manual recordings are saved under `YYYY/MM/DD/YYYY-MM-DD-HHMMSS-manual.mp4` inside the recordings folder. Recordings started by **Motion clips** use the same folder layout with a `-motion.mp4` suffix, and **Continuous recording** segments use `-continuous.mp4`.
@@ -337,6 +338,10 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `auto_night_lux=<lux>`: LUX threshold for `lux` and `gps_lux` modes (default 5). Night mode turns on below the value and off at or above it.
   * `night_auto_flash=<true|false>`: While the automatic night-mode schedule says it is dark, motion pauses the night stills, switches to normal video, and turns on the torch. After motion clears the torch stays on for the configured delay, then turns off and night mode returns. Requires automatic night mode switching plus a recording mode other than On demand because motion detection is off then; the web checkbox is disabled in that state. `/info.json` reports `settings.nightMode.autoFlash`.
   * `night_auto_flash_seconds=<1..99>`: Seconds to keep the flash on after motion clears (default 10). Additional motion during this wait restarts the timer.
+  * `osd_enabled=<true|false>`: Burn the text overlay into the video itself (H.264 and MJPEG, including RTSP and recordings). `/info.json` reports the per-element choices under `settings.osd`.
+  * `osd_time=<true|false>`, `osd_date=<true|false>`, `osd_battery=<true|false>`, `osd_wifi=<true|false>`, `osd_temperature=<true|false>`, `osd_camera_name_enabled=<true|false>`: Choose which overlay elements are shown. All elements are enabled by default when the overlay is switched on.
+  * `osd_camera_name=<text>`: Camera-name line in the overlay. Leave empty to use the selected lens (for example `Back 0`). Maximum 40 characters.
+  * `overheat_pause_c=<0..100>`: Pause streaming when the battery reaches this temperature in °C. `0` disables the guard. Streaming uses the same gate as `/control/stop` and resumes after the battery cools by 3°C.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
 
 ### 🎬 Motion events and recording
