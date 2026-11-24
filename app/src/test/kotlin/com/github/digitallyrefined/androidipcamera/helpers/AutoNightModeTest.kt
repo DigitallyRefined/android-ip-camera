@@ -102,12 +102,6 @@ class AutoNightModeTest {
     }
 
     @Test
-    fun `fresh installs default to GPS with permission and LUX without it`() {
-        assertEquals(AutoNightMode.MODE_GPS, AutoNightMode.defaultMode(locationGranted = true))
-        assertEquals(AutoNightMode.MODE_LUX, AutoNightMode.defaultMode(locationGranted = false))
-    }
-
-    @Test
     fun `modes and legacy booleans normalize to the expected trigger`() {
         assertEquals(AutoNightMode.MODE_OFF, AutoNightMode.normalizeMode(null))
         assertEquals(AutoNightMode.MODE_OFF, AutoNightMode.normalizeMode("false"))

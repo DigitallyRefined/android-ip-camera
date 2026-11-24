@@ -25,6 +25,11 @@ import androidx.preference.PreferenceManager
  */
 object NightMode {
     const val PREF = "night_mode"
+    const val PREF_AUTO_FLASH = "night_auto_flash"
+    const val PREF_AUTO_FLASH_SECONDS = "night_auto_flash_seconds"
+    const val DEFAULT_AUTO_FLASH_SECONDS = 10
+    const val MIN_AUTO_FLASH_SECONDS = 1
+    const val MAX_AUTO_FLASH_SECONDS = 99
     private const val PREF_EXPOSURE_PREFIX = "night_exposure_"
     private const val PREF_ISO_PREFIX = "night_iso_"
 
@@ -56,6 +61,28 @@ object NightMode {
 
     fun setEnabled(context: Context, enabled: Boolean) {
         PreferenceManager.getDefaultSharedPreferences(context).edit { putBoolean(PREF, enabled) }
+    }
+
+    /** Flash-on-motion is a global night-mode option, not per lens. */
+    fun autoFlashEnabled(context: Context): Boolean =
+        PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_AUTO_FLASH, false)
+
+    fun setAutoFlashEnabled(context: Context, enabled: Boolean) {
+        PreferenceManager.getDefaultSharedPreferences(context).edit { putBoolean(PREF_AUTO_FLASH, enabled) }
+    }
+
+    /** Seconds to keep the flash on after motion has cleared. */
+    fun autoFlashSeconds(context: Context): Int =
+        PreferenceManager.getDefaultSharedPreferences(context)
+            .getInt(PREF_AUTO_FLASH_SECONDS, DEFAULT_AUTO_FLASH_SECONDS)
+            .coerceIn(MIN_AUTO_FLASH_SECONDS, MAX_AUTO_FLASH_SECONDS)
+
+    fun setAutoFlashSeconds(context: Context, seconds: Int): Int {
+        val clamped = seconds.coerceIn(MIN_AUTO_FLASH_SECONDS, MAX_AUTO_FLASH_SECONDS)
+        PreferenceManager.getDefaultSharedPreferences(context).edit {
+            putInt(PREF_AUTO_FLASH_SECONDS, clamped)
+        }
+        return clamped
     }
 
     /** True when the selected camera can take a night-mode still. */

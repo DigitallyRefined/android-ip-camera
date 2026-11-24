@@ -46,6 +46,7 @@ import kotlin.math.tan
  */
 object AutoNightMode {
     const val PREF_MODE = "auto_night_mode"
+    const val PREF_SWITCHING = "auto_night_switching"
     const val PREF_OFFSET_MINUTES = "auto_night_offset_minutes"
     const val PREF_LUX_THRESHOLD = "auto_night_lux_threshold"
     private const val PREF_LATITUDE = "auto_night_latitude"
@@ -98,17 +99,9 @@ object AutoNightMode {
     private const val TRANSITION_SEARCH_MS = 2 * 24 * 60 * 60 * 1000L
 
     /**
-     * The trigger used when the user has never chosen one: GPS when location permission is available,
-     * otherwise LUX. Unexpired location permission is checked live so granting it later upgrades the
-     * default without overwriting an explicitly saved mode.
-     */
-    fun defaultMode(locationGranted: Boolean): String =
-        if (locationGranted) MODE_GPS else MODE_LUX
-
-    /**
      * The stored trigger mode. An explicitly selected mode is returned as-is. Values from the
-     * earlier boolean preference are migrated to [MODE_GPS] (true) or [MODE_OFF] (false). When no
-     * mode has ever been stored, the live default is used and is deliberately not persisted.
+     * earlier boolean preference are migrated to [MODE_GPS] (true) or [MODE_OFF] (false).
+     * Automatic mode is off until the user chooses a trigger.
      */
     fun mode(context: Context): String {
         val prefs = prefs(context)
@@ -124,7 +117,7 @@ object AutoNightMode {
                 if (raw != mode) prefs.edit { putString(PREF_MODE, mode) }
                 mode
             }
-            else -> defaultMode(hasLocationPermission(context))
+            else -> MODE_OFF
         }
     }
 
@@ -141,6 +134,17 @@ object AutoNightMode {
 
     /** True when automatic switching is active in any mode. */
     fun isEnabled(context: Context): Boolean = mode(context) != MODE_OFF
+
+    /**
+     * Whether the schedule is allowed to switch night mode itself. The schedule still runs for
+     * torch-on-motion when this is off; only the automatic night-mode toggling is suppressed.
+     */
+    fun isSwitchingEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(PREF_SWITCHING, false)
+
+    fun setSwitchingEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit { putBoolean(PREF_SWITCHING, enabled) }
+    }
 
     fun modeIncludesGps(mode: String): Boolean =
         mode == MODE_GPS || mode == MODE_GPS_LUX
