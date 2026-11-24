@@ -59,11 +59,14 @@ class CameraGlPipe(
     private var texId = 0
     private var program = 0
     private var aPos = 0; private var aTex = 0; private var uST = 0; private var uMirror = 0
-    private var uDenoise = 0; private var uTexel = 0
+    private var uDenoise = 0; private var uTexel = 0; private var uGrayscale = 0
     @Volatile var mirror = false
     /** Spatial noise-reduction strength, 0 (off) to 1 (widest radius). Read on every frame, so
      *  the slider takes effect without restarting the camera or rebuilding the encoder. */
     @Volatile var denoise: Float = 0f
+    /** Grayscale Night Mode: drop chrominance after denoising. Read on every frame, so toggling
+     *  it needs neither a shader rebuild nor a camera restart. */
+    @Volatile var grayscale: Boolean = false
     /** Clockwise rotation (degrees) applied to the camera frame. This is the only rotation source:
      *  the surface transform's sensor orientation is deliberately ignored (quantised to 90° steps). */
     @Volatile var rotation: Int = 0
@@ -297,6 +300,7 @@ class CameraGlPipe(
         GLES20.glUniformMatrix4fv(uST, 1, false, stMatrix, 0)
         GLES20.glUniform1f(uMirror, if (mirror) 1f else 0f)
         GLES20.glUniform1f(uDenoise, denoise.coerceIn(0f, 1f))
+        GLES20.glUniform1f(uGrayscale, if (grayscale) 1f else 0f)
         // One texel in the camera buffer's own resolution; SurfaceTexture may differ from the
         // encoder surface size (CameraX negotiates its own buffer).
         val texW = if (frameWidth > 0) frameWidth else width
@@ -352,6 +356,7 @@ class CameraGlPipe(
             uniform samplerExternalOES sTex;
             uniform float uMirror;
             uniform float uDenoise;
+            uniform float uGrayscale;
             uniform vec2 uTexel;
 
             vec4 tap(vec2 uv, vec3 c, float k) {
@@ -367,50 +372,55 @@ class CameraGlPipe(
             void main() {
                 vec2 tc = vec2(mix(vTex.x, 1.0 - vTex.x, uMirror), vTex.y);
                 vec3 c = texture2D(sTex, tc).rgb;
-                if (uDenoise <= 0.001) {
-                    gl_FragColor = vec4(c, 1.0);
-                    return;
+                vec3 outRgb = c;
+                if (uDenoise > 0.001) {
+                    // Low-light grain can be much larger than one pixel, so be more tolerant than a
+                    // classic edge-preserving filter. Highp avoids mediump quantising the offsets.
+                    float sigma = 0.05 + 0.28 * uDenoise;
+                    float k = 1.0 / (2.0 * sigma * sigma);
+                    vec2 t = uTexel;
+                    vec4 sum = vec4(c, 1.0);
+
+                    // Dense 3x3: always removes per-pixel sensor grain.
+                    sum += tap(tc + vec2(-t.x, -t.y), c, k);
+                    sum += tap(tc + vec2( 0.0, -t.y), c, k);
+                    sum += tap(tc + vec2( t.x, -t.y), c, k);
+                    sum += tap(tc + vec2(-t.x,  0.0), c, k);
+                    sum += tap(tc + vec2( t.x,  0.0), c, k);
+                    sum += tap(tc + vec2(-t.x,  t.y), c, k);
+                    sum += tap(tc + vec2( 0.0,  t.y), c, k);
+                    sum += tap(tc + vec2( t.x,  t.y), c, k);
+
+                    // Two rings widen the filter as the slider rises (1.5..3 and 2.5..8 texels).
+                    float r1 = 1.5 + 1.5 * uDenoise;
+                    float r2 = 2.5 + 5.5 * uDenoise;
+                    const float d = 0.70710678;
+                    sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r1) * 0.75;
+                    sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r1) * 0.75;
+                    sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r1) * 0.75;
+                    sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r1) * 0.75;
+                    sum += ringTap(tc, c, k, vec2(-d,   -d),   r1) * 0.75;
+                    sum += ringTap(tc, c, k, vec2( d,   -d),   r1) * 0.75;
+                    sum += ringTap(tc, c, k, vec2(-d,    d),   r1) * 0.75;
+                    sum += ringTap(tc, c, k, vec2( d,    d),   r1) * 0.75;
+                    sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r2) * 0.40;
+                    sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r2) * 0.40;
+                    sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r2) * 0.40;
+                    sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r2) * 0.40;
+                    sum += ringTap(tc, c, k, vec2(-d,   -d),   r2) * 0.40;
+                    sum += ringTap(tc, c, k, vec2( d,   -d),   r2) * 0.40;
+                    sum += ringTap(tc, c, k, vec2(-d,    d),   r2) * 0.40;
+                    sum += ringTap(tc, c, k, vec2( d,    d),   r2) * 0.40;
+
+                    outRgb = sum.rgb / sum.a;
                 }
-
-                // Low-light grain can be much larger than one pixel, so be more tolerant than a
-                // classic edge-preserving filter. Highp avoids mediump quantising the offsets.
-                float sigma = 0.05 + 0.28 * uDenoise;
-                float k = 1.0 / (2.0 * sigma * sigma);
-                vec2 t = uTexel;
-                vec4 sum = vec4(c, 1.0);
-
-                // Dense 3x3: always removes per-pixel sensor grain.
-                sum += tap(tc + vec2(-t.x, -t.y), c, k);
-                sum += tap(tc + vec2( 0.0, -t.y), c, k);
-                sum += tap(tc + vec2( t.x, -t.y), c, k);
-                sum += tap(tc + vec2(-t.x,  0.0), c, k);
-                sum += tap(tc + vec2( t.x,  0.0), c, k);
-                sum += tap(tc + vec2(-t.x,  t.y), c, k);
-                sum += tap(tc + vec2( 0.0,  t.y), c, k);
-                sum += tap(tc + vec2( t.x,  t.y), c, k);
-
-                // Two rings widen the filter as the slider rises (1.5..3 and 2.5..8 texels).
-                float r1 = 1.5 + 1.5 * uDenoise;
-                float r2 = 2.5 + 5.5 * uDenoise;
-                const float d = 0.70710678;
-                sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r1) * 0.75;
-                sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r1) * 0.75;
-                sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r1) * 0.75;
-                sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r1) * 0.75;
-                sum += ringTap(tc, c, k, vec2(-d,   -d),   r1) * 0.75;
-                sum += ringTap(tc, c, k, vec2( d,   -d),   r1) * 0.75;
-                sum += ringTap(tc, c, k, vec2(-d,    d),   r1) * 0.75;
-                sum += ringTap(tc, c, k, vec2( d,    d),   r1) * 0.75;
-                sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r2) * 0.40;
-                sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r2) * 0.40;
-                sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r2) * 0.40;
-                sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r2) * 0.40;
-                sum += ringTap(tc, c, k, vec2(-d,   -d),   r2) * 0.40;
-                sum += ringTap(tc, c, k, vec2( d,   -d),   r2) * 0.40;
-                sum += ringTap(tc, c, k, vec2(-d,    d),   r2) * 0.40;
-                sum += ringTap(tc, c, k, vec2( d,    d),   r2) * 0.40;
-
-                gl_FragColor = vec4(sum.rgb / sum.a, 1.0);
+                if (uGrayscale > 0.5) {
+                    // Rec. 601 luma keeps brightness and detail while removing the chroma that
+                    // shows up as coloured noise in low light. The still paths use the same weights.
+                    float luma = dot(outRgb, vec3(0.299, 0.587, 0.114));
+                    outRgb = vec3(luma);
+                }
+                gl_FragColor = vec4(outRgb, 1.0);
             }
         """.trimIndent()
         var p = linkProgram(vs, fs)
@@ -434,6 +444,7 @@ class CameraGlPipe(
         uST = GLES20.glGetUniformLocation(p, "uST")
         uMirror = GLES20.glGetUniformLocation(p, "uMirror")
         uDenoise = GLES20.glGetUniformLocation(p, "uDenoise")
+        uGrayscale = GLES20.glGetUniformLocation(p, "uGrayscale")
         uTexel = GLES20.glGetUniformLocation(p, "uTexel")
         return p
     }
@@ -524,9 +535,11 @@ class CameraGlPipe(
         private const val PASSTHROUGH_FS =
             "#extension GL_OES_EGL_image_external : require\n" +
             "precision mediump float; varying vec2 vTex; uniform samplerExternalOES sTex;" +
-            " uniform float uMirror;\n" +
+            " uniform float uMirror; uniform float uGrayscale;\n" +
             "void main(){ vec2 tc = vec2(mix(vTex.x, 1.0 - vTex.x, uMirror), vTex.y);" +
-            " gl_FragColor = texture2D(sTex, tc); }"
+            " vec4 c = texture2D(sTex, tc);" +
+            " if (uGrayscale > 0.5) c.rgb = vec3(dot(c.rgb, vec3(0.299, 0.587, 0.114)));" +
+            " gl_FragColor = c; }"
 
         /**
          * Shape of the picture this pipe draws for a camera output of [cameraWidth]×[cameraHeight].

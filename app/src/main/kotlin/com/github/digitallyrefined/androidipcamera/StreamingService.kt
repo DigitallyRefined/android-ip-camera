@@ -1679,6 +1679,7 @@ class StreamingService : LifecycleService() {
                     it.mirror = readMirrorPref()
                     it.rotation = quantizedRotation(readRotatePref())
                     it.denoise = readDenoisePref()
+                    it.grayscale = readGrayscalePref()
                     it.crop = readCropPref()
                     it.start()
                     cameraXGlPipe = it
@@ -2136,6 +2137,9 @@ class StreamingService : LifecycleService() {
         return NoiseReduction.strength(NoiseReduction.stored(prefs))
     }
 
+    /** Grayscale Night Mode applies to the GL video pipe as well as the night still loop. */
+    private fun readGrayscalePref(): Boolean = NightMode.isGrayscaleEnabled(this)
+
     /** Per-camera rotate= knob (token then physical id fallback). Consumers apply their own
      *  quantisation: the byte-buffer H.264 encoder snaps to 90° (YUV rotate cost) and the GL pipe
      *  only acts on 90° multiples. Returns the raw stored angle. */
@@ -2186,6 +2190,7 @@ class StreamingService : LifecycleService() {
             it.mirror = readMirrorPref()
             it.rotation = quantizedRotation(readRotatePref())
             it.denoise = readDenoisePref()
+            it.grayscale = readGrayscalePref()
             it.crop = readCropPref()
             it.start()
             // Camera1 renders at [cameraSize]; the pipe turns that frame into [frame].
@@ -2870,6 +2875,21 @@ class StreamingService : LifecycleService() {
                 glPipe?.denoise = strength
                 cameraXGlPipe?.denoise = strength
                 Log.i(TAG, "Noise reduction level=$level strength=$strength " +
+                    "glPipe=${glPipe != null} cameraXGlPipe=${cameraXGlPipe != null}")
+            }
+            // Grayscale Night Mode is a post-processing switch shared by the GL video pipe and the
+            // still encoders. The still loop reads the pref each time it processes a JPEG, so no
+            // pipeline restart is needed when it changes.
+            "night_grayscale" -> {
+                val next = when (value.lowercase()) {
+                    "on", "true", "1" -> true
+                    "off", "false", "0" -> false
+                    else -> return
+                }
+                NightMode.setGrayscaleEnabled(this, next)
+                glPipe?.grayscale = next
+                cameraXGlPipe?.grayscale = next
+                Log.i(TAG, "Grayscale night mode=$next " +
                     "glPipe=${glPipe != null} cameraXGlPipe=${cameraXGlPipe != null}")
             }
             // RTSP sub stream and audio settings. The RTSP server reads them when a viewer

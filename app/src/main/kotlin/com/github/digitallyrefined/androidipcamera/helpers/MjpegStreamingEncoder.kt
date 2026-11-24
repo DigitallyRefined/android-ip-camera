@@ -78,6 +78,10 @@ class MjpegStreamingEncoder(
                     nv21RowBuffer = ByteArray(image.planes[0].rowStride)
                 }
             }
+            // Grayscale is a YUV-domain operation here: keep every Y sample, neutralise U/V.
+            if (prefs.getBoolean(NightMode.PREF_GRAYSCALE, false)) {
+                Grayscale.neutralizeYuv420Chroma(nv21, image.cropRect.width(), image.cropRect.height())
+            }
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
             val jpegBytes = applyStreamTransformations(
                 convertNV21toJPEG(nv21, image.width, image.height, quality),
@@ -103,6 +107,10 @@ class MjpegStreamingEncoder(
             if (currentTime - lastFrameTime < delay) return
             lastFrameTime = currentTime
 
+            // Grayscale is a YUV-domain operation here: keep every Y sample, neutralise U/V.
+            if (prefs.getBoolean(NightMode.PREF_GRAYSCALE, false)) {
+                Grayscale.neutralizeYuv420Chroma(nv21, width, height)
+            }
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
             val jpegBytes = applyStreamTransformations(
                 convertNV21toJPEG(nv21, width, height, quality),
@@ -281,7 +289,8 @@ class MjpegStreamingEncoder(
         if (!hasClients()) return
         try {
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
-            broadcastJpeg(applyStreamTransformations(jpeg, quality, maxWidth, maxHeight))
+            val grayscale = NightMode.isGrayscaleEnabled(context)
+            broadcastJpeg(applyStreamTransformations(jpeg, quality, maxWidth, maxHeight, grayscale))
         } catch (e: OutOfMemoryError) {
             handleOutOfMemory("processJpegFrame")
         } catch (e: Exception) {
@@ -294,6 +303,7 @@ class MjpegStreamingEncoder(
         jpegQuality: Int,
         maxWidth: Int = 0,
         maxHeight: Int = 0,
+        grayscale: Boolean = false,
     ): ByteArray {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
         val camId = prefs.getString("camera_id", null)
@@ -322,11 +332,11 @@ class MjpegStreamingEncoder(
         } else false
         val crop = CropRegion.read(prefs, camId)
         val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 ||
-            mirror || crop != null || (maxWidth > 0 && maxHeight > 0)
+            mirror || crop != null || grayscale || (maxWidth > 0 && maxHeight > 0)
         return if (needsTransform) {
             applyTransformations(
                 jpegBytes, totalRotation, scaleFactor, contrastValue, jpegQuality, mirror, crop,
-                maxWidth, maxHeight,
+                maxWidth, maxHeight, grayscale,
             )
         } else {
             jpegBytes
@@ -343,6 +353,7 @@ class MjpegStreamingEncoder(
         crop: CropRegion? = null,
         maxWidth: Int = 0,
         maxHeight: Int = 0,
+        grayscale: Boolean = false,
     ): ByteArray {
         var bitmap: Bitmap? = null
         try {
@@ -419,31 +430,33 @@ class MjpegStreamingEncoder(
                     }
                 }
 
-                // Contrast allocates another full-size bitmap — skip under memory pressure.
-                if (contrastValue != 0 && !DeviceMemoryHelper.isUnderMemoryPressure()) {
-                    val contrastFactor = 1.0f + (contrastValue / 100.0f)
-
-                    val contrastColorMatrix = android.graphics.ColorMatrix().apply {
-                        set(floatArrayOf(
-                            contrastFactor, 0f, 0f, 0f, 0f,  // Red
-                            0f, contrastFactor, 0f, 0f, 0f,  // Green
-                            0f, 0f, contrastFactor, 0f, 0f,  // Blue
-                            0f, 0f, 0f, 1f, 0f               // Alpha
-                        ))
+                // Contrast and grayscale share one colour-matrix pass, so enabling grayscale does
+                // not add another full-size bitmap. Contrast is still skipped under memory
+                // pressure, but grayscale is the feature the user asked for and must stay on.
+                val applyContrast = contrastValue != 0 && !DeviceMemoryHelper.isUnderMemoryPressure()
+                if (applyContrast || grayscale) {
+                    val colorMatrix = android.graphics.ColorMatrix()
+                    if (applyContrast) {
+                        val contrastFactor = 1.0f + (contrastValue / 100.0f)
+                        colorMatrix.postConcat(android.graphics.ColorMatrix().apply {
+                            setScale(contrastFactor, contrastFactor, contrastFactor, 1f)
+                        })
                     }
+                    // Applied after contrast, matching the GL shader's final output step.
+                    if (grayscale) colorMatrix.postConcat(Grayscale.colorMatrix())
 
                     val paint = android.graphics.Paint().apply {
-                        colorFilter = android.graphics.ColorMatrixColorFilter(contrastColorMatrix)
+                        colorFilter = android.graphics.ColorMatrixColorFilter(colorMatrix)
                     }
 
-                    val contrastedBitmap = createBitmap(
+                    val processedBitmap = createBitmap(
                         bitmap.width, bitmap.height, bitmap.config ?: Bitmap.Config.ARGB_8888
                     )
-                    val canvas = android.graphics.Canvas(contrastedBitmap)
+                    val canvas = android.graphics.Canvas(processedBitmap)
                     canvas.drawBitmap(bitmap, 0f, 0f, paint)
 
                     bitmap.recycle()
-                    bitmap = contrastedBitmap
+                    bitmap = processedBitmap
                 }
 
                 // Convert back to JPEG bytes

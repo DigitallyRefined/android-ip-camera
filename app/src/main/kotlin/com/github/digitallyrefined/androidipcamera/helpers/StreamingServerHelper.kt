@@ -1510,6 +1510,8 @@ class StreamingServerHelper(
         val streamBitrateKbps: Bitrates,
         /** User preference: the stream currently comes from night-mode stills. */
         val nightMode: Boolean,
+        /** Remove colour from both the live GL and night still pipelines. */
+        val nightGrayscale: Boolean,
         /** Whether the selected camera has any usable night still pipeline. */
         val nightModeSupported: Boolean,
         /** Manual night exposure support and limits for the selected camera. */
@@ -1635,6 +1637,7 @@ class StreamingServerHelper(
                 put("effectiveResolution", settings.effectiveResolution)
                 put("nightMode", JSONObject().apply {
                     put("enabled", settings.nightMode)
+                    put("grayscale", settings.nightGrayscale)
                     put("available", settings.nightModeSupported)
                     put("manual", settings.nightManualSupported)
                     put("exposureMinMs", settings.nightExposureMinMs ?: JSONObject.NULL)
@@ -1889,6 +1892,7 @@ class StreamingServerHelper(
                 ),
             ),
             nightMode = NightMode.isEnabled(context),
+            nightGrayscale = NightMode.isGrayscaleEnabled(context),
             nightModeSupported = NightMode.supports(context, cameraId),
             nightManualSupported = nightManual != null,
             nightExposureMinMs = nightManual?.minExposureMs,
