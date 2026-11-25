@@ -161,7 +161,7 @@ class CameraOverlayRenderer(
         }
         if (settings.wifi) {
             val wifi = DeviceStatus.wifiStrength(context)
-            if (wifi >= 0) status.add("🛜 $wifi%")
+            if (wifi >= 0) status.add("📶 $wifi%")
         }
         if (settings.temperature) {
             val temperature = DeviceStatus.temperatureC(context)
