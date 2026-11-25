@@ -12,30 +12,36 @@ jobs:
     name: Lint, tests and build warnings
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - &checkout
+        name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up Java
+      - &java
+        name: Set up Java
         uses: actions/setup-java@v6.3.0
         with:
           distribution: temurin
           # Matches gradle/gradle-daemon-jvm.properties (toolchainVersion=21).
           java-version: 21
 
-      - name: Set up Android SDK
+      - &android
+        name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools'
 
-      - name: Install SDK components
+      - &sdk
+        name: Install SDK components
         run: |
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
 
-      - name: Install Rust and the Android targets
+      - &rust
+        name: Install Rust and the Android targets
         # rustup installs the channel, profile, and targets from rust-toolchain.toml.
         run: cargo --version
 
-      - name: Route Maven Central through Google's mirror
+      - &mirror
+        name: Route Maven Central through Google's mirror
         run: |
           # GitHub-hosted runners are rate-limited by Maven Central, which makes
           # the build fail to resolve every artifact hosted there.
@@ -62,44 +68,23 @@ jobs:
         run: python3 .github/scripts/check-lint.py
 
   verify-reproducible:
+    name: Reproducible build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Java
-        uses: actions/setup-java@v6.3.0
-        with:
-          distribution: temurin
-          # Matches gradle/gradle-daemon-jvm.properties (toolchainVersion=21).
-          java-version: 21
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
-
-      - name: Install SDK components
-        run: |
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
-
-      - name: Install Rust and the Android targets
-        # rustup installs the channel, profile, and targets from rust-toolchain.toml.
-        run: cargo --version
-
-      - name: Route Maven Central through Google's mirror
-        run: |
-          # GitHub-hosted runners are rate-limited by Maven Central, which makes
-          # the build fail to resolve every artifact hosted there.
-          gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
-          mkdir -p "$gradle_home/init.d"
-          cp .github/gradle/maven-central-mirror.gradle "$gradle_home/init.d/"
+      - *checkout
+      - *java
+      - *android
+      - *sdk
+      - *rust
+      - *mirror
 
       - name: Build release APK (first)
         # Strict checks run on both builds so a warning cannot slip through, and
         # both builds use identical flags so the APK comparison stays meaningful.
+        # Unit tests are not repeated here; the checks job already runs them for
+        # this commit, and they cannot affect the APK bytes.
         run: |
-          ./gradlew clean test :app:assembleRelease \
+          ./gradlew clean :app:assembleRelease \
             -PstrictChecks \
             -PskipSigning \
             --no-daemon \
@@ -122,12 +107,13 @@ jobs:
           cp app/build/outputs/apk/release/*universal-release.apk build/unsigned/build2.apk
 
       - name: Compare APKs
+        id: compare
         run: |
           cmp -s build/unsigned/build1.apk build/unsigned/build2.apk
           echo "Reproducible build verification passed (APKs are identical)."
 
       - name: Generate diffoscope report on failure
-        if: failure()
+        if: steps.compare.outcome == 'failure'
         continue-on-error: true
         run: |
           sudo apt-get update
@@ -135,9 +121,10 @@ jobs:
           diffoscope build/unsigned/build1.apk build/unsigned/build2.apk > diffoscope.txt || true
 
       - name: Upload diffoscope report
-        if: failure()
+        if: steps.compare.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
           name: diffoscope-report
           path: diffoscope.txt
           retention-days: 7
+
