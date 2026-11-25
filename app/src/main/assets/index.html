@@ -645,7 +645,7 @@
   <div class='main'>
     <div class='stream-container' id='streamContainer'>
       <div id="statusOverlay" class="status-overlay" style="display: none;">
-        <span id="wifiStatus" title="WiFi Strength">🛜 --%</span>
+        <span id="wifiStatus" title="WiFi Strength">📶 --%</span>
         <span id="batteryStatus" title="Battery Status">🔋 --%</span>
         <span id="tempStatus" title="Phone Temperature" style="display: none;">🌡️ --°C</span>
       </div>
@@ -1055,7 +1055,7 @@
                   <label style="margin:0;">
                     <input type="checkbox" id="osdWifiCheckbox" onchange="setOsdField('wifi', this.checked)"
                       style="margin:0;vertical-align:middle;">
-                    <span style="vertical-align:middle;">🛜 Wi-Fi</span>
+                    <span style="vertical-align:middle;">📶 Wi-Fi</span>
                   </label>
                   <label style="margin:0;">
                     <input type="checkbox" id="osdTemperatureCheckbox"
@@ -3560,7 +3560,7 @@
           wifiEl.style.display = 'none';
         } else {
           wifiEl.style.display = 'flex';
-          let wifiEmoji = '🛜';
+          let wifiEmoji = '📶';
           wifiEl.innerHTML = `${wifiEmoji} ${data.wifiStrength}%`;
         }
       }
