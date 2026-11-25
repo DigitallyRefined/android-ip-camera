@@ -46,6 +46,34 @@
       gap: 8px;
     }
 
+    /* Sponsor button in the top-right corner, matching the website's pill. */
+    .sponsor-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 8px 14px;
+      border: 1px solid #8fb8ff;
+      border-radius: 999px;
+      background: rgba(69, 158, 255, 0.14);
+      color: #a8ccff;
+      font-size: 14px;
+      font-weight: 650;
+      white-space: nowrap;
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+
+    .sponsor-link:hover {
+      background: #8fb8ff;
+      border-color: #8fb8ff;
+      color: #0b1220;
+      text-decoration: none;
+    }
+
+    .sponsor-link:focus-visible {
+      outline: 2px solid #a8ccff;
+      outline-offset: 2px;
+    }
+
     .main {
       display: flex;
       flex: 1;
@@ -169,11 +197,12 @@
       background: transparent;
       color: #aaa;
       border: none;
-      padding: 8px 12px;
+      padding: 8px 8px;
       border-radius: 6px;
       cursor: pointer;
       font-size: 14px;
       font-weight: 600;
+      white-space: nowrap;
       transition: 0.2s;
     }
 
@@ -195,12 +224,36 @@
       display: block;
     }
 
+    .recordings-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .recordings-status {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      color: #ddd;
+      font-size: 13px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .recordings-toolbar-btn {
+      flex: none;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
     .recordings-frame {
       display: block;
       width: 100%;
-      /* Fill the remaining viewport below the panel header; never shrink below 300px. */
-      height: calc(100vh - 745px);
-      min-height: 270px;
+      /* The recordings browser is the primary content of its tab. */
+      height: calc(100vh - 210px);
+      min-height: 320px;
       border: 1px solid #333;
       border-radius: 8px;
       background: #121212;
@@ -426,6 +479,24 @@
       text-align: center;
     }
 
+    .heat-warning {
+      margin: 12px 0 0;
+      padding: 10px 12px;
+      border: 1px solid #7a4a00;
+      border-left: 4px solid #ff9f0a;
+      border-radius: 8px;
+      background: rgba(255, 159, 10, 0.12);
+      color: #ffd9a0;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .heat-warning strong {
+      display: block;
+      margin-bottom: 4px;
+      color: #ffb340;
+    }
+
     .docs-link {
       position: fixed;
       bottom: max(12px, env(safe-area-inset-bottom));
@@ -480,6 +551,11 @@
       }
 
       .header-actions .btn {
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+
+      .header-actions .sponsor-link {
         padding: 8px 10px;
         font-size: 13px;
       }
@@ -543,6 +619,12 @@
         font-size: 12px;
         white-space: nowrap;
       }
+
+      .header-actions .sponsor-link {
+        flex: none;
+        padding: 8px 8px;
+        font-size: 12px;
+      }
     }
   </style>
 </head>
@@ -554,6 +636,9 @@
       <button id='fitBtn' class='btn active' onclick='setView("fit")'>Fit Screen</button>
       <button id='origBtn' class='btn' onclick='setView("original")'>Original Size</button>
       <button id='fullscreenBtn' class='btn' onclick='toggleFullscreen()'>⛶ Fullscreen</button>
+      <a id='sponsorBtn' class='sponsor-link' href='https://github.com/sponsors/DigitallyRefined'
+        target='_blank' rel='noopener noreferrer' title='Sponsor this project on GitHub'
+        style='display: none;'>❤️ Sponsor</a>
     </div>
   </div>
 
@@ -579,11 +664,14 @@
       <div class='controls-content'>
         <div class='tabs' role='tablist' aria-label='Control tabs'>
           <button id='tabCameraBtn' class='tab-btn active' role='tab' aria-selected='true' aria-controls='tabCamera' onclick="showTab('camera')">Camera</button>
-          <button id='tabSettingsBtn' class='tab-btn' role='tab' aria-selected='false' aria-controls='tabSettings' onclick="showTab('settings')">Settings</button>
+          <button id='tabStreamBtn' class='tab-btn' role='tab' aria-selected='false' aria-controls='tabStream' onclick="showTab('stream')">Stream</button>
+          <button id='tabRecordingsBtn' class='tab-btn' role='tab' aria-selected='false' aria-controls='tabRecordings' onclick="showTab('recordings')">Recordings</button>
         </div>
 
         <div id='tabCamera' class='tab-pane active' role='tabpanel' aria-labelledby='tabCameraBtn'>
           <div class='setting-group'>
+            <p class="group-title" style="margin-top:0;">Quick Controls</p>
+
             <div style="display:flex; gap:8px; align-items:flex-end; margin-bottom:15px;">
               <div style="width:calc(50% - 4px); min-width:0;">
                 <label for="cameraSelect">Camera <span class="val-badge" id="cameraFacingBadge">&mdash;</span></label>
@@ -599,170 +687,193 @@
               <button id="pttBtn" class="btn btn-action" style="width: 49%; margin-bottom: 0;">🎙️ Hold to Talk</button>
             </div>
 
-            <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
-            <input id="zoom" type='range' min='0.1' max='8.0' step='0.1' value='1.0' data-control='zoom'
-              data-badge='zoomVal' data-fmt='suffix' data-suffix='x' style='margin-bottom:0'>
-
-            <label id="nightModeRow" style="display:none; margin-top:10px;">
-              <input type="checkbox" id="nightModeCheckbox" onchange="setNightMode(this.checked)" style="margin:0;vertical-align:middle;">
-              <span style="vertical-align:middle;">🌙 Night-sight mode</span>
-            </label>
-            <div id="nightModeHint" class="hint" style="display:none; margin:4px 0 0; font-size:12px; color:#ccc">
-              Replaces live video with brighter night-sight photos, sent into the stream as they are taken.
-              Expect a much lower frame rate and a pause while each photo is captured.
-            </div>
-
-            <div id="nightModeLoading" style="display:none; align-items:center; gap:8px; margin-top:8px; color:#aaa; font-size:12px;">
-              <div class="spinner" style="width:16px;height:16px;flex:none;border-width:2px;"></div>
-              <span id="nightModeLoadingText">Starting night mode and reading exposure limits…</span>
-            </div>
-
-            <div id="nightExposureControls" style="display:none; margin-top:10px;">
-              <label for="nightExposure">Night Exposure <span class="val-badge" id="nightExposureVal">--</span></label>
-              <input id="nightExposure" type="range" min="1" max="1000" step="1" value="100"
-                oninput="updateNightExposureBadge()" onchange="sendNightExposure()"
-                style="margin-bottom:14px">
-              <label for="nightIso">Night ISO <span class="val-badge" id="nightIsoVal">--</span></label>
-              <input id="nightIso" type="range" min="100" max="6400" step="50" value="1600"
-                oninput="updateNightIsoBadge()" onchange="sendNightIso()" style="margin-bottom:8px">
-              <div class="hint" style="margin:0; font-size:12px; color:#ccc">
-                Longer exposure and higher ISO brighten a dark room. Very long exposures blur movement.
-              </div>
-            </div>
-
-            <details id="nightModeAdvanced" class="advanced-stream" style="display:none; margin-top:14px;">
-              <summary>Automatic modes</summary>
-
-              <div id="autoNightModeRow" style="margin-bottom:8px;">
-                <select id="autoNightModeSelect" onchange="setAutoNightMode(this.value)">
-                  <option value="off">Off</option>
-                  <option value="gps">GPS (sunrise/sunset)</option>
-                  <option value="lux">LUX (ambient light sensor)</option>
-                  <option value="gps_lux">GPS or LUX</option>
-                </select>
-              </div>
-              <div class="hint" style="margin:0 0 12px; font-size:12px; color:#ccc">
-                Choose how automatic night mode decides it is dark. GPS follows civil twilight (−6° sun
-                elevation), LUX follows the phone's ambient light sensor, and GPS or LUX uses either.
-              </div>
-
-              <div id="autoNightOffsetRow" style="display:none;">
-                <label for="autoNightOffset">GPS offset (minutes)</label>
-                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                  <input id="autoNightOffset" type="number" min="-999" max="999" step="1"
-                    inputmode="numeric" value="0" onchange="sendAutoNightOffset(this.value)"
-                    style="width:110px; margin-top:0;">
-                  <span id="autoNightWindow" style="font-size:12px; color:#aaa; font-weight:600;">
-                    Night mode --:-- – --:--
-                  </span>
-                </div>
-                <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                  Shifts both GPS switches later (positive) or earlier (negative).
-                </div>
-              </div>
-
-              <div id="autoNightLuxRow" style="display:none; margin-top:12px;">
-                <label for="autoNightLux">LUX switch-on threshold</label>
-                <input id="autoNightLux" type="number" min="0" max="100000" step="1"
-                  inputmode="numeric" value="5" onchange="sendAutoNightLux(this.value)"
-                  style="width:110px; margin-top:0;">
-                <div id="autoNightLuxHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                  Night mode turns on below this value and off at or above it. Default 5 LUX.
-                </div>
-              </div>
-
-              <div id="autoNightSwitchingRow"
-                style="display:none; margin:16px 0 12px; border-top:1px solid #333; padding-top:12px;">
-                <label style="margin:0 0 4px;">
-                  <input type="checkbox" id="autoNightSwitchingCheckbox"
-                    onchange="setAutoNightModeSwitching(this.checked)" style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">Automatic night mode switching</span>
-                </label>
-                <div class="hint" style="margin:0; font-size:12px; color:#ccc">
-                  Turn this off to use the selected schedule only for torch on motion, without
-                  automatically switching night mode.
-                </div>
-              </div>
-
-              <div id="autoFlashSection" style="margin-top:0;">
-                <label style="margin:0 0 6px;" onclick="onAutoFlashLocked(event)">
-                  <input type="checkbox" id="autoFlashCheckbox"
-                    onchange="setAutoFlash(this.checked)" style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">Torch on motion</span>
-                </label>
-                <div id="autoFlashHint" class="hint" style="margin:0; font-size:12px; color:#ccc">
-                  While the automatic night-mode schedule says it is dark, motion switches to normal video
-                  and turns on the torch. Night mode returns after motion ends and the timer expires.
-                </div>
-                <div id="autoFlashDurationRow" style="display:none; margin-top:10px;">
-                  <label for="autoFlashSeconds">Flash-on time after motion (seconds)</label>
-                  <input id="autoFlashSeconds" type="number" min="1" max="99" step="1" value="10"
-                    inputmode="numeric" onchange="sendAutoFlashSeconds(this.value)"
-                    style="width:90px; margin-top:0;">
-                  <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    Keep the flash on this many seconds after motion clears. Up to 2 digits, 1–99.
-                  </div>
-                </div>
-              </div>
-            </details>
-
-            <p class="group-title">Rotation &amp; Mirror</p>
-
-            <div style="margin-bottom: 12px">
-              <label for="rotate">Rotation <span class='val-badge' id='rotateVal'>0°</span></label>
-              <input id="rotate" type="range" min="0" max="359" step="1" value="0" data-control="rotate"
-                data-badge="rotateVal" data-fmt="suffix" data-suffix="°" style="margin-bottom: 8px;">
-              <div style="display:flex;gap:8px;margin-bottom:8px;width:100%;">
-                <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0" data-badge="rotateVal">0°</button>
-                <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90" data-badge="rotateVal">90°</button>
-                <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180" data-badge="rotateVal">180°</button>
-                <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270" data-badge="rotateVal">270°</button>
-              </div>
-            </div>
-
-            <label>
-              <input type="checkbox" id="mirrorCheckbox" onchange="sendControl('mirror', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
-              <span style="vertical-align:middle;">Mirror</span>
-            </label>
-
-            <p class="group-title">Capture</p>
-
-            <div style="display:flex; gap:8px; margin-bottom:8px;">
+            <div style="display:flex; gap:8px; margin-bottom:0;">
               <button id="recordToggleBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="toggleRecording()">🔴 Record</button>
               <button id="snapBtn" class="btn btn-action" style="flex:1 1 0; min-width:0; margin-bottom:0;" onclick="takeSnapshot()">📸 Take Snapshot</button>
             </div>
 
-            <div id="recordingsSection">
-              <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
-                <span class="group-title" style="margin:0;">Recordings</span>
-                <button class="btn" style="padding:4px 10px; font-size:12px;" onclick="refreshRecordings()">↻ Refresh</button>
+            <p class="group-title">Lens</p>
+
+            <label for="zoom">Zoom <span class='val-badge' id='zoomVal'>1.0x</span></label>
+            <input id="zoom" type='range' min='0.1' max='8.0' step='0.1' value='1.0' data-control='zoom'
+              data-badge='zoomVal' data-fmt='suffix' data-suffix='x'>
+
+            <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
+            <input id="focusDistance" type='range' min='-0.05' max='1.0' step='0.05' value='-1'
+              data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
+
+            <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
+            <input id="exposure" type='range' min='-10' max='10' step='1' value='0' data-control='exposure'
+              data-badge='exposureVal'>
+
+            <div id="nightVisionSection" style="display:none;">
+              <p class="group-title">Night Vision</p>
+
+              <label id="nightModeRow" style="margin-top:0;">
+                <input type="checkbox" id="nightModeCheckbox" onchange="setNightMode(this.checked)" style="margin:0;vertical-align:middle;">
+                <span style="vertical-align:middle;">🌙 Night-sight mode</span>
+              </label>
+              <div id="nightModeHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                Replaces live video with brighter night-sight photos, sent into the stream as they are taken.
+                Expect a much lower frame rate and a pause while each photo is captured.
               </div>
-              <iframe id="recordingsFrame" class="recordings-frame" title="Recordings" src="/files"></iframe>
+
+              <div id="nightModeLoading" style="display:none; align-items:center; gap:8px; margin-top:8px; color:#aaa; font-size:12px;">
+                <div class="spinner" style="width:16px;height:16px;flex:none;border-width:2px;"></div>
+                <span id="nightModeLoadingText">Starting night mode and reading exposure limits…</span>
+              </div>
+
+              <div id="nightExposureControls" style="display:none; margin-top:10px;">
+                <label for="nightExposure">Night Exposure <span class="val-badge" id="nightExposureVal">--</span></label>
+                <input id="nightExposure" type="range" min="1" max="1000" step="1" value="100"
+                  oninput="updateNightExposureBadge()" onchange="sendNightExposure()"
+                  style="margin-bottom:14px">
+                <label for="nightIso">Night ISO <span class="val-badge" id="nightIsoVal">--</span></label>
+                <input id="nightIso" type="range" min="100" max="6400" step="50" value="1600"
+                  oninput="updateNightIsoBadge()" onchange="sendNightIso()" style="margin-bottom:8px">
+                <div class="hint" style="margin:0; font-size:12px; color:#ccc">
+                  Longer exposure and higher ISO brighten a dark room. Very long exposures blur movement.
+                </div>
+              </div>
+
+              <label for="nightGrayscaleCheckbox" style="margin-top:14px;">
+                <input type="checkbox" id="nightGrayscaleCheckbox"
+                  onchange="setNightGrayscale(this.checked)" style="margin:0;vertical-align:middle;">
+                <span style="vertical-align:middle;">Grayscale Night Mode</span>
+              </label>
+              <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
+                Removes colour from night footage to reduce visible colour noise. Applies live to
+                video and night stills on both MJPEG and H.264, without changing exposure or ISO.
+              </div>
+
+              <details id="nightModeAdvanced" class="advanced-stream" style="margin-top:14px;">
+                <summary>Automatic night mode</summary>
+
+                <div id="autoNightModeRow" style="margin-bottom:8px;">
+                  <select id="autoNightModeSelect" onchange="setAutoNightMode(this.value)">
+                    <option value="off">Off</option>
+                    <option value="gps">GPS (sunrise/sunset)</option>
+                    <option value="lux">LUX (ambient light sensor)</option>
+                    <option value="gps_lux">GPS or LUX</option>
+                  </select>
+                </div>
+                <div class="hint" style="margin:0 0 12px; font-size:12px; color:#ccc">
+                  Choose how automatic night mode decides it is dark. GPS follows civil twilight (−6° sun
+                  elevation), LUX follows the phone's ambient light sensor, and GPS or LUX uses either.
+                </div>
+
+                <div id="autoNightOffsetRow" style="display:none;">
+                  <label for="autoNightOffset">GPS offset (minutes)</label>
+                  <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <input id="autoNightOffset" type="number" min="-999" max="999" step="1"
+                      inputmode="numeric" value="0" onchange="sendAutoNightOffset(this.value)"
+                      style="width:110px; margin-top:0;">
+                    <span id="autoNightWindow" style="font-size:12px; color:#aaa; font-weight:600;">
+                      Night mode --:-- – --:--
+                    </span>
+                  </div>
+                  <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                    Shifts both GPS switches later (positive) or earlier (negative).
+                  </div>
+                </div>
+
+                <div id="autoNightLuxRow" style="display:none; margin-top:12px;">
+                  <label for="autoNightLux">LUX switch-on threshold</label>
+                  <input id="autoNightLux" type="number" min="0" max="100000" step="1"
+                    inputmode="numeric" value="5" onchange="sendAutoNightLux(this.value)"
+                    style="width:110px; margin-top:0;">
+                  <div id="autoNightLuxHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                    Night mode turns on below this value and off at or above it. Default 5 LUX.
+                  </div>
+                </div>
+
+                <div id="autoNightSwitchingRow"
+                  style="display:none; margin:16px 0 0; border-top:1px solid #333; padding-top:12px;">
+                  <label style="margin:0 0 4px;">
+                    <input type="checkbox" id="autoNightSwitchingCheckbox"
+                      onchange="setAutoNightModeSwitching(this.checked)" style="margin:0;vertical-align:middle;">
+                    <span style="vertical-align:middle;">Automatic night mode switching</span>
+                  </label>
+                  <div class="hint" style="margin:0; font-size:12px; color:#ccc">
+                    Turn this off to use the selected schedule only for torch on motion, without
+                    automatically switching night mode.
+                  </div>
+                </div>
+              </details>
+            </div>
+
+            <details id="framingSettings" class="advanced-stream">
+              <summary>Framing &amp; orientation</summary>
+
+              <div style="margin-bottom: 12px">
+                <label for="rotate">Rotation <span class='val-badge' id='rotateVal'>0°</span></label>
+                <input id="rotate" type='range' min="0" max="359" step="1" value="0" data-control="rotate"
+                  data-badge="rotateVal" data-fmt="suffix" data-suffix="°" style="margin-bottom: 8px;">
+                <div style="display:flex;gap:8px;margin-bottom:8px;width:100%;">
+                  <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="0" data-badge="rotateVal">0°</button>
+                  <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="90" data-badge="rotateVal">90°</button>
+                  <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="180" data-badge="rotateVal">180°</button>
+                  <button class="btn" style="flex:1;min-width:0;" data-control="rotate" data-value="270" data-badge="rotateVal">270°</button>
+                </div>
+              </div>
+
+              <label style="margin-bottom:14px;">
+                <input type="checkbox" id="mirrorCheckbox" onchange="sendControl('mirror', this.checked ? 'true' : 'false')" style="margin:0;vertical-align:middle;">
+                <span style="vertical-align:middle;">Mirror</span>
+              </label>
+
+              <label for="scale">Output scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
+              <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='1.0' data-control='scale'
+                data-badge='scaleVal' data-fmt='suffix' data-suffix='x' data-setview='original'>
+
+              <div style="display:flex; gap:8px;">
+                <button id="cropBtn" class="btn" style="flex:1 1 0; min-width:0;">✂️ Crop Image</button>
+                <button id="resetCropBtn" class="btn" style="flex:1 1 0; min-width:0;">Reset Crop</button>
+              </div>
+            </details>
+
+            <details id="snapshotSettings" class="advanced-stream">
+              <summary>Snapshot settings</summary>
+
+              <label for="snapshotRes">Snapshot Resolution</label>
+              <select id="snapshotRes" style="margin-bottom: 12px" data-control="snapshot_res">
+                <option value="stream">Match stream (fast)</option>
+                <option value="max">Max (full sensor)</option>
+              </select>
+
+              <label for="timerInput">Snapshot Delay (seconds)</label>
+              <input type="number" id="timerInput" min="0" max="300" step="1" value="0">
+              <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                Countdown before a snapshot is captured. Set to 0 to take it instantly. Use the Take Snapshot button above.
+              </div>
+            </details>
+
+            <div style="margin-top:12px;">
+              <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset this camera’s settings</button>
             </div>
           </div>
         </div>
 
-        <div id='tabSettings' class='tab-pane' role='tabpanel' aria-labelledby='tabSettingsBtn'>
+        <div id='tabStream' class='tab-pane' role='tabpanel' aria-labelledby='tabStreamBtn'>
           <div class='setting-group'>
-            <div id="audioControls">
-              <p class="group-title" style="margin-top:0;">Audio</p>
-
-              <label for="avDelay">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.5s</span></label>
-              <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
-
-              <label for="audioGain">Audio Gain <span class='val-badge' id='audioGainVal'>1.0</span></label>
-              <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='1.0' data-control='audio_gain'
-                data-badge='audioGainVal'>
+            <p class="group-title" style="margin-top:0;">Browser Playback</p>
+            <div class="hint" style="margin:0 0 12px; font-size:12px; color:#ccc">
+              Applies only to this browser.
             </div>
-
-            <p class="group-title" style="margin-top:0">Stream</p>
 
             <div>
               <button id="modeH264Btn" class="btn btn-action" style="width: 49%;">H.264</button>
               <button id="modeMjpegBtn" class="btn btn-action" style="width: 49%;">MJPEG</button>
             </div>
 
-            <label for="resolutionSelect" style="margin-top: 14px">Resolution</label>
+            <div id="audioControls">
+              <label for="avDelay" style="margin-top:14px;">AV Sync Delay <span class='val-badge' id='avDelayVal'>2.5s</span></label>
+              <input type='range' id='avDelay' min='0' max='5' step='0.1' value='2.5'>
+            </div>
+
+            <p class="group-title">Main Stream</p>
+
+            <label for="resolutionSelect">Resolution</label>
             <select id="resolutionSelect" style="margin-bottom: 14px" onchange='setResolution(this.value)'></select>
 
             <label for="fps">Frame Rate (fps)</label>
@@ -827,21 +938,7 @@
               </div>
             </details>
 
-            <p class="group-title">Camera Control</p>
-
-            <label for="exposure">Exposure <span class='val-badge' id='exposureVal'>0</span></label>
-            <input id="exposure" type='range' min='-10' max='10' step='1' value='0' data-control='exposure'
-              data-badge='exposureVal'>
-
-            <label for="focusDistance">Focus <span class='val-badge' id='focusVal'>Auto</span></label>
-            <input id="focusDistance" type='range' min='-0.05' max='1.0' step='0.05' value='-1'
-              data-control='focus_distance' data-badge='focusVal' data-fmt='focus'>
-
-            <p class="group-title">Post Processing</p>
-
-            <label for="scale">Scale <span class='val-badge' id='scaleVal'>1.0x</span></label>
-            <input id="scale" type='range' min='0.5' max='2.0' step='0.1' value='1.0' data-control='scale'
-              data-badge='scaleVal' data-fmt='suffix' data-suffix='x' data-setview='original'>
+            <p class="group-title">Image Processing</p>
 
             <label for="contrast">Contrast <span class='val-badge' id='contVal'>0</span></label>
             <input id="contrast" type='range' min='-50' max='50' step='10' value='0' data-control='contrast'
@@ -855,217 +952,244 @@
               Rear camera &amp; H.264 only
             </div>
 
-            <label for="nightGrayscaleCheckbox" style="margin-top:14px;">
-              <input type="checkbox" id="nightGrayscaleCheckbox"
-                onchange="setNightGrayscale(this.checked)" style="margin:0;vertical-align:middle;">
-              <span style="vertical-align:middle;">Grayscale Night Mode</span>
-            </label>
+            <p class="group-title">Audio</p>
+
+            <label for="audioGain">Audio Gain <span class='val-badge' id='audioGainVal'>1.0</span></label>
+            <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='1.0' data-control='audio_gain'
+              data-badge='audioGainVal'>
             <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
-              Removes colour from night footage to reduce visible colour noise. Applies live to
-              video and night stills on both MJPEG and H.264, without changing exposure or ISO.
+              Applies to the camera microphone output, including RTSP audio.
             </div>
 
-            <div style="margin-top:12px;">
-              <button id="resetDefaultsBtn" class="btn" style="width:100%;">Reset to defaults</button>
+            <div id="osdSection">
+              <p class="group-title">Text Overlay (OSD)</p>
+
+              <label style="margin:0 0 15px;">
+                <input type="checkbox" id="osdEnabledCheckbox" onchange="setOsdEnabled(this.checked)"
+                  style="margin:0;vertical-align:middle;">
+                <span style="vertical-align:middle;">📝 Burn status text into the video</span>
+              </label>
+
+              <div id="osdOptions" style="display:none;">
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 12px;">
+                  <label style="margin:0;">
+                    <input type="checkbox" id="osdTimeCheckbox" onchange="setOsdField('time', this.checked)"
+                      style="margin:0;vertical-align:middle;">
+                    <span style="vertical-align:middle;">🕒 Time</span>
+                  </label>
+                  <label style="margin:0;">
+                    <input type="checkbox" id="osdDateCheckbox" onchange="setOsdField('date', this.checked)"
+                      style="margin:0;vertical-align:middle;">
+                    <span style="vertical-align:middle;">📅 Date</span>
+                  </label>
+                  <label style="margin:0;">
+                    <input type="checkbox" id="osdBatteryCheckbox" onchange="setOsdField('battery', this.checked)"
+                      style="margin:0;vertical-align:middle;">
+                    <span style="vertical-align:middle;">🔋 Battery</span>
+                  </label>
+                  <label style="margin:0;">
+                    <input type="checkbox" id="osdWifiCheckbox" onchange="setOsdField('wifi', this.checked)"
+                      style="margin:0;vertical-align:middle;">
+                    <span style="vertical-align:middle;">🛜 Wi-Fi</span>
+                  </label>
+                  <label style="margin:0;">
+                    <input type="checkbox" id="osdTemperatureCheckbox"
+                      onchange="setOsdField('temperature', this.checked)" style="margin:0;vertical-align:middle;">
+                    <span style="vertical-align:middle;">🌡️ Temperature</span>
+                  </label>
+                  <label style="margin:0;">
+                    <input type="checkbox" id="osdCameraNameCheckbox"
+                      onchange="setOsdField('camera_name_enabled', this.checked)"
+                      style="margin:0;vertical-align:middle;">
+                    <span style="vertical-align:middle;">📷 Camera name</span>
+                  </label>
+                </div>
+
+                <label for="osdCameraNameInput" style="margin-top:12px;">Camera name</label>
+                <input type="text" id="osdCameraNameInput" maxlength="40" placeholder="Back 0"
+                  onchange="sendControl('osd_camera_name', this.value)"
+                  onblur="sendControl('osd_camera_name', this.value)">
+                <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                  Leave blank to use the selected lens.
+                </div>
+              </div>
             </div>
 
-            <p class="group-title">Overheat Protection</p>
+            <details id="substreamSection" class="advanced-stream" style="display:none">
+              <summary>RTSP substream</summary>
+
+              <label style="margin:14px 0 6px;">
+                <input type="checkbox" id="rtspAudioCheckbox"
+                  onchange="sendControl('rtsp_audio', this.checked ? 'true' : 'false')"
+                  style="margin:0;vertical-align:middle;">
+                <span style="vertical-align:middle;">Include Audio</span>
+              </label>
+              <div class="hint" style="margin:0 0 14px; font-size:12px; color:#ccc">
+                Add the microphone to the RTSP stream as an AAC audio track (requires the microphone permission).
+              </div>
+
+              <label for="rtspSubSize">Substream Resolution</label>
+              <select id="rtspSubSize" data-control="rtsp_sub_size" style="margin-bottom:14px">
+                <option value="240">240p</option>
+                <option value="360">360p</option>
+                <option value="480">480p</option>
+                <option value="720">720p</option>
+              </select>
+
+              <label for="rtspSubFps">Substream Frame Rate</label>
+              <select id="rtspSubFps" data-control="rtsp_sub_fps" style="margin-bottom:14px">
+                <option value="10">10 fps</option>
+                <option value="15">15 fps</option>
+                <option value="20">20 fps</option>
+                <option value="30">30 fps</option>
+              </select>
+
+              <label for="rtspSubBitrate">Substream Bitrate</label>
+              <select id="rtspSubBitrate" data-control="rtsp_sub_bitrate">
+                <option value="300">300 kbps</option>
+                <option value="500">500 kbps</option>
+                <option value="800">800 kbps</option>
+                <option value="1200">1200 kbps</option>
+                <option value="2000">2000 kbps</option>
+              </select>
+              <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
+                Smaller stream for slow links such as 4G. Keep the bitrate to about half the viewer's connection speed so dips don't stall it. Changes apply the next time an RTSP viewer connects.
+              </div>
+            </details>
+
+            <p class="group-title">Device Safety</p>
 
             <label for="overheatPauseC">Pause streaming at battery temperature (°C)</label>
             <input id="overheatPauseC" type="number" min="0" max="100" step="1" inputmode="numeric"
               value="0" onchange="sendControl('overheat_pause_c', this.value)">
             <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
               0 disables. Above this temperature streaming stops (the same as /control/stop) and
-              resumes after the battery cools 3°C.
+              resumes after the battery cools by 3°C.
             </div>
-
-            <p class="group-title">Recording Mode</p>
-
-            <div class="mode-list" role="radiogroup" aria-label="Recording mode">
-              <label class="mode-option">
-                <input type="radio" name="recordingMode" value="off" onchange="setRecordingMode(this.value)">
-                <span class="mode-copy">
-                  <span class="mode-name">On demand</span>
-                  <span class="mode-desc">Camera stays off until a viewer connects</span>
-                </span>
-              </label>
-              <label class="mode-option">
-                <input type="radio" name="recordingMode" value="notify" onchange="setRecordingMode(this.value)">
-                <span class="mode-copy">
-                  <span class="mode-name">Notify on motion</span>
-                  <span class="mode-desc">Camera stays on but does not automatically record</span>
-                </span>
-              </label>
-              <label class="mode-option">
-                <input type="radio" name="recordingMode" value="motion" onchange="setRecordingMode(this.value)">
-                <span class="mode-copy">
-                  <span class="mode-name">Motion clips</span>
-                  <span class="mode-desc">Camera stays on and records a clip when motion starts</span>
-                </span>
-              </label>
-              <label class="mode-option">
-                <input type="radio" name="recordingMode" value="continuous" onchange="setRecordingMode(this.value)">
-                <span class="mode-copy">
-                  <span class="mode-name">Continuous recording</span>
-                  <span class="mode-desc">Camera stays on and records continuously in segments</span>
-                </span>
-              </label>
-            </div>
-
-            <div class="hint" style="margin:0 0 4px; font-size:12px; color:#ccc">
-              Every mode except On demand sends a notification when motion is detected to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (like Home Assistant &amp; UniFi Protect)
-            </div>
-
-            <div id="motionSettings">
-              <p class="group-title">Motion Detection</p>
-
-              <label for="motionSensitivity">Sensitivity <span class='val-badge' id='motionSensitivityVal'>5</span></label>
-              <input id="motionSensitivity" type='range' min='1' max='10' step='1' value='5' data-control='motion_sensitivity' data-badge='motionSensitivityVal' style='margin-bottom: 20px'>
-
-              <label for="motionStopDelay">Stop Recording After Motion (seconds)</label>
-              <input id="motionStopDelay" type="number" min="0" max="300" step="1" value="10" data-control="motion_record_stop_delay">
-              <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                How long to keep a motion recording after motion stops.
-              </div>
-            </div>
-
-            <p class="group-title">Recording Storage</p>
-
-            <label for="segmentMinutes">Continuous Clip Length (minutes)</label>
-            <input id="segmentMinutes" type="number" min="1" max="120" step="1" value="5" data-control="recording_segment_minutes">
-            <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-              Continuous recording saves a new video each time this many minutes pass. Files use the
-              <code>-continuous.mp4</code> suffix.
-            </div>
-
-            <label for="storageLimit" style="margin-top:14px;">Delete Oldest Clips at (% storage used)</label>
-            <input id="storageLimit" type="number" min="50" max="99" step="1" value="90" data-control="recording_storage_limit_percent">
-            <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-              When the drive that holds the recordings reaches this usage, the oldest recordings are
-              deleted until there is room again. Default 90%.
-            </div>
-
-            <p class="group-title">Snapshot</p>
-
-            <label for="snapshotRes">Snapshot Resolution</label>
-            <select id="snapshotRes" style="margin-bottom: 12px" data-control="snapshot_res">
-              <option value="stream">Match stream (fast)</option>
-              <option value="max">Max (full sensor)</option>
-            </select>
-
-            <label for="timerInput">Snapshot Delay (seconds)</label>
-            <input type="number" id="timerInput" min="0" max="300" step="1" value="0">
-            <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-              Countdown before a snapshot is captured. Set to 0 to take it instantly. Use the Take Snapshot button in the Camera tab.
-            </div>
-
-            <p class="group-title">Crop</p>
-
-            <div style="display:flex; gap:8px;">
-              <button id="cropBtn" class="btn" style="flex:1 1 0; min-width:0;">✂️ Crop Image</button>
-              <button id="resetCropBtn" class="btn" style="flex:1 1 0; min-width:0;">Reset Crop</button>
+            <div id="overheatModeWarning" class="heat-warning" role="status">
+              <strong>⚠️ Continuous streaming can overheat the device</strong>
+              Leaving the camera running - in a continuous camera mode, a browser or an NVR - can
+              cause some devices to overheat and power off. Set a pause temperature above to protect
+              the device.
             </div>
           </div>
-
-          <div id="osdSection" class="setting-group">
-            <p class="group-title" style="margin-top:0;">Text Overlay (OSD)</p>
-
-            <label style="margin:0 0 15px;">
-              <input type="checkbox" id="osdEnabledCheckbox" onchange="setOsdEnabled(this.checked)"
-                style="margin:0;vertical-align:middle;">
-              <span style="vertical-align:middle;">📝 Burn status text into the video</span>
-            </label>
-
-            <div id="osdOptions" style="display:none;">
-              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 12px;">
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdTimeCheckbox" onchange="setOsdField('time', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">🕒 Time</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdDateCheckbox" onchange="setOsdField('date', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">📅 Date</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdBatteryCheckbox" onchange="setOsdField('battery', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">🔋 Battery</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdWifiCheckbox" onchange="setOsdField('wifi', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">🛜 Wi-Fi</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdTemperatureCheckbox"
-                    onchange="setOsdField('temperature', this.checked)" style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">🌡️ Temperature</span>
-                </label>
-                <label style="margin:0;">
-                  <input type="checkbox" id="osdCameraNameCheckbox"
-                    onchange="setOsdField('camera_name_enabled', this.checked)"
-                    style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">📷 Camera name</span>
-                </label>
-              </div>
-
-              <label for="osdCameraNameInput" style="margin-top:12px;">Camera name</label>
-              <input type="text" id="osdCameraNameInput" maxlength="40" placeholder="Back 0"
-                onchange="sendControl('osd_camera_name', this.value)"
-                onblur="sendControl('osd_camera_name', this.value)">
-              <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                Leave blank to use the selected lens.
-              </div>
-            </div>
-          </div>
-
-          <details id="substreamSection" class="setting-group" style="display:none">
-            <summary>Substream</summary>
-
-            <label style="margin:14px 0 6px;">
-              <input type="checkbox" id="rtspAudioCheckbox"
-                onchange="sendControl('rtsp_audio', this.checked ? 'true' : 'false')"
-                style="margin:0;vertical-align:middle;">
-              <span style="vertical-align:middle;">Include Audio</span>
-            </label>
-            <div class="hint" style="margin:0 0 14px; font-size:12px; color:#ccc">
-              Add the microphone to the RTSP stream as an AAC audio track (requires the microphone permission).
-            </div>
-
-            <label for="rtspSubSize">Substream Resolution</label>
-            <select id="rtspSubSize" data-control="rtsp_sub_size" style="margin-bottom:14px">
-              <option value="240">240p</option>
-              <option value="360">360p</option>
-              <option value="480">480p</option>
-              <option value="720">720p</option>
-            </select>
-
-            <label for="rtspSubFps">Substream Frame Rate</label>
-            <select id="rtspSubFps" data-control="rtsp_sub_fps" style="margin-bottom:14px">
-              <option value="10">10 fps</option>
-              <option value="15">15 fps</option>
-              <option value="20">20 fps</option>
-              <option value="30">30 fps</option>
-            </select>
-
-            <label for="rtspSubBitrate">Substream Bitrate</label>
-            <select id="rtspSubBitrate" data-control="rtsp_sub_bitrate">
-              <option value="300">300 kbps</option>
-              <option value="500">500 kbps</option>
-              <option value="800">800 kbps</option>
-              <option value="1200">1200 kbps</option>
-              <option value="2000">2000 kbps</option>
-            </select>
-            <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
-              Smaller stream for slow links such as 4G. Keep the bitrate to about half the viewer's connection speed so dips don't stall it. Changes apply the next time an RTSP viewer connects.
-            </div>
-          </details>
-
-          <p class="notice">Some changes will momentarily restart the camera.</p>
-          <p class="version"><a href="https://github.com/DigitallyRefined/android-ip-camera" target="_blank">Android IP Camera <span id="appVersion"></span></a></p>
         </div>
+
+        <div id='tabRecordings' class='tab-pane' role='tabpanel' aria-labelledby='tabRecordingsBtn'>
+          <div id="recordingsSection">
+            <div class="recordings-toolbar">
+              <span id="recordingsStatusSummary" class="recordings-status">On demand · Idle</span>
+              <button id="recordSettingsBtn" class="btn recordings-toolbar-btn" type="button"
+                aria-expanded="false" aria-controls="recordSettingsPanel" onclick="toggleRecordSettings()">⚙ Settings</button>
+              <button class="btn recordings-toolbar-btn" type="button" onclick="refreshRecordings()"
+                title="Refresh recordings" aria-label="Refresh recordings">↻</button>
+            </div>
+
+            <div id="recordSettingsPanel" class="setting-group" style="display:none;">
+              <p class="group-title" style="margin-top:0;">Recording Mode</p>
+
+              <div class="mode-list" role="radiogroup" aria-label="Recording mode">
+                <label class="mode-option">
+                  <input type="radio" name="recordingMode" value="off" onchange="selectRecordingMode(this.value)">
+                  <span class="mode-copy">
+                    <span class="mode-name">On demand</span>
+                    <span class="mode-desc">Camera stays off until a viewer connects</span>
+                  </span>
+                </label>
+                <label class="mode-option">
+                  <input type="radio" name="recordingMode" value="notify" onchange="selectRecordingMode(this.value)">
+                  <span class="mode-copy">
+                    <span class="mode-name">Notify on motion</span>
+                    <span class="mode-desc">Camera stays on but does not automatically record</span>
+                  </span>
+                </label>
+                <label class="mode-option">
+                  <input type="radio" name="recordingMode" value="motion" onchange="selectRecordingMode(this.value)">
+                  <span class="mode-copy">
+                    <span class="mode-name">Motion clips</span>
+                    <span class="mode-desc">Camera stays on and records a clip when motion starts</span>
+                  </span>
+                </label>
+                <label class="mode-option">
+                  <input type="radio" name="recordingMode" value="continuous" onchange="selectRecordingMode(this.value)">
+                  <span class="mode-copy">
+                    <span class="mode-name">Continuous recording</span>
+                    <span class="mode-desc">Camera stays on and records continuously in segments</span>
+                  </span>
+                </label>
+              </div>
+
+              <div class="hint" style="margin:0 0 4px; font-size:12px; color:#ccc">
+                Every mode except On demand sends a notification when motion is detected to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (like Home Assistant &amp; UniFi Protect)
+              </div>
+
+              <div id="motionSettings" style="display:none;">
+                <p class="group-title">Motion Detection</p>
+
+                <label for="motionSensitivity">Sensitivity <span class='val-badge' id='motionSensitivityVal'>5</span></label>
+                <input id="motionSensitivity" type='range' min='1' max='10' step='1' value='5' data-control='motion_sensitivity' data-badge='motionSensitivityVal' style='margin-bottom: 20px'>
+
+                <div id="motionStopDelayRow" style="display:none;">
+                  <label for="motionStopDelay">Stop Recording After Motion (seconds)</label>
+                  <input id="motionStopDelay" type="number" min="0" max="300" step="1" value="10" data-control="motion_record_stop_delay">
+                  <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                    How long to keep a motion recording after motion stops.
+                  </div>
+                </div>
+              </div>
+
+              <div id="autoFlashSection" style="display:none; margin-top:0;">
+                <p class="group-title">Motion Actions</p>
+
+                <label style="margin:0 0 6px;" onclick="onAutoFlashLocked(event)">
+                  <input type="checkbox" id="autoFlashCheckbox"
+                    onchange="setAutoFlash(this.checked)" style="margin:0;vertical-align:middle;">
+                  <span style="vertical-align:middle;">Torch on motion</span>
+                </label>
+                <div id="autoFlashHint" class="hint" style="margin:0; font-size:12px; color:#ccc">
+                  While the automatic night-mode schedule says it is dark, motion switches to normal video
+                  and turns on the torch. Night mode returns after motion ends and the timer expires.
+                </div>
+                <div id="autoFlashDurationRow" style="display:none; margin-top:10px;">
+                  <label for="autoFlashSeconds">Flash-on time after motion (seconds)</label>
+                  <input id="autoFlashSeconds" type="number" min="1" max="99" step="1" value="10"
+                    inputmode="numeric" onchange="sendAutoFlashSeconds(this.value)"
+                    style="width:90px; margin-top:0;">
+                  <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                    Keep the flash on this many seconds after motion clears. Up to 2 digits, 1–99.
+                  </div>
+                </div>
+              </div>
+
+              <div id="continuousRecordingSection" style="display:none;">
+                <p class="group-title">Continuous Recording</p>
+
+                <label for="segmentMinutes">Continuous Clip Length (minutes)</label>
+                <input id="segmentMinutes" type="number" min="1" max="120" step="1" value="5" data-control="recording_segment_minutes">
+                <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                  Continuous recording saves a new video each time this many minutes pass. Files use the
+                  <code>-continuous.mp4</code> suffix.
+                </div>
+              </div>
+
+              <div id="storageSection">
+                <p class="group-title">Storage</p>
+
+                <label for="storageLimit">Delete Oldest Clips at (% storage used)</label>
+                <input id="storageLimit" type="number" min="50" max="99" step="1" value="90" data-control="recording_storage_limit_percent">
+                <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                  When the drive that holds the recordings reaches this usage, the oldest recordings are
+                  deleted until there is room again. Default 90%.
+                </div>
+              </div>
+            </div>
+
+            <iframe id="recordingsFrame" class="recordings-frame" title="Recordings" src="/files"></iframe>
+          </div>
+        </div>
+
+        <p class="notice">Some changes will momentarily restart the camera.</p>
+        <p class="version"><a href="https://github.com/DigitallyRefined/android-ip-camera" target="_blank">Android IP Camera <span id="appVersion"></span></a></p>
       </div>
     </div>
   </div>
@@ -1076,22 +1200,23 @@
     const getElById = (id) => document.getElementById(id);
 
     function showTab(name) {
-      const showCamera = name !== 'settings';
-      const cameraPane = getElById('tabCamera');
-      const settingsPane = getElById('tabSettings');
-      const cameraBtn = getElById('tabCameraBtn');
-      const settingsBtn = getElById('tabSettingsBtn');
+      const tabs = {
+        camera: { pane: 'tabCamera', button: 'tabCameraBtn' },
+        stream: { pane: 'tabStream', button: 'tabStreamBtn' },
+        recordings: { pane: 'tabRecordings', button: 'tabRecordingsBtn' },
+      };
+      const activeTab = tabs[name] ? name : 'camera';
 
-      if (cameraPane) cameraPane.classList.toggle('active', showCamera);
-      if (settingsPane) settingsPane.classList.toggle('active', !showCamera);
-      if (cameraBtn) {
-        cameraBtn.classList.toggle('active', showCamera);
-        cameraBtn.setAttribute('aria-selected', showCamera ? 'true' : 'false');
-      }
-      if (settingsBtn) {
-        settingsBtn.classList.toggle('active', !showCamera);
-        settingsBtn.setAttribute('aria-selected', showCamera ? 'false' : 'true');
-      }
+      Object.entries(tabs).forEach(([key, ids]) => {
+        const active = key === activeTab;
+        const pane = getElById(ids.pane);
+        const button = getElById(ids.button);
+        if (pane) pane.classList.toggle('active', active);
+        if (button) {
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-selected', active ? 'true' : 'false');
+        }
+      });
 
       // Start each tab at the top of the panel instead of keeping the previous scroll offset.
       const panel = getElById('controlsPanel');
@@ -1102,6 +1227,18 @@
           // On small screens the panel scrolls with the page instead of internally.
           window.scrollTo({ top: panel.getBoundingClientRect().top + window.scrollY, behavior: 'auto' });
         }
+      }
+    }
+
+    function toggleRecordSettings(forceOpen) {
+      const panel = getElById('recordSettingsPanel');
+      const button = getElById('recordSettingsBtn');
+      if (!panel) return;
+      const open = forceOpen !== undefined ? !!forceOpen : panel.style.display === 'none';
+      panel.style.display = open ? '' : 'none';
+      if (button) {
+        button.textContent = open ? '⚙ Close' : '⚙ Settings';
+        button.setAttribute('aria-expanded', open ? 'true' : 'false');
       }
     }
 
@@ -1125,6 +1262,7 @@
     let deviceHasFlash = false;
     let cameraList = [];
     let recordingMode = 'off';
+    let lastRecordingStatus = null;
     // When the burned-in OSD is active, the HTML status badge would duplicate the same values.
     let osdEnabled = false;
     let statusOverlayReady = false;
@@ -1564,10 +1702,12 @@
     }
 
     function updateNightModeUi(supported, enabled) {
+      const section = getElById('nightVisionSection');
       const row = getElById('nightModeRow');
       const hint = getElById('nightModeHint');
       const checkbox = getElById('nightModeCheckbox');
       const show = !!supported;
+      if (section) section.style.display = show ? '' : 'none';
       if (row) row.style.display = show ? '' : 'none';
       if (hint) hint.style.display = show ? '' : 'none';
       if (checkbox) {
@@ -1855,7 +1995,7 @@
       const hint = getElById('autoFlashHint');
       if (hint) {
         hint.textContent = recordingMode === 'off'
-          ? 'Motion detection is off in On demand recording mode. Choose Notify on motion, Motion clips, or Continuous recording in Settings → Recording Mode to use this.'
+          ? 'Motion detection is off in On demand recording mode. Open Recordings → Settings and choose Notify on motion, Motion clips, or Continuous recording to use this.'
           : 'While the automatic night-mode schedule says it is dark, motion switches to normal video and turns on the torch. Night mode returns after motion ends and the timer expires.';
       }
       const section = getElById('autoFlashSection');
@@ -1885,14 +2025,14 @@
       if (!checkbox || !checkbox.disabled) return;
       event.preventDefault();
       event.stopPropagation();
-      alert('Flash on motion needs motion detection. Open Settings → Recording Mode and choose Notify on motion, Motion clips, or Continuous recording instead of On demand.');
+      alert('Flash on motion needs motion detection. Open Recordings → Settings and choose Notify on motion, Motion clips, or Continuous recording instead of On demand.');
     }
 
     function setAutoFlash(enabled) {
       const checkbox = getElById('autoFlashCheckbox');
       if (enabled && recordingMode === 'off') {
         if (checkbox) checkbox.checked = false;
-        alert('Flash on motion needs motion detection. Open Settings → Recording Mode and choose Notify on motion, Motion clips, or Continuous recording instead of On demand.');
+        alert('Flash on motion needs motion detection. Open Recordings → Settings and choose Notify on motion, Motion clips, or Continuous recording instead of On demand.');
         return;
       }
       const row = getElById('autoFlashDurationRow');
@@ -1971,12 +2111,72 @@
       return ['off', 'notify', 'motion', 'continuous'].includes(mode) ? mode : 'off';
     }
 
+    function recordingModeLabel(mode) {
+      switch (normalizeRecordingMode(mode)) {
+        case 'notify': return 'Notify on motion';
+        case 'motion': return 'Motion clips';
+        case 'continuous': return 'Continuous';
+        default: return 'On demand';
+      }
+    }
+
+    function formatRecordingDuration(ms) {
+      const secs = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+      const mins = Math.floor(secs / 60);
+      const remSecs = secs % 60;
+      return `${mins}:${remSecs < 10 ? '0' : ''}${remSecs}`;
+    }
+
+    function updateRecordingSummary() {
+      const summary = getElById('recordingsStatusSummary');
+      if (!summary) return;
+      const recording = !!(lastRecordingStatus && lastRecordingStatus.recording);
+      const state = recording
+        ? `Recording ${formatRecordingDuration(lastRecordingStatus.durationMs)}`
+        : 'Idle';
+      summary.textContent = `${recordingModeLabel(recordingMode)} · ${state}`;
+    }
+
+    function updateRecordingModeSections() {
+      const motionSettings = getElById('motionSettings');
+      if (motionSettings) {
+        motionSettings.style.display = recordingMode === 'off' ? 'none' : '';
+      }
+      const stopDelay = getElById('motionStopDelayRow');
+      if (stopDelay) {
+        stopDelay.style.display = recordingMode === 'motion' ? '' : 'none';
+      }
+      const continuous = getElById('continuousRecordingSection');
+      if (continuous) {
+        continuous.style.display = recordingMode === 'continuous' ? '' : 'none';
+      }
+    }
+
     function setRecordingModeUi(mode) {
       recordingMode = normalizeRecordingMode(mode);
       document.querySelectorAll('input[name="recordingMode"]').forEach(radio => {
         radio.checked = radio.value === recordingMode;
       });
+      updateRecordingModeSections();
       updateAutoFlashAvailability();
+      updateRecordingSummary();
+    }
+
+    const CONTINUOUS_MODE_HEAT_WARNING =
+      'Continuous camera modes keep the camera running instead of turning it off between viewers.\n\n' +
+      'Leaving the camera continuously running or recording can cause some devices to overheat and ' +
+      'power off.\n\n' +
+      'Use "Pause streaming at battery temperature" under Stream → Device Safety so the camera stops ' +
+      'streaming before it gets too hot.';
+
+    function selectRecordingMode(mode) {
+      const next = normalizeRecordingMode(mode);
+      // Warn when moving into a mode that keeps the camera running. Switching between continuous
+      // modes does not change the heat risk, so it stays quiet.
+      if (recordingMode === 'off' && next !== 'off') {
+        alert(CONTINUOUS_MODE_HEAT_WARNING);
+      }
+      setRecordingMode(next);
     }
 
     function setRecordingMode(mode) {
@@ -2208,6 +2408,14 @@
         const n = parseInt(settings.overheatPauseC, 10);
         input.value = String(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0);
       }
+    }
+
+    // The sponsor button is opt-out through the app's "Hide Sponsor" setting.
+    function applySponsorVisibility(settings) {
+      if (!settings) return;
+      const sponsor = getElById('sponsorBtn');
+      if (!sponsor) return;
+      sponsor.style.display = settings.hideSponsor ? 'none' : '';
     }
 
     // MJPEG's estimate (and the Auto summary) depends on the frame rate: rebuild both on change.
@@ -3234,6 +3442,7 @@
           applyNightExposureUi(data.settings);
           applyOsdSettings(data.settings);
           applyOverheatSettings(data.settings);
+          applySponsorVisibility(data.settings);
           if (applySettings) applyStreamSettings(data.settings);
           else updateServerStreamInfo(data.settings);
           renderCameraControls();
@@ -3272,6 +3481,7 @@
     function updateRecordingUi(statusData) {
       const toggleBtn = getElById('recordToggleBtn');
       isRecording = !!(statusData?.recording);
+      lastRecordingStatus = statusData || null;
       if (statusData?.mode) {
         recordingMode = normalizeRecordingMode(String(statusData.mode));
         // Keep the radios in step if the mode was changed elsewhere (e.g. another browser).
@@ -3312,6 +3522,7 @@
           toggleBtn.style.borderColor = '';
         }
       }
+      updateRecordingSummary();
     }
 
     function checkRecordingStatus() {
@@ -3333,11 +3544,9 @@
     }
 
     function showRecordings() {
-      const section = getElById('recordingsSection');
-      if (!section) return;
-      section.style.display = '';
+      showTab('recordings');
+      toggleRecordSettings(false);
       refreshRecordings();
-      try { section.scrollIntoView({ block: 'nearest' }); } catch (_) { }
     }
 
     function toggleRecording() {
