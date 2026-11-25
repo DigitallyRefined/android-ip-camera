@@ -91,11 +91,19 @@ class StreamingService : LifecycleService() {
         get() = listOfNotNull(h264StreamingEncoder, mjpegStreamingEncoder)
 
     /** A recording mode other than "off": the camera must keep delivering frames with no viewer. */
-    private fun motionEnabled(): Boolean = motionMonitor?.enabled == true
+    private fun cameraAlwaysOn(): Boolean = motionMonitor?.cameraAlwaysOn == true
 
-    /** Camera AE auto-night-mode keeps the camera delivering frames for brightness telemetry. */
+    /** Frame-difference motion detection is active in the selected recording mode. */
+    private fun motionDetectionEnabled(): Boolean = motionMonitor?.motionDetection == true
+
+    /**
+     * Camera AE auto-night-mode keeps the camera delivering frames for brightness telemetry, but
+     * only in a recording mode that is already keeping the camera on. On demand must still release
+     * the camera when the last client leaves, even if a stale Camera AE preference remains stored.
+     */
     private fun lightMeterEnabled(): Boolean =
-        AutoNightMode.modeIncludesCameraAe(AutoNightMode.mode(this))
+        MotionMonitor.modeFor(this) != MotionMonitor.MODE_OFF &&
+            AutoNightMode.modeIncludesCameraAe(AutoNightMode.mode(this))
 
     /** Loopback TLS bridge used when the local web server speaks HTTPS and OpenTunnel forwards plain HTTP. */
     @Volatile private var openTunnelBridge: LocalTlsBridge? = null
@@ -374,6 +382,15 @@ class StreamingService : LifecycleService() {
             nightModeEnabled = false
             NightMode.setEnabled(this, false)
         }
+        // Camera AE is only valid while an always-on recording mode keeps the camera running. A
+        // stored Camera AE preference left over from before On demand was selected must not hold
+        // the camera open when the last client leaves.
+        if (MotionMonitor.modeFor(this) == MotionMonitor.MODE_OFF &&
+            AutoNightMode.mode(this) == AutoNightMode.MODE_CAMERA_AE
+        ) {
+            Log.w(TAG, "Camera AE is unavailable in On demand; disabling it")
+            AutoNightMode.setMode(this, AutoNightMode.MODE_OFF)
+        }
         if (AutoNightMode.mode(this) == AutoNightMode.MODE_CAMERA_AE &&
             NightMode.torchMode(this) == NightMode.TORCH_MODE_ALWAYS
         ) {
@@ -383,6 +400,7 @@ class StreamingService : LifecycleService() {
         CameraLightMeter.reset()
         applyGrayscaleState()
         startAutoNightModeLoop()
+        AutoNightMode.syncLuxMonitor(this)
         startOverheatMonitor()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             registerReceiver(notificationChannelReceiver,
@@ -418,6 +436,7 @@ class StreamingService : LifecycleService() {
         // Plain thread: the lifecycle scope is already cancelled once the service is destroyed.
         rtspServer?.let { server -> Thread { server.stop() }.start() }
         motionMonitor?.detector?.reset()
+        AutoNightMode.stopLuxMonitor()
         stopOnvif()
         stopOpenTunnel()
         releaseStreamingWakeLock()
@@ -595,7 +614,7 @@ class StreamingService : LifecycleService() {
         // Recording owns the camera session: stopping or restarting the camera now would tear
         // down the encoder and finalize the file, so leave the pipeline alone until it stops.
         if (localRecorder?.isRecording == true) return
-        val shouldRun = encoders.any { it.hasClients() } || currentSurfaceProvider != null || motionEnabled() || lightMeterEnabled()
+        val shouldRun = encoders.any { it.hasClients() } || currentSurfaceProvider != null || cameraAlwaysOn() || lightMeterEnabled()
         if (shouldRun) {
             debouncedStartCamera()
         } else {
@@ -606,7 +625,7 @@ class StreamingService : LifecycleService() {
         }
     }
     fun isCameraRunning() = captureRunning
-    fun hasActiveClients() = encoders.any { it.hasClients() } || localRecorder?.isRecording == true || motionEnabled() || lightMeterEnabled()
+    fun hasActiveClients() = encoders.any { it.hasClients() } || localRecorder?.isRecording == true || cameraAlwaysOn() || lightMeterEnabled()
     fun switchCamera() {
         selectCamera(!frontFacing, null)
         PreferenceManager.getDefaultSharedPreferences(this).edit {
@@ -836,10 +855,10 @@ class StreamingService : LifecycleService() {
         streamingServerHelper?.startStreamingServer()
         startRtspServerIfEnabled()
         startOnvifIfEnabled()
-        // An always-on recording mode or Camera AE metering keeps the camera running with no
-        // viewer. Continuous mode also starts the segmented recorder; its first start brings the
-        // camera up itself.
-        if (motionEnabled() || lightMeterEnabled()) {
+        // An always-on recording mode keeps the camera running with no viewer; Camera AE metering
+        // only counts in those modes. Continuous mode also starts the segmented recorder; its first
+        // start brings the camera up itself.
+        if (cameraAlwaysOn()) {
             acquireStreamingWakeLock()
             if (motionMonitor?.continuousRecording == true) {
                 startContinuousRecording()
@@ -1055,7 +1074,7 @@ class StreamingService : LifecycleService() {
                         // A viewer leaving during a Camera1 open sheds the session that open ends with.
                         awaitCameraSettled()
                         if (!captureRunning) return@launch   // camera stopped meanwhile
-                        if (encoders.any { it.hasClients() } || currentSurfaceProvider != null || motionEnabled() || lightMeterEnabled()) return@launch
+                        if (encoders.any { it.hasClients() } || currentSurfaceProvider != null || cameraAlwaysOn() || lightMeterEnabled()) return@launch
                         startCamera(force = true)
                     }
                 } else {
@@ -1321,11 +1340,25 @@ class StreamingService : LifecycleService() {
         h264Viewers = h264StreamingEncoder?.hasClients() == true,
         mjpegViewers = mjpegStreamingEncoder?.hasClients() == true,
         recording = recordingNeeded || localRecorder?.isRecording == true,
-        motion = motionEnabled(),
+        motion = motionDetectionEnabled(),
+        keepAlive = cameraAlwaysOn(),
         snapshot = snapshotInProgress,
         preview = currentSurfaceProvider != null,
-        lightMeter = AutoNightMode.modeIncludesCameraAe(AutoNightMode.mode(this)),
+        lightMeter = lightMeterEnabled(),
     )
+
+    /**
+     * Night stills replace the video frames, so they are only captured while a viewer, local
+     * recording, motion detection or a snapshot actually consumes frames. On demand with only the
+     * on-phone preview attached, and Camera always on/Camera AE with no viewer, use the normal video
+     * pipeline instead: the still loop would capture full-resolution photos that go nowhere.
+     */
+    private fun nightStillsNeeded(): Boolean =
+        encoders.any { it.hasClients() } ||
+            localRecorder?.isRecording == true ||
+            recordingNeeded ||
+            motionDetectionEnabled() ||
+            snapshotInProgress
 
     private fun streamFps(): Int =
         (PreferenceManager.getDefaultSharedPreferences(this).getString("stream_fps", "30")?.toIntOrNull() ?: 30).coerceIn(1, 60)
@@ -1423,35 +1456,39 @@ class StreamingService : LifecycleService() {
             Log.w(TAG, "startCamera bypassed: permissions not granted")
             return@withLock
         }
-        val hasClients = encoders.any { it.hasClients() }
-        if (!force && !hasClients && currentSurfaceProvider == null && !motionEnabled() && !lightMeterEnabled()) {
+        if (!force && !hasActiveClients() && currentSurfaceProvider == null) {
             Log.i(TAG, "startCamera bypassed: no force, no clients, and preview surface is null")
             return@withLock
         }
-        // Night mode is a still-photo loop, not a video session. It owns the camera whenever it is
-        // enabled and a consumer is connected; turning it off (or losing every viewer) falls back
-        // through to the normal video path.
+        // Night mode is a still-photo loop, not a video session. It owns the camera only while
+        // something actually consumes frames; a camera kept on just for the on-phone preview,
+        // Camera always on or Camera AE metering stays on the normal video pipeline, which avoids
+        // full-resolution stills that nobody receives and still provides AE telemetry.
         if (nightModeEnabled) {
-            if (!hasClients && currentSurfaceProvider == null && !motionEnabled() && !lightMeterEnabled()) {
+            if (!hasActiveClients() && currentSurfaceProvider == null) {
                 stopCamera()
                 return@withLock
             }
-            val wantedSize = desiredSize()
-            val wantedCamera = camId()
-            val wantedManual = NightMode.manualExposure(this, wantedCamera)
-            val wantedExposure = wantedManual?.let { NightMode.currentExposureMs(this, wantedCamera, it) }
-            val wantedIso = wantedManual?.let { NightMode.currentIso(this, wantedCamera, it) }
-            if (nightCaptureReady && nightCapture != null &&
-                nightCaptureCamera == wantedCamera && nightCaptureSize == wantedSize &&
-                nightCaptureExposureMs == wantedExposure && nightCaptureIso == wantedIso
-            ) {
-                h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
+            if (nightStillsNeeded()) {
+                val wantedSize = desiredSize()
+                val wantedCamera = camId()
+                val wantedManual = NightMode.manualExposure(this, wantedCamera)
+                val wantedExposure = wantedManual?.let { NightMode.currentExposureMs(this, wantedCamera, it) }
+                val wantedIso = wantedManual?.let { NightMode.currentIso(this, wantedCamera, it) }
+                if (nightCaptureReady && nightCapture != null &&
+                    nightCaptureCamera == wantedCamera && nightCaptureSize == wantedSize &&
+                    nightCaptureExposureMs == wantedExposure && nightCaptureIso == wantedIso
+                ) {
+                    h264StreamingEncoder?.h264HardwareEncoder?.requestKeyFrame()
+                    return@withLock
+                }
+                cameraHeldForTorch = false
+                stopCamera()
+                startNightModeCamera()
                 return@withLock
             }
-            cameraHeldForTorch = false
-            stopCamera()
-            startNightModeCamera()
-            return@withLock
+            // Nothing consumes night stills right now: fall through to a normal video session so
+            // the camera stays warm and Camera AE keeps its frames.
         }
         // A viewer joining or leaving restarts the camera only when the running session cannot serve the
         // viewers now connected, or has stopped delivering frames. Restarting on every connection cost a
@@ -2838,6 +2875,11 @@ class StreamingService : LifecycleService() {
                     ) {
                         Log.w(TAG, "Ignoring auto_night_mode=camera_ae: always-on torch would blind the meter")
                         return
+                    } else if (mode == AutoNightMode.MODE_CAMERA_AE &&
+                        MotionMonitor.modeFor(this) == MotionMonitor.MODE_OFF
+                    ) {
+                        Log.w(TAG, "Ignoring auto_night_mode=camera_ae: On demand releases the camera when idle")
+                        mode = AutoNightMode.MODE_OFF
                     } else if (!NightMode.supports(this, camId())) {
                         Log.w(TAG, "Ignoring auto_night_mode=$mode: ${camId()} has no night-mode still pipeline")
                         mode = AutoNightMode.MODE_OFF
@@ -3462,6 +3504,13 @@ class StreamingService : LifecycleService() {
         val recorder = localRecorder
         when (mode) {
             MotionMonitor.MODE_OFF -> {
+                // Camera AE needs frames and would otherwise hold the camera open with no viewer.
+                // On demand must release the camera when the last client leaves, so disable it.
+                if (AutoNightMode.mode(this) == AutoNightMode.MODE_CAMERA_AE) {
+                    AutoNightMode.setMode(this, AutoNightMode.MODE_OFF)
+                    autoNightScheduleOn = null
+                    Log.i(TAG, "Camera AE disabled: On demand releases the camera when no viewer is connected")
+                }
                 // Motion detection is unavailable in On demand mode, so a flash cycle cannot get
                 // its ending event. End it now instead of leaving the torch on indefinitely.
                 endAutoFlashCycle(restoreNightMode = true)
@@ -3492,11 +3541,11 @@ class StreamingService : LifecycleService() {
                 startContinuousRecording()
             }
 
-            else -> { // MODE_NOTIFY or MODE_MOTION
+            else -> { // MODE_ALWAYS_ON, MODE_NOTIFY or MODE_MOTION
                 stopContinuousRecording()
                 if (recorder?.isRecording == true &&
                     (recorder.trigger == LocalRecorder.Trigger.CONTINUOUS ||
-                        (mode == MotionMonitor.MODE_NOTIFY && recorder.trigger == LocalRecorder.Trigger.MOTION))
+                        (mode != MotionMonitor.MODE_MOTION && recorder.trigger == LocalRecorder.Trigger.MOTION))
                 ) {
                     stopRecording()
                 }
@@ -3630,7 +3679,7 @@ class StreamingService : LifecycleService() {
     private fun handleAutoFlashMotion(active: Boolean) {
         if (overheatPaused) return
         if (NightMode.torchMode(this) != NightMode.TORCH_MODE_MOTION) return
-        if (motionMonitor?.enabled != true) return
+        if (motionMonitor?.motionDetection != true) return
         if (active) {
             autoFlashOffJob?.cancel()
             autoFlashOffJob = null
@@ -3759,10 +3808,10 @@ class StreamingService : LifecycleService() {
      */
     private fun restoreNoViewerCameraState() {
         if (encoders.any { it.hasClients() }) return
-        // Motion detection and Camera AE metering need the camera to keep delivering frames with
-        // no viewer connected. Stopping here would end them until the next client connects, so
-        // leave the running pipeline alone.
-        if (motionEnabled() || lightMeterEnabled()) return
+        // Camera always-on modes (and Camera AE metering, which only counts inside them) need the
+        // camera to keep delivering frames with no viewer connected. Stopping here would end them
+        // until the next client connects, so leave the running pipeline alone.
+        if (cameraAlwaysOn() || lightMeterEnabled()) return
         launchMain {
             if (currentSurfaceProvider != null) {
                 debouncedStartCamera()

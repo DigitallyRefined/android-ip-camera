@@ -1666,6 +1666,7 @@ class StreamingServerHelper(
                     put("autoLocationAcquiring", settings.nightAutoLocationAcquiring)
                     put("autoLuxThreshold", settings.nightAutoLuxThreshold)
                     put("autoLuxAvailable", settings.nightAutoLuxAvailable)
+                    put("autoLux", AutoNightMode.currentLux(context) ?: JSONObject.NULL)
                     put("autoStart", settings.nightAutoStart ?: JSONObject.NULL)
                     put("autoEnd", settings.nightAutoEnd ?: JSONObject.NULL)
                     put("autoFlash", settings.nightAutoFlash)
@@ -1907,7 +1908,7 @@ class StreamingServerHelper(
             deviceHasFlash = anyBackCameraWithFlash(),
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
             snapshotRes = prefs.getString("snapshot_res_$cameraId", "max") ?: "max",
-            motionDetectionEnabled = MotionMonitor.isEnabled(context),
+            motionDetectionEnabled = MotionMonitor.motionDetectionEnabled(context),
             motionSensitivity = prefs.getString(MotionMonitor.PREF_SENSITIVITY, MotionMonitor.DEFAULT_SENSITIVITY.toString())
                 ?: MotionMonitor.DEFAULT_SENSITIVITY.toString(),
             motionRecordStopDelay = prefs.getString(MotionMonitor.PREF_STOP_DELAY, MotionMonitor.DEFAULT_STOP_DELAY.toString())

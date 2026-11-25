@@ -12,6 +12,7 @@ class CameraDemandTest {
         assertTrue(CameraDemand(mjpegViewers = true).frames)
         assertTrue(CameraDemand(recording = true).frames)
         assertTrue(CameraDemand(motion = true).frames)
+        assertTrue(CameraDemand(keepAlive = true).frames)
         assertTrue(CameraDemand(snapshot = true).frames)
         assertFalse(CameraDemand(preview = true).frames)
         assertFalse(CameraDemand().frames)
@@ -25,9 +26,10 @@ class CameraDemandTest {
     }
 
     @Test
-    fun `nv21 follows MJPEG viewers and motion detection`() {
+    fun `nv21 follows MJPEG viewers, motion detection and camera keep-alive`() {
         assertTrue(CameraDemand(mjpegViewers = true).nv21)
         assertTrue(CameraDemand(motion = true).nv21)
+        assertTrue(CameraDemand(keepAlive = true).nv21)
         assertFalse(CameraDemand(h264Viewers = true, recording = true, snapshot = true, preview = true).nv21)
     }
 

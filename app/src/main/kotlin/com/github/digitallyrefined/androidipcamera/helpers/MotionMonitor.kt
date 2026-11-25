@@ -16,6 +16,9 @@ import java.util.Locale
  * StreamingService.hasActiveClients()), so motion can be detected with no viewer connected. The
  * resulting motion state is published to the ONVIF server as motion events, used for motion
  * notifications and used to start/stop motion-triggered recordings.
+ *
+ * "Camera always on" keeps the camera open like the other non-off modes but deliberately runs no
+ * motion detection, so it publishes no motion events and sends no notifications.
  */
 class MotionMonitor(
     private val context: Context,
@@ -32,6 +35,7 @@ class MotionMonitor(
         const val PREF_STORAGE_LIMIT_PERCENT = "recording_storage_limit_percent"
 
         const val MODE_OFF = "off"
+        const val MODE_ALWAYS_ON = "always_on"
         const val MODE_NOTIFY = "notify"
         const val MODE_MOTION = "motion"
         const val MODE_CONTINUOUS = "continuous"
@@ -55,11 +59,23 @@ class MotionMonitor(
         /** Returns the canonical mode name, or null when [raw] is not a known mode. */
         fun normalizeMode(raw: String?): String? = when (raw?.trim()?.lowercase(Locale.US)) {
             MODE_OFF, "on_demand", "ondemand", "demand", "false", "0", "off_camera" -> MODE_OFF
+            MODE_ALWAYS_ON, "always", "always-on", "camera_always_on", "camera-always-on",
+            "nvr", "stream_only" -> MODE_ALWAYS_ON
             MODE_NOTIFY, "notification", "notify_only", "notify-only", "true", "1", "on" -> MODE_NOTIFY
             MODE_MOTION, "record_on_motion", "motion_clips", "motion_clip" -> MODE_MOTION
             MODE_CONTINUOUS, "continuous_recording", "always_record", "record" -> MODE_CONTINUOUS
             else -> null
         }
+
+        /** True when the camera must stay on with no viewer (every mode except [MODE_OFF]). */
+        fun isCameraAlwaysOn(mode: String): Boolean = mode != MODE_OFF
+
+        /**
+         * True when the mode runs frame-difference detection. Only these modes publish ONVIF motion
+         * events, post motion notifications and start motion clips; [MODE_ALWAYS_ON] is stream-only.
+         */
+        fun isMotionDetection(mode: String): Boolean =
+            mode == MODE_NOTIFY || mode == MODE_MOTION || mode == MODE_CONTINUOUS
 
         /**
          * The stored mode, with a one-time migration from the old Record on Motion checkbox:
@@ -73,7 +89,10 @@ class MotionMonitor(
         }
 
         /** True when the camera must stay on with no viewer (every mode except [MODE_OFF]). */
-        fun isEnabled(context: Context): Boolean = modeFor(context) != MODE_OFF
+        fun isEnabled(context: Context): Boolean = isCameraAlwaysOn(modeFor(context))
+
+        /** True when the selected mode runs motion detection (and therefore publishes events). */
+        fun motionDetectionEnabled(context: Context): Boolean = isMotionDetection(modeFor(context))
     }
 
     private val prefs get() = PreferenceManager.getDefaultSharedPreferences(context)
@@ -85,8 +104,11 @@ class MotionMonitor(
 
     val mode get() = modeFor(context)
 
-    /** Camera stays on with no viewer (notification, motion clips or continuous recording). */
-    val enabled get() = mode != MODE_OFF
+    /** Camera stays on with no viewer (every mode except [MODE_OFF], including stream-only). */
+    val cameraAlwaysOn get() = isCameraAlwaysOn(mode)
+
+    /** Frame-difference motion detection is active (not in On demand or Camera always on). */
+    val motionDetection get() = isMotionDetection(mode)
 
     /** Motion starts a clip (the "Motion clips" mode). */
     val recordingOnMotion get() = mode == MODE_MOTION
@@ -94,8 +116,8 @@ class MotionMonitor(
     /** Continuous segmented recording is active. */
     val continuousRecording get() = mode == MODE_CONTINUOUS
 
-    /** Every always-on mode (everything except [MODE_OFF]) sends a notification on motion. */
-    val notifyOnMotion get() = enabled
+    /** Motion detection modes post a notification on motion. */
+    val notifyOnMotion get() = motionDetection
 
     /** Seconds to keep recording after motion has cleared (0 = stop immediately). */
     val stopDelaySeconds: Int
@@ -114,7 +136,7 @@ class MotionMonitor(
 
     @Synchronized
     fun processFrame(image: ImageProxy) {
-        if (!enabled) return
+        if (!motionDetection) return
         // Never let motion analysis take the camera pipeline down with it.
         try {
             val now = System.currentTimeMillis()
@@ -138,7 +160,7 @@ class MotionMonitor(
     /** Camera1 path: NV21 preview frames (luma is the first width*height bytes). */
     @Synchronized
     fun processNv21Frame(nv21: ByteArray, width: Int, height: Int) {
-        if (!enabled) return
+        if (!motionDetection) return
         try {
             val now = System.currentTimeMillis()
             if (now - lastSampleMs < SAMPLE_INTERVAL_MS) return
@@ -157,7 +179,7 @@ class MotionMonitor(
     @Synchronized
     fun processJpegFrame(jpeg: ByteArray) {
         val cameraAe = AutoNightMode.modeIncludesCameraAe(AutoNightMode.mode(context))
-        if (!enabled && !cameraAe) return
+        if (!motionDetection && !cameraAe) return
         try {
             val now = System.currentTimeMillis()
             if (now - lastSampleMs < SAMPLE_INTERVAL_MS) return
@@ -198,7 +220,7 @@ class MotionMonitor(
                     }
                     if (count > 0) CameraLightMeter.reportLuma(sum.toFloat() / count)
                 }
-                if (enabled) {
+                if (motionDetection) {
                     detector.process({ i -> luma[i].toInt() and 0xFF }, width, height, width, 1, now)
                 }
             } finally {
