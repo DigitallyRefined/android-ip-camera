@@ -448,9 +448,10 @@ class CameraGlPipe(
         // Optional edge-preserving (bilateral) filter. It only runs when uDenoise > 0, so the
         // default pipeline keeps its single texture fetch. The GL thread updates uDenoise and
         // uTexel per frame, letting the web slider change the radius without a camera restart.
-        // A dense 3x3 pass always smooths per-pixel grain; two rings at growing radii reach wider
-        // low-light noise as the slider rises. Taps are unrolled: some mobile drivers miscompile
-        // sampler loops, which made the previous version look like it did nothing.
+        // The taps are unrolled (some mobile drivers miscompile sampler loops) and split into
+        // progressive groups so low levels cost 5 fetches instead of all 25: a 5-tap cross, then
+        // the 3x3 diagonals, then the two wider rings. Every group is conditional on the uniform so
+        // a level-1 slider setting does not pay level-100 GPU cost on older 1080p devices.
         val fs = """
             #extension GL_OES_EGL_image_external : require
             precision highp float;
@@ -481,38 +482,49 @@ class CameraGlPipe(
                     float sigma = 0.05 + 0.28 * uDenoise;
                     float k = 1.0 / (2.0 * sigma * sigma);
                     vec2 t = uTexel;
+                    const float diagonal = 0.70710678;
                     vec4 sum = vec4(c, 1.0);
 
-                    // Dense 3x3: always removes per-pixel sensor grain.
-                    sum += tap(tc + vec2(-t.x, -t.y), c, k);
-                    sum += tap(tc + vec2( 0.0, -t.y), c, k);
-                    sum += tap(tc + vec2( t.x, -t.y), c, k);
+                    // Levels 1-25: centre plus the four cardinal neighbours (5 texture fetches).
                     sum += tap(tc + vec2(-t.x,  0.0), c, k);
                     sum += tap(tc + vec2( t.x,  0.0), c, k);
-                    sum += tap(tc + vec2(-t.x,  t.y), c, k);
+                    sum += tap(tc + vec2( 0.0, -t.y), c, k);
                     sum += tap(tc + vec2( 0.0,  t.y), c, k);
-                    sum += tap(tc + vec2( t.x,  t.y), c, k);
 
-                    // Two rings widen the filter as the slider rises (1.5..3 and 2.5..8 texels).
-                    float r1 = 1.5 + 1.5 * uDenoise;
-                    float r2 = 2.5 + 5.5 * uDenoise;
-                    const float d = 0.70710678;
-                    sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r1) * 0.75;
-                    sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r1) * 0.75;
-                    sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r1) * 0.75;
-                    sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r1) * 0.75;
-                    sum += ringTap(tc, c, k, vec2(-d,   -d),   r1) * 0.75;
-                    sum += ringTap(tc, c, k, vec2( d,   -d),   r1) * 0.75;
-                    sum += ringTap(tc, c, k, vec2(-d,    d),   r1) * 0.75;
-                    sum += ringTap(tc, c, k, vec2( d,    d),   r1) * 0.75;
-                    sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r2) * 0.40;
-                    sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r2) * 0.40;
-                    sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r2) * 0.40;
-                    sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r2) * 0.40;
-                    sum += ringTap(tc, c, k, vec2(-d,   -d),   r2) * 0.40;
-                    sum += ringTap(tc, c, k, vec2( d,   -d),   r2) * 0.40;
-                    sum += ringTap(tc, c, k, vec2(-d,    d),   r2) * 0.40;
-                    sum += ringTap(tc, c, k, vec2( d,    d),   r2) * 0.40;
+                    // Levels 26-50: complete the dense 3x3 with the four diagonals (9 fetches).
+                    if (uDenoise > 0.25) {
+                        sum += tap(tc + vec2(-t.x, -t.y), c, k);
+                        sum += tap(tc + vec2( t.x, -t.y), c, k);
+                        sum += tap(tc + vec2(-t.x,  t.y), c, k);
+                        sum += tap(tc + vec2( t.x,  t.y), c, k);
+                    }
+
+                    // Levels 51-75: first wider ring, smoothly growing from 1.5 to 3 texels.
+                    if (uDenoise > 0.50) {
+                        float r1 = 1.5 + 1.5 * clamp((uDenoise - 0.50) / 0.25, 0.0, 1.0);
+                        sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r1) * 0.75;
+                        sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r1) * 0.75;
+                        sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r1) * 0.75;
+                        sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r1) * 0.75;
+                        sum += ringTap(tc, c, k, vec2(-diagonal, -diagonal), r1) * 0.75;
+                        sum += ringTap(tc, c, k, vec2( diagonal, -diagonal), r1) * 0.75;
+                        sum += ringTap(tc, c, k, vec2(-diagonal,  diagonal), r1) * 0.75;
+                        sum += ringTap(tc, c, k, vec2( diagonal,  diagonal), r1) * 0.75;
+                    }
+
+                    // Levels 76-100: second ring, smoothly growing from 2.5 to 8 texels (the full
+                    // 25 fetches, matching the former behaviour at level 100).
+                    if (uDenoise > 0.75) {
+                        float r2 = 2.5 + 5.5 * clamp((uDenoise - 0.75) / 0.25, 0.0, 1.0);
+                        sum += ringTap(tc, c, k, vec2(-1.0,  0.0), r2) * 0.40;
+                        sum += ringTap(tc, c, k, vec2( 1.0,  0.0), r2) * 0.40;
+                        sum += ringTap(tc, c, k, vec2( 0.0, -1.0), r2) * 0.40;
+                        sum += ringTap(tc, c, k, vec2( 0.0,  1.0), r2) * 0.40;
+                        sum += ringTap(tc, c, k, vec2(-diagonal, -diagonal), r2) * 0.40;
+                        sum += ringTap(tc, c, k, vec2( diagonal, -diagonal), r2) * 0.40;
+                        sum += ringTap(tc, c, k, vec2(-diagonal,  diagonal), r2) * 0.40;
+                        sum += ringTap(tc, c, k, vec2( diagonal,  diagonal), r2) * 0.40;
+                    }
 
                     outRgb = sum.rgb / sum.a;
                 }
