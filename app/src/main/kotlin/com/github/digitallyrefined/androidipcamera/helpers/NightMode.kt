@@ -26,8 +26,13 @@ import androidx.preference.PreferenceManager
 object NightMode {
     const val PREF = "night_mode"
     const val PREF_GRAYSCALE = "night_grayscale"
+    const val PREF_GRAYSCALE_FOLLOW = "night_grayscale_follow"
+    const val PREF_TORCH_MODE = "night_torch_mode"
     const val PREF_AUTO_FLASH = "night_auto_flash"
     const val PREF_AUTO_FLASH_SECONDS = "night_auto_flash_seconds"
+    const val TORCH_MODE_OFF = "off"
+    const val TORCH_MODE_MOTION = "motion"
+    const val TORCH_MODE_ALWAYS = "always"
     const val DEFAULT_AUTO_FLASH_SECONDS = 10
     const val MIN_AUTO_FLASH_SECONDS = 1
     const val MAX_AUTO_FLASH_SECONDS = 99
@@ -75,12 +80,45 @@ object NightMode {
         PreferenceManager.getDefaultSharedPreferences(context).edit { putBoolean(PREF_GRAYSCALE, enabled) }
     }
 
-    /** Flash-on-motion is a global night-mode option, not per lens. */
-    fun autoFlashEnabled(context: Context): Boolean =
-        PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_AUTO_FLASH, false)
+    /** When enabled, grayscale follows the night-mode state instead of the manual checkbox. */
+    fun isGrayscaleFollowEnabled(context: Context): Boolean =
+        PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_GRAYSCALE_FOLLOW, false)
+
+    fun setGrayscaleFollowEnabled(context: Context, enabled: Boolean) {
+        PreferenceManager.getDefaultSharedPreferences(context).edit { putBoolean(PREF_GRAYSCALE_FOLLOW, enabled) }
+    }
+
+    /** The grayscale state the pipelines should use right now. */
+    fun effectiveGrayscale(context: Context): Boolean =
+        if (isGrayscaleFollowEnabled(context)) isEnabled(context) else isGrayscaleEnabled(context)
+
+    /** Off, on motion, or continuously while the automatic night profile is active. */
+    fun torchMode(context: Context): String {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val raw = prefs.all[PREF_TORCH_MODE]
+        if (raw is String) return normalizeTorchMode(raw)
+        val migrated = if (prefs.getBoolean(PREF_AUTO_FLASH, false)) TORCH_MODE_MOTION else TORCH_MODE_OFF
+        prefs.edit { putString(PREF_TORCH_MODE, migrated) }
+        return migrated
+    }
+
+    fun setTorchMode(context: Context, mode: String) {
+        PreferenceManager.getDefaultSharedPreferences(context).edit {
+            putString(PREF_TORCH_MODE, normalizeTorchMode(mode))
+        }
+    }
+
+    fun normalizeTorchMode(mode: String?): String = when (mode?.trim()?.lowercase()) {
+        TORCH_MODE_MOTION, "on_motion", "motion_on", "true", "on", "1" -> TORCH_MODE_MOTION
+        TORCH_MODE_ALWAYS, "always_on", "always-on", "continuous" -> TORCH_MODE_ALWAYS
+        else -> TORCH_MODE_OFF
+    }
+
+    /** Legacy helper for callers that only care about motion flashes. */
+    fun autoFlashEnabled(context: Context): Boolean = torchMode(context) == TORCH_MODE_MOTION
 
     fun setAutoFlashEnabled(context: Context, enabled: Boolean) {
-        PreferenceManager.getDefaultSharedPreferences(context).edit { putBoolean(PREF_AUTO_FLASH, enabled) }
+        setTorchMode(context, if (enabled) TORCH_MODE_MOTION else TORCH_MODE_OFF)
     }
 
     /** Seconds to keep the flash on after motion has cleared. */

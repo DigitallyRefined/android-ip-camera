@@ -110,6 +110,8 @@ class AutoNightModeTest {
         assertEquals(AutoNightMode.MODE_LUX, AutoNightMode.normalizeMode("lux"))
         assertEquals(AutoNightMode.MODE_GPS_LUX, AutoNightMode.normalizeMode("gps_lux"))
         assertEquals(AutoNightMode.MODE_GPS_LUX, AutoNightMode.normalizeMode("both"))
+        assertEquals(AutoNightMode.MODE_SCHEDULE, AutoNightMode.normalizeMode("schedule"))
+        assertEquals(AutoNightMode.MODE_CAMERA_AE, AutoNightMode.normalizeMode("camera_ae"))
         assertEquals(AutoNightMode.MODE_OFF, AutoNightMode.normalizeMode("unknown"))
     }
 
@@ -127,6 +129,22 @@ class AutoNightModeTest {
         assertNull(AutoNightMode.shouldBeNight(AutoNightMode.MODE_GPS, null, true))
         assertNull(AutoNightMode.shouldBeNight(AutoNightMode.MODE_LUX, true, null))
         assertNull(AutoNightMode.shouldBeNight(AutoNightMode.MODE_OFF, true, true))
+    }
+
+    @Test
+    fun `schedule windows cross midnight correctly`() {
+        val start = 21 * 60
+        val end = 6 * 60
+        assertFalse(AutoNightMode.scheduleNightMinute(20 * 60 + 59, start, end))
+        assertTrue(AutoNightMode.scheduleNightMinute(21 * 60, start, end))
+        assertTrue(AutoNightMode.scheduleNightMinute(23 * 60 + 59, start, end))
+        assertTrue(AutoNightMode.scheduleNightMinute(0, start, end))
+        assertTrue(AutoNightMode.scheduleNightMinute(5 * 60 + 59, start, end))
+        assertFalse(AutoNightMode.scheduleNightMinute(6 * 60, start, end))
+        assertFalse(AutoNightMode.scheduleNightMinute(12 * 60, start, end))
+        // A same-day window is also supported.
+        assertTrue(AutoNightMode.scheduleNightMinute(10 * 60, 9 * 60, 17 * 60))
+        assertFalse(AutoNightMode.scheduleNightMinute(18 * 60, 9 * 60, 17 * 60))
     }
 
     @Test

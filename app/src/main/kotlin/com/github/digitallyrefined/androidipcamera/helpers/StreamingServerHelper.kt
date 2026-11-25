@@ -1647,6 +1647,9 @@ class StreamingServerHelper(
                 put("nightMode", JSONObject().apply {
                     put("enabled", settings.nightMode)
                     put("grayscale", settings.nightGrayscale)
+                    put("grayscaleFollow", NightMode.isGrayscaleFollowEnabled(context))
+                    put("grayscaleEffective", NightMode.effectiveGrayscale(context))
+                    put("torchMode", NightMode.torchMode(context))
                     put("available", settings.nightModeSupported)
                     put("manual", settings.nightManualSupported)
                     put("exposureMinMs", settings.nightExposureMinMs ?: JSONObject.NULL)
@@ -1667,6 +1670,22 @@ class StreamingServerHelper(
                     put("autoEnd", settings.nightAutoEnd ?: JSONObject.NULL)
                     put("autoFlash", settings.nightAutoFlash)
                     put("autoFlashSeconds", settings.nightAutoFlashSeconds)
+                    put("autoScheduleStart", AutoNightMode.formatScheduleTime(AutoNightMode.scheduleStartMinutes(context)))
+                    put("autoScheduleEnd", AutoNightMode.formatScheduleTime(AutoNightMode.scheduleEndMinutes(context)))
+                    put("autoCameraAeThreshold", AutoNightMode.cameraAeThreshold(context))
+                    val ae = CameraLightMeter.sample()
+                    put("autoCameraAeIso", ae?.iso ?: JSONObject.NULL)
+                    put("autoCameraAeIsoMax", ae?.isoMax ?: JSONObject.NULL)
+                    put("autoCameraAeExposureMs", ae?.exposureNs?.let { it / 1_000_000.0 } ?: JSONObject.NULL)
+                    put("autoCameraAeFrameMs", ae?.frameDurationNs?.let { it / 1_000_000.0 } ?: JSONObject.NULL)
+                    put("autoCameraAeLuma", ae?.luma ?: JSONObject.NULL)
+                    put("autoCameraAeNight", CameraLightMeter.currentDecision() ?: JSONObject.NULL)
+                    put("captureMode", try {
+                        val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                        NightMode.captureMode(cm, settings.cameraId).name.lowercase(Locale.US)
+                    } catch (_: Exception) {
+                        "unknown"
+                    })
                 })
                 put("osd", JSONObject().apply {
                     put("enabled", settings.osd.enabled)
@@ -1867,6 +1886,18 @@ class StreamingServerHelper(
         } else {
             null
         }
+        val autoStartText = when {
+            autoWindow != null -> AutoNightMode.formatLocalTime(context, autoWindow.startMs)
+            AutoNightMode.modeIncludesSchedule(autoMode) ->
+                AutoNightMode.formatScheduleTime(AutoNightMode.scheduleStartMinutes(context))
+            else -> null
+        }
+        val autoEndText = when {
+            autoWindow != null -> AutoNightMode.formatLocalTime(context, autoWindow.endMs)
+            AutoNightMode.modeIncludesSchedule(autoMode) ->
+                AutoNightMode.formatScheduleTime(AutoNightMode.scheduleEndMinutes(context))
+            else -> null
+        }
         return StreamSettings(
             cameraId = cameraId,
             resolution = quality,
@@ -1932,8 +1963,8 @@ class StreamingServerHelper(
             nightAutoLocationAcquiring = AutoNightMode.isAcquiringLocation(),
             nightAutoLuxThreshold = AutoNightMode.luxThreshold(context),
             nightAutoLuxAvailable = AutoNightMode.hasLightSensor(context),
-            nightAutoStart = autoWindow?.let { AutoNightMode.formatLocalTime(context, it.startMs) },
-            nightAutoEnd = autoWindow?.let { AutoNightMode.formatLocalTime(context, it.endMs) },
+            nightAutoStart = autoStartText,
+            nightAutoEnd = autoEndText,
             nightAutoFlash = NightMode.autoFlashEnabled(context),
             nightAutoFlashSeconds = NightMode.autoFlashSeconds(context),
             osd = CameraOsd.read(prefs),

@@ -1,10 +1,13 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -106,6 +109,7 @@ class CameraXCapture(
     @Volatile private var manualFocus: Float? = null
     private val main = ContextCompat.getMainExecutor(ctx)
     private val analysisExec = Executors.newSingleThreadExecutor()
+    @Volatile private var sensorIsoMax: Int? = null
 
     // Latest analysis frame in NV21, so a still can fall back to it when the HAL's takePicture()
     // stalls or the camera is mid-restart — a guaranteed JPEG beats a 503.
@@ -121,6 +125,20 @@ class CameraXCapture(
     private val physicalCameraId: String? = cameraId
         ?.substringAfter(':', "")
         ?.takeIf { it.isNotBlank() }
+
+    /** Upper ISO sensitivity the bound sensor reports, used by the Camera AE night trigger. */
+    private fun readSensorIsoMax(): Int? = try {
+        val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val id = logicalCameraId?.takeIf { it in cm.cameraIdList }
+            ?: cm.cameraIdList.firstOrNull { candidate ->
+                cm.getCameraCharacteristics(candidate).get(CameraCharacteristics.LENS_FACING) ==
+                    if (front) CameraCharacteristics.LENS_FACING_FRONT
+                    else CameraCharacteristics.LENS_FACING_BACK
+            }
+        id?.let { cm.getCameraCharacteristics(it).get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.upper }
+    } catch (_: Exception) {
+        null
+    }
 
     @AndroidXOptIn(ExperimentalCamera2Interop::class)
     fun start() {
@@ -147,6 +165,21 @@ class CameraXCapture(
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 val analysisInterop = Camera2Interop.Extender(aBuilder)
                 analysisInterop.setPhysicalCameraIdIfSupported(physicalCameraId)
+                sensorIsoMax = readSensorIsoMax()
+                analysisInterop.setSessionCaptureCallback(object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(
+                        session: CameraCaptureSession,
+                        request: CaptureRequest,
+                        result: TotalCaptureResult,
+                    ) {
+                        CameraLightMeter.reportAe(
+                            result.get(CaptureResult.SENSOR_SENSITIVITY),
+                            sensorIsoMax,
+                            result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                            result.get(CaptureResult.SENSOR_FRAME_DURATION),
+                        )
+                    }
+                })
                 // Request the tightest advertised range around the configured FPS. The previous
                 // "widest range" choice let auto-exposure fall to the lower bound (often 7–15 FPS)
                 // in low light, so a 30 FPS recording could run far below its target. The range is
@@ -161,6 +194,7 @@ class CameraXCapture(
                         width = img.width; height = img.height
                         hasProducedFrame = true
                         lastFrameAtMs = SystemClock.elapsedRealtime()
+                        CameraLightMeter.reportYuvLuma(img)
                         try {
                             val crop = img.cropRect
                             val nv21 = synchronized(nv21Lock) {
