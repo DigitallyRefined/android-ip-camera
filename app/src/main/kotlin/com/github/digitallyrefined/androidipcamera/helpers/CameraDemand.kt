@@ -11,7 +11,10 @@ data class CameraDemand(
     val mjpegViewers: Boolean = false,
     /** A recording runs or is being started, so the H.264 encoder is needed. */
     val recording: Boolean = false,
+    /** Frame-difference motion detection is running. */
     val motion: Boolean = false,
+    /** An always-on recording mode keeps the camera open without needing frames itself. */
+    val keepAlive: Boolean = false,
     /** A /video/snapshot is running. */
     val snapshot: Boolean = false,
     /** The on-phone preview is attached. */
@@ -20,11 +23,11 @@ data class CameraDemand(
     val lightMeter: Boolean = false,
 ) {
     /** Some consumer needs frames: the start checks that CameraX delivers them, or uses Camera1. */
-    val frames: Boolean get() = h264Viewers || mjpegViewers || recording || motion || snapshot || lightMeter
+    val frames: Boolean get() = h264Viewers || mjpegViewers || recording || motion || keepAlive || snapshot || lightMeter
     /** CameraX feeds H.264 through the encoder surface, on cameras that support one. */
     val h264: Boolean get() = h264Viewers || recording
     /** Camera1 installs its NV21 preview callback, which feeds MJPEG and motion detection. */
-    val nv21: Boolean get() = mjpegViewers || motion || lightMeter
+    val nv21: Boolean get() = mjpegViewers || motion || keepAlive || lightMeter
     /** CameraX binds the on-phone preview: attached and no network viewer watching. */
     val screenPreview: Boolean get() = preview && !h264Viewers && !mjpegViewers
 }

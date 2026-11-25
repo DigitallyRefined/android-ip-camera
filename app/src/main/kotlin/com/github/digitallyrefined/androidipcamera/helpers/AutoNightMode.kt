@@ -96,6 +96,12 @@ object AutoNightMode {
     @Volatile
     private var acquiringLocation = false
 
+    /** Last ambient-light reading reported to the web UI. */
+    @Volatile
+    private var cachedLux: Float? = null
+    private var luxManager: SensorManager? = null
+    private var luxListener: SensorEventListener? = null
+
     /** Do not ask the provider again for this long after a failed attempt. */
     private const val LOCATION_RETRY_MS = 15 * 60 * 1000L
 
@@ -131,6 +137,7 @@ object AutoNightMode {
 
     fun setMode(context: Context, mode: String) {
         prefs(context).edit { putString(PREF_MODE, normalizeMode(mode)) }
+        syncLuxMonitor(context)
     }
 
     fun normalizeMode(value: String?): String = when (value?.trim()?.lowercase()) {
@@ -252,6 +259,61 @@ object AutoNightMode {
         sensorManager(context)?.getDefaultSensor(Sensor.TYPE_LIGHT) != null
     } catch (_: Exception) {
         false
+    }
+
+    /**
+     * Keep the cached light-sensor listener in step with the selected trigger. It runs only while
+     * LUX (or GPS or LUX) is selected, so the web UI can show the current level without blocking
+     * the HTTP thread on a fresh sensor event.
+     */
+    @Synchronized
+    fun syncLuxMonitor(context: Context) {
+        if (modeIncludesLux(mode(context))) startLuxMonitor(context) else stopLuxMonitor()
+    }
+
+    /** The last ambient-light reading, or null when LUX automation is not selected. */
+    fun currentLux(context: Context): Float? {
+        if (!modeIncludesLux(mode(context))) return null
+        startLuxMonitor(context)
+        cachedLux?.let { return it }
+        // Some sensors do not emit their initial value on registration. Pay one short blocking read
+        // the first time the web UI asks, then serve the cached listener value from then on.
+        return readLux(context, 500L)?.also { cachedLux = it }
+    }
+
+    @Synchronized
+    private fun startLuxMonitor(context: Context) {
+        if (luxListener != null) return
+        val manager = sensorManager(context) ?: return
+        val sensor = try { manager.getDefaultSensor(Sensor.TYPE_LIGHT) } catch (_: Exception) { null } ?: return
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent) {
+                val lux = event.values.firstOrNull() ?: return
+                if (lux.isFinite() && lux >= 0f) cachedLux = lux
+            }
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+        try {
+            manager.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+            luxManager = manager
+            luxListener = listener
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to monitor the light sensor: ${e.message}")
+        }
+    }
+
+    /** Stop the cached light-sensor listener (service stops or a non-LUX trigger is selected). */
+    @Synchronized
+    fun stopLuxMonitor() {
+        val manager = luxManager
+        val listener = luxListener
+        if (manager != null && listener != null) {
+            try { manager.unregisterListener(listener) } catch (_: Exception) {}
+        }
+        luxManager = null
+        luxListener = null
+        cachedLux = null
     }
 
     /**

@@ -472,6 +472,27 @@
       line-height: 1.35;
     }
 
+    .mode-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin: 0;
+      padding: 10px 12px 12px;
+      border: 1px dashed #555;
+      border-radius: 10px;
+    }
+
+    .mode-group > legend {
+      padding: 0 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #aaa;
+    }
+
+    #autoNightCameraAeOption[data-blocked="1"] {
+      color: #777;
+    }
+
     .notice,
     .version {
       color: #555;
@@ -760,7 +781,7 @@
                     <option value="lux">LUX (ambient light sensor)</option>
                     <option value="gps_lux">GPS or LUX</option>
                     <option value="schedule">Schedule</option>
-                    <option value="camera_ae">Camera AE</option>
+                    <option value="camera_ae" id="autoNightCameraAeOption">Camera AE</option>
                   </select>
                 </div>
                 <div class="hint" style="margin:0 0 12px; font-size:12px; color:#ccc">
@@ -1151,7 +1172,7 @@
             </div>
 
             <div id="recordSettingsPanel" class="setting-group" style="display:none;">
-              <p class="group-title" style="margin-top:0;">Recording Mode</p>
+              <p class="group-title" style="margin-top:0;">Camera/Recording Mode</p>
 
               <div class="mode-list" role="radiogroup" aria-label="Recording mode">
                 <label class="mode-option">
@@ -1161,31 +1182,43 @@
                     <span class="mode-desc">Camera stays off until a viewer connects</span>
                   </span>
                 </label>
-                <label class="mode-option">
-                  <input type="radio" name="recordingMode" value="notify" onchange="selectRecordingMode(this.value)">
-                  <span class="mode-copy">
-                    <span class="mode-name">Notify on motion</span>
-                    <span class="mode-desc">Camera stays on but does not automatically record</span>
-                  </span>
-                </label>
-                <label class="mode-option">
-                  <input type="radio" name="recordingMode" value="motion" onchange="selectRecordingMode(this.value)">
-                  <span class="mode-copy">
-                    <span class="mode-name">Motion clips</span>
-                    <span class="mode-desc">Camera stays on and records a clip when motion starts</span>
-                  </span>
-                </label>
-                <label class="mode-option">
-                  <input type="radio" name="recordingMode" value="continuous" onchange="selectRecordingMode(this.value)">
-                  <span class="mode-copy">
-                    <span class="mode-name">Continuous recording</span>
-                    <span class="mode-desc">Camera stays on and records continuously in segments</span>
-                  </span>
-                </label>
+                <fieldset class="mode-group">
+                  <legend>Camera is always on / running</legend>
+                  <label class="mode-option">
+                    <input type="radio" name="recordingMode" value="always_on" onchange="selectRecordingMode(this.value)">
+                    <span class="mode-copy">
+                      <span class="mode-name">Camera always on</span>
+                      <span class="mode-desc">For night/low-light detection &amp; faster connection times. No motion detection</span>
+                    </span>
+                  </label>
+                  <label class="mode-option">
+                    <input type="radio" name="recordingMode" value="notify" onchange="selectRecordingMode(this.value)">
+                    <span class="mode-copy">
+                      <span class="mode-name">Notify on motion</span>
+                      <span class="mode-desc">Camera stays on but does not automatically record</span>
+                    </span>
+                  </label>
+                  <label class="mode-option">
+                    <input type="radio" name="recordingMode" value="motion" onchange="selectRecordingMode(this.value)">
+                    <span class="mode-copy">
+                      <span class="mode-name">Motion clips (+ notify)</span>
+                      <span class="mode-desc">Camera stays on and records a clip when motion starts</span>
+                    </span>
+                  </label>
+                  <label class="mode-option">
+                    <input type="radio" name="recordingMode" value="continuous" onchange="selectRecordingMode(this.value)">
+                    <span class="mode-copy">
+                      <span class="mode-name">Continuous recording (+ notify)</span>
+                      <span class="mode-desc">Camera stays on and records continuously in segments</span>
+                    </span>
+                  </label>
+                </fieldset>
               </div>
 
               <div class="hint" style="margin:0 0 4px; font-size:12px; color:#ccc">
-                Every mode except On demand sends a notification when motion is detected to <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a> (like Home Assistant &amp; UniFi Protect)
+                Notify on motion, Motion clips and Continuous recording detect motion and send notifications to
+                <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a>
+                (like Home Assistant &amp; UniFi Protect). Camera always on keeps the stream ready without motion work.
               </div>
 
               <div id="motionSettings" style="display:none;">
@@ -1944,7 +1977,53 @@
         grayscaleFollow.checked = autoGrayscaleFollow;
         grayscaleFollow.disabled = !active;
       }
+      updateCameraAeAvailability();
       updateAutoTorchAvailability();
+    }
+
+    function formatLuxReading(lux) {
+      if (!Number.isFinite(lux)) return '--';
+      return lux < 10 ? lux.toFixed(1) : String(Math.round(lux));
+    }
+
+    function updateLuxHint(night, mode) {
+      const luxHint = getElById('autoNightLuxHint');
+      if (!luxHint) return;
+      if (!autoNightLuxAvailable) {
+        luxHint.textContent = 'No ambient light sensor detected on this phone; LUX switching is unavailable.';
+        return;
+      }
+      const reading = Number(night.autoLux);
+      const hasReading = night.autoLux !== null && night.autoLux !== undefined && Number.isFinite(reading);
+      const current = autoNightModeIncludesLux(mode)
+        ? (hasReading
+          ? `Current light level: ${formatLuxReading(reading)} LUX. `
+          : 'Waiting for a light-sensor reading… ')
+        : '';
+      luxHint.textContent = `${current}Night mode turns on below this value and off at or above it. Default 5 LUX.`;
+    }
+
+    // info.json is polled once a minute, which is too slow for a live light-level readout.
+    // While a LUX trigger is selected, refresh only the LUX hint more often.
+    let luxPollTimer = null;
+    function updateLuxPolling(active) {
+      if (!active) {
+        if (luxPollTimer) { clearInterval(luxPollTimer); luxPollTimer = null; }
+        return;
+      }
+      if (luxPollTimer) return;
+      luxPollTimer = setInterval(async () => {
+        if (!autoNightModeIncludesLux(autoNightModeValue)) {
+          updateLuxPolling(false);
+          return;
+        }
+        if (document.hidden) return;
+        try {
+          const data = await (await fetch('/info.json', { cache: 'no-store' })).json();
+          const night = data.settings && data.settings.nightMode;
+          if (night) updateLuxHint(night, autoNightModeValue);
+        } catch (_) { }
+      }, 5000);
     }
 
     function updateAutoNightModeUi(night) {
@@ -1996,12 +2075,8 @@
         const n = parseInt(night.autoLuxThreshold, 10);
         lux.value = String(Number.isFinite(n) ? Math.max(0, Math.min(100000, n)) : 5);
       }
-      const luxHint = getElById('autoNightLuxHint');
-      if (luxHint) {
-        luxHint.textContent = autoNightLuxAvailable
-          ? 'Night mode turns on below this value and off at or above it. Default 5 LUX.'
-          : 'No ambient light sensor detected on this phone; LUX switching is unavailable.';
-      }
+      updateLuxHint(night, mode);
+      updateLuxPolling(autoNightModeIncludesLux(mode) && autoNightLuxAvailable);
       const scheduleStart = getElById('autoNightScheduleStart');
       if (scheduleStart && typeof night.autoScheduleStart === 'string' && document.activeElement !== scheduleStart) {
         scheduleStart.value = night.autoScheduleStart;
@@ -2027,6 +2102,17 @@
       updateTorchHint();
     }
 
+    function updateCameraAeAvailability() {
+      const option = getElById('autoNightCameraAeOption');
+      const blocked = recordingMode === 'off';
+      if (option) {
+        // Deliberately not using the native `disabled` attribute: a disabled <option> cannot
+        // reliably raise a click/change event, and we need the explanatory alert.
+        option.dataset.blocked = blocked ? '1' : '0';
+        option.textContent = blocked ? '🔒 Camera AE (needs Camera always on)' : 'Camera AE';
+      }
+    }
+
     function updateCameraAeHint(night) {
       const hint = getElById('autoNightCameraAeHint');
       if (!hint) return;
@@ -2050,6 +2136,11 @@
     function setAutoNightMode(value) {
       const select = getElById('autoNightModeSelect');
       const mode = normalizeAutoNightMode(value);
+      if (mode === 'camera_ae' && recordingMode === 'off') {
+        if (select) select.value = autoNightModeValue;
+        alert('Camera AE needs the camera to stay on. In Recordings → Settings, choose "Camera always on" (or Notify on motion, Motion clips, or Continuous recording) instead of On demand, then select Camera AE again.');
+        return;
+      }
       if (mode !== 'off' && autoNightModeIncludesGps(mode) && !autoNightLocationGranted) {
         if (select) select.value = autoNightModeValue;
         alert('Location permission is required for GPS automatic night mode. Enable location access for Android IP Camera in Android Settings, then try again.');
@@ -2138,9 +2229,11 @@
       const hint = getElById('autoFlashHint');
       if (!hint) return;
       if (recordingMode === 'off') {
-        hint.textContent = 'Torch profiles need the camera to stay on. Open Recordings → Settings and choose Notify on motion, Motion clips, or Continuous recording instead of On demand.';
+        hint.textContent = 'Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Notify on motion, Motion clips, or Continuous recording instead of On demand.';
       } else if (autoTorchModeValue === 'always') {
         hint.textContent = 'Always on forces normal video and keeps the torch lit for the whole dark period. Camera AE cannot be combined with this mode.';
+      } else if (autoTorchModeValue === 'motion' && !recordingModeHasMotion(recordingMode)) {
+        hint.textContent = 'On motion needs motion detection, which Camera always on does not run. Choose Notify on motion, Motion clips, or Continuous recording to use it.';
       } else if (autoTorchModeValue === 'motion') {
         hint.textContent = 'On motion lights the torch while the automatic schedule is dark, then returns to night mode after motion ends and the timer expires.';
       } else {
@@ -2157,6 +2250,8 @@
       select.disabled = !allowed;
       const alwaysOption = select.querySelector('option[value="always"]');
       if (alwaysOption) alwaysOption.disabled = autoNightModeValue === 'camera_ae';
+      const motionOption = select.querySelector('option[value="motion"]');
+      if (motionOption) motionOption.disabled = !recordingModeHasMotion(recordingMode);
       section.style.display = scheduleActive ? '' : 'none';
       section.style.opacity = allowed ? '1' : '0.65';
       const row = getElById('autoFlashDurationRow');
@@ -2169,7 +2264,12 @@
       const mode = normalizeTorchMode(value);
       if (mode !== 'off' && recordingMode === 'off') {
         if (select) select.value = autoTorchModeValue;
-        alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Notify on motion, Motion clips, or Continuous recording instead of On demand.');
+        alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Notify on motion, Motion clips, or Continuous recording instead of On demand.');
+        return;
+      }
+      if (mode === 'motion' && !recordingModeHasMotion(recordingMode)) {
+        if (select) select.value = autoTorchModeValue;
+        alert('On-motion torch needs motion detection. Camera always on does not run motion detection; choose Notify on motion, Motion clips, or Continuous recording to use it.');
         return;
       }
       if (mode === 'always' && autoNightModeValue === 'camera_ae') {
@@ -2189,7 +2289,7 @@
       if (!select || !select.disabled) return;
       event.preventDefault();
       event.stopPropagation();
-      alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Notify on motion, Motion clips, or Continuous recording instead of On demand.');
+      alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Notify on motion, Motion clips, or Continuous recording instead of On demand.');
     }
 
     function sendAutoFlashSeconds(value) {
@@ -2263,18 +2363,24 @@
       }
     }
 
-    // ---- Recording mode: on demand / notify only / motion clips / continuous ----
+    // ---- Recording mode: on demand / camera always on / notify / motion clips / continuous ----
     function normalizeRecordingMode(mode) {
-      return ['off', 'notify', 'motion', 'continuous'].includes(mode) ? mode : 'off';
+      return ['off', 'always_on', 'notify', 'motion', 'continuous'].includes(mode) ? mode : 'off';
     }
 
     function recordingModeLabel(mode) {
       switch (normalizeRecordingMode(mode)) {
+        case 'always_on': return 'Camera always on';
         case 'notify': return 'Notify on motion';
         case 'motion': return 'Motion clips';
         case 'continuous': return 'Continuous';
         default: return 'On demand';
       }
+    }
+
+    // Motion detection runs only in these modes; Camera always on is stream-only.
+    function recordingModeHasMotion(mode) {
+      return mode === 'notify' || mode === 'motion' || mode === 'continuous';
     }
 
     function formatRecordingDuration(ms) {
@@ -2297,7 +2403,7 @@
     function updateRecordingModeSections() {
       const motionSettings = getElById('motionSettings');
       if (motionSettings) {
-        motionSettings.style.display = recordingMode === 'off' ? 'none' : '';
+        motionSettings.style.display = recordingModeHasMotion(recordingMode) ? '' : 'none';
       }
       const stopDelay = getElById('motionStopDelayRow');
       if (stopDelay) {
@@ -2316,6 +2422,7 @@
       });
       updateRecordingModeSections();
       updateAutoTorchAvailability();
+      updateCameraAeAvailability();
       updateRecordingSummary();
     }
 
@@ -2338,9 +2445,19 @@
 
     function setRecordingMode(mode) {
       setRecordingModeUi(mode);
+      // The server disables Camera AE on On demand (it would otherwise keep the camera open).
+      // Reflect that immediately for the user who just made the change.
+      if (recordingMode === 'off' && autoNightModeValue === 'camera_ae') {
+        autoNightModeValue = 'off';
+        const select = getElById('autoNightModeSelect');
+        if (select) select.value = 'off';
+        updateAutoNightRows('off');
+      }
       sendControl('recording_mode', recordingMode);
       // The server stops or starts clips asynchronously, so refresh the button shortly after.
       setTimeout(checkRecordingStatus, 600);
+      // Switching to On demand disables Camera AE server-side, so refresh the night settings too.
+      setTimeout(() => loadDeviceInfo(true), 900);
     }
 
     // Map control parameter names to the `lensSettings` keys used in `info.json`.
