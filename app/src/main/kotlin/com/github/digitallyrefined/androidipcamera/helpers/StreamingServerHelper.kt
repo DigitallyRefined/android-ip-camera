@@ -1545,6 +1545,8 @@ class StreamingServerHelper(
         val osd: CameraOsd.Settings,
         /** Battery temperature in °C at which streaming pauses; 0 disables the guard. */
         val overheatPauseC: Int,
+        /** The "Hide Sponsor" setting: hides the sponsor button in the app and the web UI. */
+        val hideSponsor: Boolean,
     )
 
     private data class DeviceInfo(
@@ -1677,6 +1679,8 @@ class StreamingServerHelper(
                     put("name", settings.osd.cameraName)
                 })
                 put("overheatPauseC", settings.overheatPauseC)
+                // Donors can opt out of the sponsor button in the app and the web UI.
+                put("hideSponsor", settings.hideSponsor)
                 put("streamBitrateKbps", JSONObject().apply {
                     put("h264", settings.streamBitrateKbps.h264)
                     put("mjpeg", settings.streamBitrateKbps.mjpeg)
@@ -1934,6 +1938,7 @@ class StreamingServerHelper(
             nightAutoFlashSeconds = NightMode.autoFlashSeconds(context),
             osd = CameraOsd.read(prefs),
             overheatPauseC = OverheatProtection.stored(prefs),
+            hideSponsor = prefs.getBoolean("hide_sponsor", false),
         )
     }
 

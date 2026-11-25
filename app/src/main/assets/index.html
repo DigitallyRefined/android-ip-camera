@@ -46,6 +46,34 @@
       gap: 8px;
     }
 
+    /* Sponsor button in the top-right corner, matching the website's pill. */
+    .sponsor-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 8px 14px;
+      border: 1px solid #8fb8ff;
+      border-radius: 999px;
+      background: rgba(69, 158, 255, 0.14);
+      color: #a8ccff;
+      font-size: 14px;
+      font-weight: 650;
+      white-space: nowrap;
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+
+    .sponsor-link:hover {
+      background: #8fb8ff;
+      border-color: #8fb8ff;
+      color: #0b1220;
+      text-decoration: none;
+    }
+
+    .sponsor-link:focus-visible {
+      outline: 2px solid #a8ccff;
+      outline-offset: 2px;
+    }
+
     .main {
       display: flex;
       flex: 1;
@@ -509,6 +537,11 @@
         font-size: 13px;
       }
 
+      .header-actions .sponsor-link {
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+
       .main {
         flex: none;
         flex-direction: column;
@@ -568,6 +601,12 @@
         font-size: 12px;
         white-space: nowrap;
       }
+
+      .header-actions .sponsor-link {
+        flex: none;
+        padding: 8px 8px;
+        font-size: 12px;
+      }
     }
   </style>
 </head>
@@ -579,6 +618,9 @@
       <button id='fitBtn' class='btn active' onclick='setView("fit")'>Fit Screen</button>
       <button id='origBtn' class='btn' onclick='setView("original")'>Original Size</button>
       <button id='fullscreenBtn' class='btn' onclick='toggleFullscreen()'>⛶ Fullscreen</button>
+      <a id='sponsorBtn' class='sponsor-link' href='https://github.com/sponsors/DigitallyRefined'
+        target='_blank' rel='noopener noreferrer' title='Sponsor this project on GitHub'
+        style='display: none;'>❤️ Sponsor</a>
     </div>
   </div>
 
@@ -2327,6 +2369,14 @@
       }
     }
 
+    // The sponsor button is opt-out through the app's "Hide Sponsor" setting.
+    function applySponsorVisibility(settings) {
+      if (!settings) return;
+      const sponsor = getElById('sponsorBtn');
+      if (!sponsor) return;
+      sponsor.style.display = settings.hideSponsor ? 'none' : '';
+    }
+
     // MJPEG's estimate (and the Auto summary) depends on the frame rate: rebuild both on change.
     const fpsControl = getElById('fps');
     if (fpsControl) fpsControl.addEventListener('change', () => {
@@ -3351,6 +3401,7 @@
           applyNightExposureUi(data.settings);
           applyOsdSettings(data.settings);
           applyOverheatSettings(data.settings);
+          applySponsorVisibility(data.settings);
           if (applySettings) applyStreamSettings(data.settings);
           else updateServerStreamInfo(data.settings);
           renderCameraControls();
