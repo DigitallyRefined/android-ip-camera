@@ -799,6 +799,28 @@
                     automatically switching night mode.
                   </div>
                 </div>
+
+                <div id="autoFlashSection"
+                  style="display:none; margin:14px 0 0; border-top:1px solid #333; padding-top:12px;">
+                  <label style="margin:0 0 6px;" onclick="onAutoFlashLocked(event)">
+                    <input type="checkbox" id="autoFlashCheckbox"
+                      onchange="setAutoFlash(this.checked)" style="margin:0;vertical-align:middle;">
+                    <span style="vertical-align:middle;">Torch on motion</span>
+                  </label>
+                  <div id="autoFlashHint" class="hint" style="margin:0; font-size:12px; color:#ccc">
+                    While the automatic night-mode schedule says it is dark, motion switches to normal video
+                    and turns on the torch. Night mode returns after motion ends and the timer expires.
+                  </div>
+                  <div id="autoFlashDurationRow" style="display:none; margin-top:10px;">
+                    <label for="autoFlashSeconds">Flash-on time after motion (seconds)</label>
+                    <input id="autoFlashSeconds" type="number" min="1" max="99" step="1" value="10"
+                      inputmode="numeric" onchange="sendAutoFlashSeconds(this.value)"
+                      style="width:90px; margin-top:0;">
+                    <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
+                      Keep the flash on this many seconds after motion clears.
+                    </div>
+                  </div>
+                </div>
               </details>
             </div>
 
@@ -1134,29 +1156,6 @@
                   <input id="motionStopDelay" type="number" min="0" max="300" step="1" value="10" data-control="motion_record_stop_delay">
                   <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
                     How long to keep a motion recording after motion stops.
-                  </div>
-                </div>
-              </div>
-
-              <div id="autoFlashSection" style="display:none; margin-top:0;">
-                <p class="group-title">Motion Actions</p>
-
-                <label style="margin:0 0 6px;" onclick="onAutoFlashLocked(event)">
-                  <input type="checkbox" id="autoFlashCheckbox"
-                    onchange="setAutoFlash(this.checked)" style="margin:0;vertical-align:middle;">
-                  <span style="vertical-align:middle;">Torch on motion</span>
-                </label>
-                <div id="autoFlashHint" class="hint" style="margin:0; font-size:12px; color:#ccc">
-                  While the automatic night-mode schedule says it is dark, motion switches to normal video
-                  and turns on the torch. Night mode returns after motion ends and the timer expires.
-                </div>
-                <div id="autoFlashDurationRow" style="display:none; margin-top:10px;">
-                  <label for="autoFlashSeconds">Flash-on time after motion (seconds)</label>
-                  <input id="autoFlashSeconds" type="number" min="1" max="99" step="1" value="10"
-                    inputmode="numeric" onchange="sendAutoFlashSeconds(this.value)"
-                    style="width:90px; margin-top:0;">
-                  <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    Keep the flash on this many seconds after motion clears. Up to 2 digits, 1–99.
                   </div>
                 </div>
               </div>
