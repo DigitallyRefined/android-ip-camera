@@ -10,6 +10,7 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
+import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -45,11 +46,12 @@ class Camera2NightCapture(
     private var session: CameraCaptureSession? = null
     private var jpegReader: ImageReader? = null
     private var previewReader: ImageReader? = null
-    private var pending: ((ByteArray?) -> Unit)? = null
+    private var pending: ((NightStill?) -> Unit)? = null
     private var pendingTimeout: Runnable? = null
     @Volatile private var released = false
     @Volatile override var isReady = false
         private set
+    @Volatile private var isoMax: Int? = null
 
     override fun start(onReady: (Boolean) -> Unit) {
         handler.post {
@@ -79,16 +81,31 @@ class Camera2NightCapture(
         }
     }
 
-    override fun capture(onJpeg: (ByteArray?) -> Unit) {
+    private val previewCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: android.hardware.camera2.TotalCaptureResult,
+        ) {
+            CameraLightMeter.reportAe(
+                result.get(CaptureResult.SENSOR_SENSITIVITY),
+                isoMax,
+                result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                result.get(CaptureResult.SENSOR_FRAME_DURATION),
+            )
+        }
+    }
+
+    override fun capture(onStill: (NightStill?) -> Unit) {
         handler.post {
             val s = session
             val d = device
             val reader = jpegReader
             if (released || !isReady || s == null || d == null || reader == null || pending != null) {
-                onJpeg(null)
+                onStill(null)
                 return@post
             }
-            pending = onJpeg
+            pending = onStill
             val timeout = Runnable {
                 Log.w(TAG, "capture timed out")
                 finish(null)
@@ -139,6 +156,7 @@ class Camera2NightCapture(
     private fun openCamera(onReady: (Boolean) -> Unit, attempt: Int = 0) {
         val id = resolveCameraId() ?: return notifyReady(onReady, false)
         val characteristics = manager.getCameraCharacteristics(id)
+        isoMax = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.upper
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return notifyReady(onReady, false)
         val jpegSize = chooseJpegSize(map, desired)
@@ -147,7 +165,13 @@ class Camera2NightCapture(
         val preview = ImageReader.newInstance(previewSize.width, previewSize.height, ImageFormat.YUV_420_888, 2)
         jpeg.setOnImageAvailableListener({ reader -> onJpegAvailable(reader) }, handler)
         preview.setOnImageAvailableListener({ reader ->
-            try { reader.acquireLatestImage()?.close() } catch (_: Exception) {}
+            try {
+                val image = reader.acquireLatestImage()
+                if (image != null) {
+                    reportPreviewLuma(image)
+                    image.close()
+                }
+            } catch (_: Exception) {}
         }, handler)
         jpegReader = jpeg
         previewReader = preview
@@ -213,7 +237,7 @@ class Camera2NightCapture(
                                 set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
                                 set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(15, 30))
                             }.build()
-                            s.setRepeatingRequest(request, null, handler)
+                            s.setRepeatingRequest(request, previewCaptureCallback, handler)
                             isReady = true
                             Log.i(TAG, "night still session ready camera=$cameraId jpeg=${jpeg.width}x${jpeg.height} exposure=${exposureMs}ms iso=$iso")
                             notifyReady(onReady, true)
@@ -236,6 +260,35 @@ class Camera2NightCapture(
         }
     }
 
+    private fun reportPreviewLuma(image: Image) {
+        try {
+            val plane = image.planes[0]
+            val buffer = plane.buffer
+            val rowStride = plane.rowStride
+            val pixelStride = plane.pixelStride
+            val stepX = (image.width / 64).coerceAtLeast(1)
+            val stepY = (image.height / 36).coerceAtLeast(1)
+            var sum = 0L
+            var count = 0
+            var y = 0
+            while (y < image.height) {
+                val row = y * rowStride
+                var x = 0
+                while (x < image.width) {
+                    val index = row + x * pixelStride
+                    if (index < buffer.limit()) {
+                        sum += buffer.get(index).toInt() and 0xFF
+                        count++
+                    }
+                    x += stepX
+                }
+                y += stepY
+            }
+            if (count > 0) CameraLightMeter.reportLuma(sum.toFloat() / count)
+        } catch (_: Exception) {
+        }
+    }
+
     private fun onJpegAvailable(reader: ImageReader) {
         val image = try { reader.acquireNextImage() } catch (_: Exception) { null } ?: return
         try {
@@ -255,7 +308,7 @@ class Camera2NightCapture(
         pending = null
         pendingTimeout?.let { handler.removeCallbacks(it) }
         pendingTimeout = null
-        cb(result)
+        cb(result?.let { NightStill(it, 0) })
     }
 
     private fun notifyReady(onReady: (Boolean) -> Unit, ready: Boolean) {

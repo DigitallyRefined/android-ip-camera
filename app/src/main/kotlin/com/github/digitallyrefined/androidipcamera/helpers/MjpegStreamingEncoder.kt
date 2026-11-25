@@ -83,7 +83,7 @@ class MjpegStreamingEncoder(
                 }
             }
             // Grayscale is a YUV-domain operation here: keep every Y sample, neutralise U/V.
-            if (prefs.getBoolean(NightMode.PREF_GRAYSCALE, false)) {
+            if (NightMode.effectiveGrayscale(context)) {
                 Grayscale.neutralizeYuv420Chroma(nv21, image.cropRect.width(), image.cropRect.height())
             }
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
@@ -112,7 +112,7 @@ class MjpegStreamingEncoder(
             lastFrameTime = currentTime
 
             // Grayscale is a YUV-domain operation here: keep every Y sample, neutralise U/V.
-            if (prefs.getBoolean(NightMode.PREF_GRAYSCALE, false)) {
+            if (NightMode.effectiveGrayscale(context)) {
                 Grayscale.neutralizeYuv420Chroma(nv21, width, height)
             }
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
@@ -289,12 +289,26 @@ class MjpegStreamingEncoder(
      * before sending. [maxWidth]×[maxHeight] caps the result so a full-sensor night photo does not
      * make the stream much larger than the selected resolution.
      */
-    fun processJpegFrame(jpeg: ByteArray, maxWidth: Int = 0, maxHeight: Int = 0) {
+    fun processJpegFrame(
+        jpeg: ByteArray,
+        maxWidth: Int = 0,
+        maxHeight: Int = 0,
+        sensorRotationDegrees: Int = 0,
+    ) {
         if (!hasClients()) return
         try {
             val quality = DeviceMemoryHelper.mjpegJpegQuality(context)
-            val grayscale = NightMode.isGrayscaleEnabled(context)
-            broadcastJpeg(applyStreamTransformations(jpeg, quality, maxWidth, maxHeight, grayscale))
+            val grayscale = NightMode.effectiveGrayscale(context)
+            broadcastJpeg(
+                applyStreamTransformations(
+                    jpeg,
+                    quality,
+                    maxWidth,
+                    maxHeight,
+                    grayscale,
+                    sensorRotationDegrees,
+                )
+            )
         } catch (e: OutOfMemoryError) {
             handleOutOfMemory("processJpegFrame")
         } catch (e: Exception) {
@@ -308,6 +322,7 @@ class MjpegStreamingEncoder(
         maxWidth: Int = 0,
         maxHeight: Int = 0,
         grayscale: Boolean = false,
+        sensorRotationDegrees: Int = 0,
     ): ByteArray {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
         val camId = prefs.getString("camera_id", null)
@@ -338,11 +353,13 @@ class MjpegStreamingEncoder(
         val overlay = overlayRenderer
         val overlayActive = overlay?.isActive() == true
         val needsTransform = totalRotation != 0 || scaleFactor != 1.0f || contrastValue != 0 ||
-            mirror || crop != null || grayscale || (maxWidth > 0 && maxHeight > 0) || overlayActive
+            mirror || crop != null || grayscale || sensorRotationDegrees != 0 ||
+            (maxWidth > 0 && maxHeight > 0) || overlayActive
         return if (needsTransform) {
             applyTransformations(
                 jpegBytes, totalRotation, scaleFactor, contrastValue, jpegQuality, mirror, crop,
                 maxWidth, maxHeight, grayscale, if (overlayActive) overlay else null,
+                sensorRotationDegrees,
             )
         } else {
             jpegBytes
@@ -361,6 +378,7 @@ class MjpegStreamingEncoder(
         maxHeight: Int = 0,
         grayscale: Boolean = false,
         overlay: CameraOverlayRenderer? = null,
+        sensorRotationDegrees: Int = 0,
     ): ByteArray {
         var bitmap: Bitmap? = null
         try {
@@ -379,6 +397,9 @@ class MjpegStreamingEncoder(
             }
             bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions)
             if (bitmap != null) {
+                if (sensorRotationDegrees != 0) {
+                    bitmap = NightStillTransform.toSensorSpace(bitmap, sensorRotationDegrees)
+                }
                 val matrix = Matrix()
 
                 // Apply Mirror (horizontal flip) before rotation

@@ -1,6 +1,7 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
 import android.content.Context
+import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
@@ -29,6 +30,9 @@ import androidx.lifecycle.LifecycleOwner
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** A night still plus the CameraX rotation needed to map it back to the sensor-space stream. */
+data class NightStill(val jpeg: ByteArray, val rotationDegrees: Int = 0)
+
 /**
  * Common interface for a still-only night session. Two implementations exist: CameraX for OEM
  * extension/scene modes, and a direct Camera2 session for manual long exposure (CameraX applies
@@ -38,7 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 interface NightStillCapture {
     val isReady: Boolean
     fun start(onReady: (Boolean) -> Unit)
-    fun capture(onJpeg: (ByteArray?) -> Unit)
+    fun capture(onStill: (NightStill?) -> Unit)
     fun stop()
 }
 
@@ -118,18 +122,18 @@ class NightModeCapture(
     }
 
     /*
-     * Requests one still. [onJpeg] is called exactly once, possibly with null.
+     * Requests one still. [onStill] is called exactly once, possibly with null.
      */
-    override fun capture(onJpeg: (ByteArray?) -> Unit) {
+    override fun capture(onStill: (NightStill?) -> Unit) {
         val ic = imageCapture
         if (ic == null || released || !isReady) {
-            onJpeg(null)
+            onStill(null)
             return
         }
         val done = AtomicBoolean(false)
-        fun finish(result: ByteArray?) {
+        fun finish(result: NightStill?) {
             if (!done.compareAndSet(false, true)) return
-            onJpeg(result)
+            onStill(result)
         }
         mainHandler.postDelayed({
             Log.w(TAG, "capture timed out")
@@ -138,6 +142,7 @@ class NightModeCapture(
         try {
             ic.takePicture(captureExec, object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
+                    val rotation = image.imageInfo.rotationDegrees
                     val bytes = try {
                         val buffer = image.planes[0].buffer
                         ByteArray(buffer.remaining()).also { buffer.get(it) }
@@ -147,7 +152,7 @@ class NightModeCapture(
                     } finally {
                         image.close()
                     }
-                    finish(bytes)
+                    finish(bytes?.let { NightStill(it, rotation) })
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -261,6 +266,25 @@ class NightModeCapture(
                 .setFlashMode(ImageCapture.FLASH_MODE_OFF)
                 .setTargetRotation(Surface.ROTATION_0)
                 .setResolutionSelector(resolutionSelector())
+            if (mode != NightMode.CaptureMode.EXTENSION) {
+                val isoMax = sensorIsoMax()
+                Camera2Interop.Extender(builder).setSessionCaptureCallback(
+                    object : CameraCaptureSession.CaptureCallback() {
+                        override fun onCaptureCompleted(
+                            session: CameraCaptureSession,
+                            request: CaptureRequest,
+                            result: android.hardware.camera2.TotalCaptureResult,
+                        ) {
+                            CameraLightMeter.reportAe(
+                                result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY),
+                                isoMax,
+                                result.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME),
+                                result.get(android.hardware.camera2.CaptureResult.SENSOR_FRAME_DURATION),
+                            )
+                        }
+                    }
+                )
+            }
             when (mode) {
                 NightMode.CaptureMode.EXTENSION -> Unit // the extension selector enables the pipeline
                 NightMode.CaptureMode.MANUAL -> {
@@ -331,6 +355,16 @@ class NightModeCapture(
             isReady = false
             onReady(false)
         }
+    }
+
+    private fun sensorIsoMax(): Int? = try {
+        val cm = cameraManager()
+        val logicalId = NightMode.resolveLogicalId(cm, cameraId)
+        NightMode.characteristics(cm, cameraId, logicalId)
+            ?.get(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+            ?.upper
+    } catch (_: Exception) {
+        null
     }
 
     private fun frameDurationNs(exposureNs: Long): Long =

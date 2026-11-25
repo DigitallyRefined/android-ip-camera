@@ -156,7 +156,8 @@ class MotionMonitor(
      */
     @Synchronized
     fun processJpegFrame(jpeg: ByteArray) {
-        if (!enabled) return
+        val cameraAe = AutoNightMode.modeIncludesCameraAe(AutoNightMode.mode(context))
+        if (!enabled && !cameraAe) return
         try {
             val now = System.currentTimeMillis()
             if (now - lastSampleMs < SAMPLE_INTERVAL_MS) return
@@ -185,7 +186,21 @@ class MotionMonitor(
                     val b = p and 0xFF
                     luma[i] = ((r * 77 + g * 150 + b * 29) shr 8).toByte()
                 }
-                detector.process({ i -> luma[i].toInt() and 0xFF }, width, height, width, 1, now)
+                if (cameraAe) {
+                    var sum = 0L
+                    var count = 0
+                    var i = 0
+                    val step = 4
+                    while (i < luma.size) {
+                        sum += luma[i].toInt() and 0xFF
+                        count++
+                        i += step
+                    }
+                    if (count > 0) CameraLightMeter.reportLuma(sum.toFloat() / count)
+                }
+                if (enabled) {
+                    detector.process({ i -> luma[i].toInt() and 0xFF }, width, height, width, 1, now)
+                }
             } finally {
                 bitmap.recycle()
             }

@@ -49,6 +49,9 @@ object AutoNightMode {
     const val PREF_SWITCHING = "auto_night_switching"
     const val PREF_OFFSET_MINUTES = "auto_night_offset_minutes"
     const val PREF_LUX_THRESHOLD = "auto_night_lux_threshold"
+    const val PREF_SCHEDULE_START_MINUTES = "auto_night_schedule_start"
+    const val PREF_SCHEDULE_END_MINUTES = "auto_night_schedule_end"
+    const val PREF_CAMERA_AE_THRESHOLD = "auto_night_camera_ae_threshold"
     private const val PREF_LATITUDE = "auto_night_latitude"
     private const val PREF_LONGITUDE = "auto_night_longitude"
     private const val PREF_LOCATION_AT = "auto_night_location_at"
@@ -58,6 +61,8 @@ object AutoNightMode {
     const val MODE_GPS = "gps"
     const val MODE_LUX = "lux"
     const val MODE_GPS_LUX = "gps_lux"
+    const val MODE_SCHEDULE = "schedule"
+    const val MODE_CAMERA_AE = "camera_ae"
 
     /** NOAA's civil twilight angle. Below this elevation it is dark enough for night mode. */
     const val CIVIL_TWILIGHT_ELEVATION_DEGREES = -6.0
@@ -69,6 +74,9 @@ object AutoNightMode {
     const val DEFAULT_LUX_THRESHOLD = 5
     const val MIN_LUX_THRESHOLD = 0
     const val MAX_LUX_THRESHOLD = 100_000
+
+    const val DEFAULT_SCHEDULE_START_MINUTES = 21 * 60
+    const val DEFAULT_SCHEDULE_END_MINUTES = 6 * 60
 
     private const val TAG = "AutoNightMode"
     private const val DAY_MS = 86_400_000L
@@ -129,6 +137,8 @@ object AutoNightMode {
         MODE_GPS, "true", "1", "on", "gps_only" -> MODE_GPS
         MODE_LUX, "light", "lux_only" -> MODE_LUX
         MODE_GPS_LUX, "both", "gps_or_lux", "gps+lux", "lux_or_gps" -> MODE_GPS_LUX
+        MODE_SCHEDULE, "timer", "time" -> MODE_SCHEDULE
+        MODE_CAMERA_AE, "camera", "ae", "camera_light" -> MODE_CAMERA_AE
         else -> MODE_OFF
     }
 
@@ -151,6 +161,57 @@ object AutoNightMode {
 
     fun modeIncludesLux(mode: String): Boolean =
         mode == MODE_LUX || mode == MODE_GPS_LUX
+
+    fun modeIncludesCameraAe(mode: String): Boolean = mode == MODE_CAMERA_AE
+
+    fun modeIncludesSchedule(mode: String): Boolean = mode == MODE_SCHEDULE
+
+    fun scheduleStartMinutes(context: Context): Int =
+        prefs(context).getInt(PREF_SCHEDULE_START_MINUTES, DEFAULT_SCHEDULE_START_MINUTES)
+            .coerceIn(0, 24 * 60 - 1)
+
+    fun scheduleEndMinutes(context: Context): Int =
+        prefs(context).getInt(PREF_SCHEDULE_END_MINUTES, DEFAULT_SCHEDULE_END_MINUTES)
+            .coerceIn(0, 24 * 60 - 1)
+
+    fun setSchedule(context: Context, startMinutes: Int, endMinutes: Int) {
+        prefs(context).edit {
+            putInt(PREF_SCHEDULE_START_MINUTES, startMinutes.coerceIn(0, 24 * 60 - 1))
+            putInt(PREF_SCHEDULE_END_MINUTES, endMinutes.coerceIn(0, 24 * 60 - 1))
+        }
+    }
+
+    fun cameraAeThreshold(context: Context): Int =
+        prefs(context).getInt(PREF_CAMERA_AE_THRESHOLD, CameraLightMeter.DEFAULT_THRESHOLD_PERCENT)
+            .coerceIn(CameraLightMeter.MIN_THRESHOLD_PERCENT, CameraLightMeter.MAX_THRESHOLD_PERCENT)
+
+    fun setCameraAeThreshold(context: Context, percent: Int): Int {
+        val clamped = percent.coerceIn(
+            CameraLightMeter.MIN_THRESHOLD_PERCENT,
+            CameraLightMeter.MAX_THRESHOLD_PERCENT,
+        )
+        prefs(context).edit { putInt(PREF_CAMERA_AE_THRESHOLD, clamped) }
+        return clamped
+    }
+
+    /** Static night window. Start is inclusive and end is exclusive; windows may cross midnight. */
+    fun scheduleNight(nowMs: Long, startMinutes: Int, endMinutes: Int): Boolean {
+        val calendar = java.util.Calendar.getInstance()
+        calendar.timeInMillis = nowMs
+        val minute = calendar.get(java.util.Calendar.HOUR_OF_DAY) * 60 +
+            calendar.get(java.util.Calendar.MINUTE)
+        return scheduleNightMinute(minute, startMinutes, endMinutes)
+    }
+
+    fun scheduleNightMinute(minuteOfDay: Int, startMinutes: Int, endMinutes: Int): Boolean =
+        if (startMinutes <= endMinutes) {
+            minuteOfDay >= startMinutes && minuteOfDay < endMinutes
+        } else {
+            minuteOfDay >= startMinutes || minuteOfDay < endMinutes
+        }
+
+    fun formatScheduleTime(minutes: Int): String =
+        String.format(java.util.Locale.US, "%02d:%02d", minutes / 60, minutes % 60)
 
     /**
      * Combine the two darkness signals for [mode]. Null means the selected method has no usable

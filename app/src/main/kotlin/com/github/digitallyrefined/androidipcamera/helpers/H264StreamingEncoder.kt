@@ -120,7 +120,7 @@ class H264StreamingEncoder(
                     else -> false
                 }
             }
-            val grayscale = prefs.getBoolean(NightMode.PREF_GRAYSCALE, false)
+            val grayscale = NightMode.effectiveGrayscale(context)
             encMutable.feed(
                 image,
                 image.imageInfo.timestamp / 1000,
@@ -175,7 +175,7 @@ class H264StreamingEncoder(
      * fed to a byte-buffer encoder as NV21. Night captures are far slower than video, so the CPU cost
      * of this path is negligible next to the exposure itself.
      */
-    fun processStillJpeg(jpeg: ByteArray, maxWidth: Int, maxHeight: Int) {
+    fun processStillJpeg(jpeg: ByteArray, maxWidth: Int, maxHeight: Int, sensorRotationDegrees: Int = 0) {
         if (!hasClients()) return
         var bitmap: Bitmap? = null
         try {
@@ -191,10 +191,14 @@ class H264StreamingEncoder(
                 }
             }
             val crop = CropRegion.read(prefs, camId)?.takeUnless { it.isFullFrame() }
-            val grayscale = prefs.getBoolean(NightMode.PREF_GRAYSCALE, false)
+            val grayscale = NightMode.effectiveGrayscale(context)
 
             bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return
-            var current = bitmap
+            var current = if (sensorRotationDegrees != 0) {
+                NightStillTransform.toSensorSpace(bitmap, sensorRotationDegrees).also { bitmap = it }
+            } else {
+                bitmap
+            }
             if (rotation != 0 || mirror) {
                 val matrix = Matrix().apply {
                     if (mirror) {
