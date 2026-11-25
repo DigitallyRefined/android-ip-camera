@@ -49,6 +49,8 @@ Some models include an option to only charge to 80%, make sure this is enabled w
 
 Note: running at a higher image quality may cause some phones to over heat, which can also damage the battery.
 
+Continuous streaming - whether from a continuous camera mode (**Notify on motion**, **Motion clips** or **Continuous recording**), a browser or an NVR - can cause some devices to over heat and power off. Use **Pause streaming at battery temperature** under **Stream → Device Safety** to protect the device.
+
 ## 🔋 Background Usage
 
 The app runs as a foreground service with a persistent notification, so it won't be closed while streaming. For reliable 24/7 operation:

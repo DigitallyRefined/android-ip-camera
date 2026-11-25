@@ -479,6 +479,24 @@
       text-align: center;
     }
 
+    .heat-warning {
+      margin: 12px 0 0;
+      padding: 10px 12px;
+      border: 1px solid #7a4a00;
+      border-left: 4px solid #ff9f0a;
+      border-radius: 8px;
+      background: rgba(255, 159, 10, 0.12);
+      color: #ffd9a0;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .heat-warning strong {
+      display: block;
+      margin-bottom: 4px;
+      color: #ffb340;
+    }
+
     .docs-link {
       position: fixed;
       bottom: max(12px, env(safe-area-inset-bottom));
@@ -1046,7 +1064,13 @@
               value="0" onchange="sendControl('overheat_pause_c', this.value)">
             <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
               0 disables. Above this temperature streaming stops (the same as /control/stop) and
-              resumes after the battery cools 3°C.
+              resumes after the battery cools by 3°C.
+            </div>
+            <div id="overheatModeWarning" class="heat-warning" role="status">
+              <strong>⚠️ Continuous streaming can overheat the device</strong>
+              Leaving the camera running - in a continuous camera mode, a browser or an NVR - can
+              cause some devices to overheat and power off. Set a pause temperature above to protect
+              the device.
             </div>
           </div>
         </div>
@@ -1066,28 +1090,28 @@
 
               <div class="mode-list" role="radiogroup" aria-label="Recording mode">
                 <label class="mode-option">
-                  <input type="radio" name="recordingMode" value="off" onchange="setRecordingMode(this.value)">
+                  <input type="radio" name="recordingMode" value="off" onchange="selectRecordingMode(this.value)">
                   <span class="mode-copy">
                     <span class="mode-name">On demand</span>
                     <span class="mode-desc">Camera stays off until a viewer connects</span>
                   </span>
                 </label>
                 <label class="mode-option">
-                  <input type="radio" name="recordingMode" value="notify" onchange="setRecordingMode(this.value)">
+                  <input type="radio" name="recordingMode" value="notify" onchange="selectRecordingMode(this.value)">
                   <span class="mode-copy">
                     <span class="mode-name">Notify on motion</span>
                     <span class="mode-desc">Camera stays on but does not automatically record</span>
                   </span>
                 </label>
                 <label class="mode-option">
-                  <input type="radio" name="recordingMode" value="motion" onchange="setRecordingMode(this.value)">
+                  <input type="radio" name="recordingMode" value="motion" onchange="selectRecordingMode(this.value)">
                   <span class="mode-copy">
                     <span class="mode-name">Motion clips</span>
                     <span class="mode-desc">Camera stays on and records a clip when motion starts</span>
                   </span>
                 </label>
                 <label class="mode-option">
-                  <input type="radio" name="recordingMode" value="continuous" onchange="setRecordingMode(this.value)">
+                  <input type="radio" name="recordingMode" value="continuous" onchange="selectRecordingMode(this.value)">
                   <span class="mode-copy">
                     <span class="mode-name">Continuous recording</span>
                     <span class="mode-desc">Camera stays on and records continuously in segments</span>
@@ -2136,6 +2160,23 @@
       updateRecordingModeSections();
       updateAutoFlashAvailability();
       updateRecordingSummary();
+    }
+
+    const CONTINUOUS_MODE_HEAT_WARNING =
+      'Continuous camera modes keep the camera running instead of turning it off between viewers.\n\n' +
+      'Leaving the camera continuously running or recording can cause some devices to overheat and ' +
+      'power off.\n\n' +
+      'Use "Pause streaming at battery temperature" under Stream → Device Safety so the camera stops ' +
+      'streaming before it gets too hot.';
+
+    function selectRecordingMode(mode) {
+      const next = normalizeRecordingMode(mode);
+      // Warn when moving into a mode that keeps the camera running. Switching between continuous
+      // modes does not change the heat risk, so it stays quiet.
+      if (recordingMode === 'off' && next !== 'off') {
+        alert(CONTINUOUS_MODE_HEAT_WARNING);
+      }
+      setRecordingMode(next);
     }
 
     function setRecordingMode(mode) {
