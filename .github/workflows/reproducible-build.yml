@@ -12,10 +12,6 @@ jobs:
     name: Lint, tests and build warnings
     runs-on: ubuntu-latest
     steps:
-      # The environment steps are anchored so verify-reproducible can reuse them
-      # instead of repeating them. GitHub supports YAML anchors and aliases but
-      # not merge keys (`<<:`), and an alias must come after its anchor, so the
-      # definitions live here and the aliases below refer to them.
       - &checkout
         name: Checkout
         uses: actions/checkout@v7
