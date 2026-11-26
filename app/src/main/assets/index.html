@@ -849,8 +849,8 @@
                     <input id="autoNightCameraAeThreshold" type="number" min="50" max="100" step="1"
                       inputmode="numeric" value="90" onchange="sendAutoNightCameraAeThreshold(this.value)"
                       style="width:110px; margin-top:0;">
-                    <span id="autoNightCameraAeLive"
-                      style="font-size:12px; color:#459eff; font-weight:600;">Live --</span>
+                    <span id="autoNightCameraAeLuma"
+                      style="font-size:12px; color:#459eff; font-weight:600;">Luma --</span>
                   </div>
                   <div id="autoNightCameraAeHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
                     Enters night near maximum ISO/exposure, or when the frame is visibly dark. Lower the percentage to trigger more easily.
@@ -1337,7 +1337,7 @@
           window.scrollTo({ top: panel.getBoundingClientRect().top + window.scrollY, behavior: 'auto' });
         }
       }
-      updateCameraAePolling();
+      updateAutoNightPolling();
     }
 
     function toggleRecordSettings(forceOpen) {
@@ -1634,7 +1634,7 @@
 
     getElById('cropBtn')?.addEventListener('click', toggleCropMode);
     getElById('resetCropBtn')?.addEventListener('click', resetCrop);
-    getElById('nightModeAdvanced')?.addEventListener('toggle', updateCameraAePolling);
+    getElById('nightModeAdvanced')?.addEventListener('toggle', updateAutoNightPolling);
 
     // On mobile the player width is fixed by the screen, so size the player to the
     // frame's aspect ratio instead of showing a bigger-than-screen original-size
@@ -2016,7 +2016,7 @@
       }
       updateCameraAeAvailability();
       updateAutoTorchAvailability();
-      updateCameraAePolling();
+      updateAutoNightPolling();
     }
 
     function formatLuxReading(lux) {
@@ -2151,8 +2151,8 @@
       }
     }
 
-    let cameraAePollTimer = null;
-    let cameraAePollInFlight = false;
+    let autoNightPollTimer = null;
+    let autoNightPollInFlight = false;
 
     function cameraAeRowVisible() {
       const row = getElById('autoNightCameraAeRow');
@@ -2162,30 +2162,39 @@
       return row.offsetParent !== null;
     }
 
-    function updateCameraAePolling() {
-      const visible = cameraAeRowVisible();
-      if (visible && !cameraAePollTimer) {
-        cameraAePollTimer = setInterval(() => {
-          if (!cameraAeRowVisible()) {
-            clearInterval(cameraAePollTimer);
-            cameraAePollTimer = null;
-            return;
-          }
-          if (document.hidden || cameraAePollInFlight) return;
-          cameraAePollInFlight = true;
-          fetch('/info.json', { cache: 'no-store', credentials: 'include' })
-            .then(res => res.json())
-            .then(data => {
-              const night = data?.settings?.nightMode;
-              if (night) updateCameraAeHint(night);
-            })
-            .catch(() => { })
-            .finally(() => { cameraAePollInFlight = false; });
-        }, 3000);
-      } else if (!visible && cameraAePollTimer) {
-        clearInterval(cameraAePollTimer);
-        cameraAePollTimer = null;
+    function stopAutoNightPolling() {
+      if (autoNightPollTimer) clearInterval(autoNightPollTimer);
+      autoNightPollTimer = null;
+    }
+
+    function updateAutoNightPolling() {
+      const active = autoNightModeValue !== 'off';
+      if (!active) {
+        stopAutoNightPolling();
+        return;
       }
+      if (autoNightPollTimer) return;
+      autoNightPollTimer = setInterval(() => {
+        if (autoNightModeValue === 'off') {
+          stopAutoNightPolling();
+          return;
+        }
+        if (document.hidden || autoNightPollInFlight) return;
+        autoNightPollInFlight = true;
+        fetch('/info.json', { cache: 'no-store', credentials: 'include' })
+          .then(res => res.json())
+          .then(data => {
+            const night = data?.settings?.nightMode;
+            if (!night) return;
+            // Keep the visible switches in step when automatic scheduling changes them.
+            updateNightModeUi(nightModeTruthy(night.available), nightModeTruthy(night.enabled));
+            updateNightGrayscaleUi(night);
+            applyNightExposureUi(data.settings);
+            if (cameraAeRowVisible()) updateCameraAeHint(night);
+          })
+          .catch(() => { })
+          .finally(() => { autoNightPollInFlight = false; });
+      }, 3000);
     }
 
     function updateCameraAeHint(night) {
@@ -2197,16 +2206,10 @@
       const frame = night.autoCameraAeFrameMs;
       const luma = night.autoCameraAeLuma;
       const state = night.autoCameraAeNight;
-      const live = getElById('autoNightCameraAeLive');
-      if (live) {
-        if (iso != null && isoMax != null && Number(isoMax) > 0) {
-          live.textContent = `Live ${Math.round(Number(iso) * 100 / Number(isoMax))}%`;
-        } else if (luma != null) {
-          live.textContent = `Live luma ${Math.round(Number(luma))}`;
-        } else {
-          live.textContent = 'Live --';
-        }
-        live.title = 'Current camera AE value compared with the night threshold';
+      const lumaEl = getElById('autoNightCameraAeLuma');
+      if (lumaEl) {
+        lumaEl.textContent = luma != null ? `Luma ${Math.round(Number(luma))}` : 'Luma --';
+        lumaEl.title = 'Current frame brightness (0–255)';
       }
       const parts = [];
       if (iso != null) parts.push(`ISO ${iso}${isoMax != null ? '/' + isoMax : ''}`);
