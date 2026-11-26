@@ -86,8 +86,18 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      /* Original Size pans a full-resolution frame, so this container scrolls. Fit Screen
+         overrides this below. */
       overflow: auto;
       position: relative;
+    }
+
+    /* In Fit Screen the canvas is drawn at the exact viewport size, so there is nothing to
+       scroll. Keeping overflow:auto here would let scrollbars (or a sub-pixel/pixel-snapping
+       overshoot) change clientWidth/clientHeight, which feeds straight back into the canvas
+       size and makes the player oscillate. */
+    .stream-container.fit {
+      overflow: hidden;
     }
 
     #streamCanvas {
@@ -560,6 +570,8 @@
       width: 100vw;
       height: 100vh;
       max-height: none;
+      /* Fullscreen always sizes the canvas to the window, so it never needs to scroll. */
+      overflow: hidden;
     }
 
     @media (max-width: 900px) {
@@ -678,7 +690,7 @@
   </div>
 
   <div class='main'>
-    <div class='stream-container' id='streamContainer'>
+    <div class='stream-container fit' id='streamContainer'>
       <div id="statusOverlay" class="status-overlay" style="display: none;">
         <span id="wifiStatus" title="WiFi Strength">📶 --%</span>
         <span id="batteryStatus" title="Battery Status">🔋 --%</span>
@@ -3620,6 +3632,14 @@
         f.className = 'btn active';
         o.className = 'btn';
         viewMode = 'fit';
+        // Stop the container scrolling before measuring: Fit Screen never needs scrollbars,
+        // and a scrollbar appearing between measurements would resize the canvas mid-frame.
+        if (streamContainer) {
+          streamContainer.classList.add('fit');
+          // Drop any pan offset from Original Size so the fitted frame starts centred.
+          streamContainer.scrollTop = 0;
+          streamContainer.scrollLeft = 0;
+        }
         // Drop the frame-specific aspect before measuring the container for fit mode.
         if (streamContainer) {
           streamContainer.style.removeProperty('aspect-ratio');
@@ -3629,6 +3649,7 @@
         f.className = 'btn';
         o.className = 'btn active';
         viewMode = 'original';
+        if (streamContainer) streamContainer.classList.remove('fit');
       }
       applyCanvasSize(targetCanvasSize(lastDrawn));
     }
