@@ -10,7 +10,6 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
-import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -165,13 +164,10 @@ class Camera2NightCapture(
         val preview = ImageReader.newInstance(previewSize.width, previewSize.height, ImageFormat.YUV_420_888, 2)
         jpeg.setOnImageAvailableListener({ reader -> onJpegAvailable(reader) }, handler)
         preview.setOnImageAvailableListener({ reader ->
-            try {
-                val image = reader.acquireLatestImage()
-                if (image != null) {
-                    reportPreviewLuma(image)
-                    image.close()
-                }
-            } catch (_: Exception) {}
+            // The preview is only here to keep 3A running. Its auto-exposure luma must not replace
+            // the still JPEG's luma: the still uses the much longer night exposure and is what the
+            // viewer actually sees. CameraLightMeter gets that luma from the night still loop.
+            try { reader.acquireLatestImage()?.close() } catch (_: Exception) {}
         }, handler)
         jpegReader = jpeg
         previewReader = preview
@@ -257,35 +253,6 @@ class Camera2NightCapture(
         } catch (e: Exception) {
             Log.e(TAG, "create session: ${e.message}")
             notifyReady(onReady, false)
-        }
-    }
-
-    private fun reportPreviewLuma(image: Image) {
-        try {
-            val plane = image.planes[0]
-            val buffer = plane.buffer
-            val rowStride = plane.rowStride
-            val pixelStride = plane.pixelStride
-            val stepX = (image.width / 64).coerceAtLeast(1)
-            val stepY = (image.height / 36).coerceAtLeast(1)
-            var sum = 0L
-            var count = 0
-            var y = 0
-            while (y < image.height) {
-                val row = y * rowStride
-                var x = 0
-                while (x < image.width) {
-                    val index = row + x * pixelStride
-                    if (index < buffer.limit()) {
-                        sum += buffer.get(index).toInt() and 0xFF
-                        count++
-                    }
-                    x += stepX
-                }
-                y += stepY
-            }
-            if (count > 0) CameraLightMeter.reportLuma(sum.toFloat() / count)
-        } catch (_: Exception) {
         }
     }
 

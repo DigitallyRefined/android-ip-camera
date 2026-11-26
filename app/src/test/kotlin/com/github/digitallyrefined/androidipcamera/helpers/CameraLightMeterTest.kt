@@ -105,6 +105,27 @@ class CameraLightMeterTest {
     }
 
     @Test
+    fun `almost white frame exits night mode even when ae still looks dark`() {
+        val start = 7_000_000L
+        dark(start)
+        CameraLightMeter.decide(90, start)
+        dark(start + 15_000)
+        assertTrue(CameraLightMeter.decide(90, start + 15_000) == true)
+
+        val whiteStart = start + 20_000
+        fun whiteFrame(at: Long) {
+            CameraLightMeter.reportAe(6300, 6400, 1_000_000_000, 1_000_000_000, at)
+            CameraLightMeter.reportLuma(255f, at)
+        }
+        whiteFrame(whiteStart)
+        assertTrue(CameraLightMeter.decide(90, whiteStart) == true)
+        whiteFrame(whiteStart + 9_999)
+        assertTrue(CameraLightMeter.decide(90, whiteStart + 9_999) == true)
+        whiteFrame(whiteStart + 10_000)
+        assertFalse(CameraLightMeter.decide(90, whiteStart + 10_000) == true)
+    }
+
+    @Test
     fun `stale telemetry produces no decision`() {
         val start = 4_000_000L
         dark(start)
