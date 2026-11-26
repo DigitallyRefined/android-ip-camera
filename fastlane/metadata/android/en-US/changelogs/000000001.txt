@@ -1,0 +1,5 @@
+## What's Changed
+* Automatic night mode - switches on GPS civil twilight, ambient LUX, a schedule, or camera auto-exposure, with configurable torch profiles (#170, #175).
+* Burned-in OSD - overlays time, date, camera name, battery, Wi-Fi and temperature on H.264 and MJPEG streams (#172).
+* Night-sight streaming - loops OEM night-mode stills into the live MJPEG or H.264 stream (#161).
+...
