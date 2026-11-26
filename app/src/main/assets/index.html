@@ -845,11 +845,15 @@
 
                 <div id="autoNightCameraAeRow" style="display:none; margin-top:12px;">
                   <label for="autoNightCameraAeThreshold">Camera AE night threshold (%)</label>
-                  <input id="autoNightCameraAeThreshold" type="number" min="50" max="100" step="1"
-                    inputmode="numeric" value="95" onchange="sendAutoNightCameraAeThreshold(this.value)"
-                    style="width:110px; margin-top:0;">
+                  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <input id="autoNightCameraAeThreshold" type="number" min="50" max="100" step="1"
+                      inputmode="numeric" value="90" onchange="sendAutoNightCameraAeThreshold(this.value)"
+                      style="width:110px; margin-top:0;">
+                    <span id="autoNightCameraAeLuma"
+                      style="font-size:12px; color:#459eff; font-weight:600;">Luma --</span>
+                  </div>
                   <div id="autoNightCameraAeHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    Enters night near maximum ISO and exposure. Waiting for camera telemetry…
+                    Enters night near maximum ISO/exposure, or when the frame is visibly dark. Returns to day when the image is bright or almost white. Lower the percentage to trigger more easily.
                   </div>
                 </div>
 
@@ -1333,6 +1337,7 @@
           window.scrollTo({ top: panel.getBoundingClientRect().top + window.scrollY, behavior: 'auto' });
         }
       }
+      updateAutoNightPolling();
     }
 
     function toggleRecordSettings(forceOpen) {
@@ -1629,6 +1634,7 @@
 
     getElById('cropBtn')?.addEventListener('click', toggleCropMode);
     getElById('resetCropBtn')?.addEventListener('click', resetCrop);
+    getElById('nightModeAdvanced')?.addEventListener('toggle', updateAutoNightPolling);
 
     // On mobile the player width is fixed by the screen, so size the player to the
     // frame's aspect ratio instead of showing a bigger-than-screen original-size
@@ -2010,6 +2016,7 @@
       }
       updateCameraAeAvailability();
       updateAutoTorchAvailability();
+      updateAutoNightPolling();
     }
 
     function formatLuxReading(lux) {
@@ -2119,7 +2126,7 @@
       const aeThreshold = getElById('autoNightCameraAeThreshold');
       if (aeThreshold && night.autoCameraAeThreshold != null && document.activeElement !== aeThreshold) {
         const n = parseInt(night.autoCameraAeThreshold, 10);
-        aeThreshold.value = String(Number.isFinite(n) ? Math.max(50, Math.min(100, n)) : 95);
+        aeThreshold.value = String(Number.isFinite(n) ? Math.max(50, Math.min(100, n)) : 90);
       }
       updateCameraAeHint(night);
       const seconds = getElById('autoFlashSeconds');
@@ -2144,6 +2151,52 @@
       }
     }
 
+    let autoNightPollTimer = null;
+    let autoNightPollInFlight = false;
+
+    function cameraAeRowVisible() {
+      const row = getElById('autoNightCameraAeRow');
+      if (!row || autoNightModeValue !== 'camera_ae') return false;
+      const details = getElById('nightModeAdvanced');
+      if (details && !details.open) return false;
+      return row.offsetParent !== null;
+    }
+
+    function stopAutoNightPolling() {
+      if (autoNightPollTimer) clearInterval(autoNightPollTimer);
+      autoNightPollTimer = null;
+    }
+
+    function updateAutoNightPolling() {
+      const active = autoNightModeValue !== 'off';
+      if (!active) {
+        stopAutoNightPolling();
+        return;
+      }
+      if (autoNightPollTimer) return;
+      autoNightPollTimer = setInterval(() => {
+        if (autoNightModeValue === 'off') {
+          stopAutoNightPolling();
+          return;
+        }
+        if (document.hidden || autoNightPollInFlight) return;
+        autoNightPollInFlight = true;
+        fetch('/info.json', { cache: 'no-store', credentials: 'include' })
+          .then(res => res.json())
+          .then(data => {
+            const night = data?.settings?.nightMode;
+            if (!night) return;
+            // Keep the visible switches in step when automatic scheduling changes them.
+            updateNightModeUi(nightModeTruthy(night.available), nightModeTruthy(night.enabled));
+            updateNightGrayscaleUi(night);
+            applyNightExposureUi(data.settings);
+            if (cameraAeRowVisible()) updateCameraAeHint(night);
+          })
+          .catch(() => { })
+          .finally(() => { autoNightPollInFlight = false; });
+      }, 3000);
+    }
+
     function updateCameraAeHint(night) {
       const hint = getElById('autoNightCameraAeHint');
       if (!hint) return;
@@ -2153,6 +2206,11 @@
       const frame = night.autoCameraAeFrameMs;
       const luma = night.autoCameraAeLuma;
       const state = night.autoCameraAeNight;
+      const lumaEl = getElById('autoNightCameraAeLuma');
+      if (lumaEl) {
+        lumaEl.textContent = luma != null ? `Luma ${Math.round(Number(luma))}` : 'Luma --';
+        lumaEl.title = 'Current frame brightness (0–255)';
+      }
       const parts = [];
       if (iso != null) parts.push(`ISO ${iso}${isoMax != null ? '/' + isoMax : ''}`);
       if (exposure != null) parts.push(`exposure ${Number(exposure).toFixed(1)} ms`);
@@ -2249,7 +2307,7 @@
     function sendAutoNightCameraAeThreshold(value) {
       const input = getElById('autoNightCameraAeThreshold');
       let percent = parseInt(value, 10);
-      if (!Number.isFinite(percent)) percent = 95;
+      if (!Number.isFinite(percent)) percent = 90;
       percent = Math.max(50, Math.min(100, percent));
       if (input) input.value = String(percent);
       sendControl('auto_night_camera_ae_threshold', String(percent));
