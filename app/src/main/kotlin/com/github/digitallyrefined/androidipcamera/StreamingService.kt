@@ -829,7 +829,11 @@ class StreamingService : LifecycleService() {
                 .also { it.overlayRenderer = osdRenderer }
             motionMonitor = MotionMonitor(this) { active ->
                 Log.i(TAG, "Motion ${if (active) "started" else "ended"}")
-                onvifServer?.setMotion(active)
+                // Suppress the start event when notifications are off; always publish the end so a
+                // client that saw an earlier motion-start is not left stuck on.
+                if (!active || motionMonitor?.notifyOnMotion == true) {
+                    onvifServer?.setMotion(active)
+                }
                 handleMotionRecording(active)
                 handleAutoFlashMotion(active)
             }
@@ -3319,18 +3323,51 @@ class StreamingService : LifecycleService() {
                 prefs.edit {
                     putBoolean(MotionMonitor.PREF_ENABLED, enabled)
                     putString(MotionMonitor.PREF_MODE, mode)
+                    putBoolean(MotionMonitor.PREF_NOTIFY, enabled)
                 }
                 motionMonitor?.onSettingsChanged()
                 applyRecordingMode(mode)
             }
             MotionMonitor.PREF_MODE -> {
                 val mode = MotionMonitor.normalizeMode(value) ?: return
+                // Motion clips forces notifications on, On demand forces them off, and the other
+                // modes keep whatever the independent Notify on motion switch says.
+                val notify = when {
+                    mode == MotionMonitor.MODE_OFF -> false
+                    mode == MotionMonitor.MODE_MOTION -> true
+                    MotionMonitor.isLegacyNotifyMode(value) -> true
+                    else -> MotionMonitor.notifyEnabled(this)
+                }
                 prefs.edit {
                     putString(MotionMonitor.PREF_MODE, mode)
                     putBoolean(MotionMonitor.PREF_ENABLED, mode != MotionMonitor.MODE_OFF)
+                    putBoolean(MotionMonitor.PREF_NOTIFY, notify)
                 }
                 motionMonitor?.onSettingsChanged()
+                if (!notify) onvifServer?.setMotion(false)
                 applyRecordingMode(mode)
+            }
+            MotionMonitor.PREF_NOTIFY -> {
+                val requested = when (value.lowercase()) {
+                    "true", "on", "1" -> true
+                    "false", "off", "0" -> false
+                    else -> return
+                }
+                val mode = MotionMonitor.modeFor(this)
+                val enabled = when (mode) {
+                    MotionMonitor.MODE_OFF -> false
+                    MotionMonitor.MODE_MOTION -> true
+                    else -> requested
+                }
+                val wasDetecting = motionMonitor?.motionDetection == true
+                prefs.edit { putBoolean(MotionMonitor.PREF_NOTIFY, enabled) }
+                val nowDetecting = motionMonitor?.motionDetection == true
+                if (wasDetecting != nowDetecting) motionMonitor?.onSettingsChanged()
+                if (!nowDetecting) {
+                    onvifServer?.setMotion(false)
+                } else if (motionMonitor?.detector?.active == true) {
+                    onvifServer?.setMotion(true)
+                }
             }
             MotionMonitor.PREF_SENSITIVITY -> {
                 val sensitivity = value.toIntOrNull()?.coerceIn(1, 10) ?: return
@@ -3474,6 +3511,10 @@ class StreamingService : LifecycleService() {
         return try {
             JSONObject(status)
                 .put("mode", motionMonitor?.mode ?: MotionMonitor.modeFor(this))
+                .put(
+                    "notifyOnMotion",
+                    motionMonitor?.notifyOnMotion ?: MotionMonitor.notifyEnabled(this)
+                )
                 .toString()
         } catch (_: Exception) {
             status
@@ -3541,7 +3582,7 @@ class StreamingService : LifecycleService() {
                 startContinuousRecording()
             }
 
-            else -> { // MODE_ALWAYS_ON, MODE_NOTIFY or MODE_MOTION
+            else -> { // MODE_ALWAYS_ON or MODE_MOTION
                 stopContinuousRecording()
                 if (recorder?.isRecording == true &&
                     (recorder.trigger == LocalRecorder.Trigger.CONTINUOUS ||

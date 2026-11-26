@@ -1485,6 +1485,8 @@ class StreamingServerHelper(
         val audioGain: String,
         val snapshotRes: String,
         val motionDetectionEnabled: Boolean,
+        /** Independent Notify on motion switch (forced on for Motion clips, off for On demand). */
+        val notifyOnMotion: Boolean,
         val motionSensitivity: String,
         val motionRecordStopDelay: String,
         val recordingMode: String,
@@ -1627,6 +1629,7 @@ class StreamingServerHelper(
                 put("audioGain", settings.audioGain)
                 put("snapshotRes", settings.snapshotRes)
                 put("motionDetectionEnabled", settings.motionDetectionEnabled)
+                put("notifyOnMotion", settings.notifyOnMotion)
                 put("motionSensitivity", settings.motionSensitivity)
                 put("motionRecordStopDelay", settings.motionRecordStopDelay)
                 put("recordingMode", settings.recordingMode)
@@ -1909,6 +1912,7 @@ class StreamingServerHelper(
             audioGain = prefs.getString("audio_gain", "1.0") ?: "1.0",
             snapshotRes = prefs.getString("snapshot_res_$cameraId", "max") ?: "max",
             motionDetectionEnabled = MotionMonitor.motionDetectionEnabled(context),
+            notifyOnMotion = MotionMonitor.notifyEnabled(context),
             motionSensitivity = prefs.getString(MotionMonitor.PREF_SENSITIVITY, MotionMonitor.DEFAULT_SENSITIVITY.toString())
                 ?: MotionMonitor.DEFAULT_SENSITIVITY.toString(),
             motionRecordStopDelay = prefs.getString(MotionMonitor.PREF_STOP_DELAY, MotionMonitor.DEFAULT_STOP_DELAY.toString())

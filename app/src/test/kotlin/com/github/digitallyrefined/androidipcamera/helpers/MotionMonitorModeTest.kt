@@ -11,9 +11,20 @@ class MotionMonitorModeTest {
     fun `canonical mode names pass through`() {
         assertEquals(MotionMonitor.MODE_OFF, MotionMonitor.normalizeMode("off"))
         assertEquals(MotionMonitor.MODE_ALWAYS_ON, MotionMonitor.normalizeMode("always_on"))
-        assertEquals(MotionMonitor.MODE_NOTIFY, MotionMonitor.normalizeMode("notify"))
         assertEquals(MotionMonitor.MODE_MOTION, MotionMonitor.normalizeMode("motion"))
         assertEquals(MotionMonitor.MODE_CONTINUOUS, MotionMonitor.normalizeMode("continuous"))
+    }
+
+    @Test
+    fun `legacy notify mode migrates to always on with notifications`() {
+        assertEquals(MotionMonitor.MODE_ALWAYS_ON, MotionMonitor.normalizeMode("notify"))
+        assertTrue(MotionMonitor.isLegacyNotifyMode("notify"))
+        assertFalse(MotionMonitor.isLegacyNotifyMode("always_on"))
+        assertTrue(MotionMonitor.legacyNotifyDefault("notify", MotionMonitor.MODE_ALWAYS_ON))
+        assertTrue(MotionMonitor.legacyNotifyDefault(null, MotionMonitor.MODE_MOTION))
+        assertTrue(MotionMonitor.legacyNotifyDefault(null, MotionMonitor.MODE_CONTINUOUS))
+        assertFalse(MotionMonitor.legacyNotifyDefault(null, MotionMonitor.MODE_ALWAYS_ON))
+        assertFalse(MotionMonitor.legacyNotifyDefault(null, MotionMonitor.MODE_OFF))
     }
 
     @Test
@@ -24,13 +35,19 @@ class MotionMonitorModeTest {
     }
 
     @Test
-    fun `camera always on keeps the camera running but runs no motion detection`() {
+    fun `motion detection follows the mode and notify switch`() {
         assertTrue(MotionMonitor.isCameraAlwaysOn(MotionMonitor.MODE_ALWAYS_ON))
-        assertFalse(MotionMonitor.isMotionDetection(MotionMonitor.MODE_ALWAYS_ON))
         assertFalse(MotionMonitor.isCameraAlwaysOn(MotionMonitor.MODE_OFF))
-        assertTrue(MotionMonitor.isMotionDetection(MotionMonitor.MODE_NOTIFY))
-        assertTrue(MotionMonitor.isMotionDetection(MotionMonitor.MODE_MOTION))
-        assertTrue(MotionMonitor.isMotionDetection(MotionMonitor.MODE_CONTINUOUS))
+
+        assertFalse(MotionMonitor.isMotionDetection(MotionMonitor.MODE_OFF, false))
+        assertFalse(MotionMonitor.isMotionDetection(MotionMonitor.MODE_OFF, true))
+        assertFalse(MotionMonitor.isMotionDetection(MotionMonitor.MODE_ALWAYS_ON, false))
+        assertTrue(MotionMonitor.isMotionDetection(MotionMonitor.MODE_ALWAYS_ON, true))
+        // Motion clips needs detection for the clip itself, even if a stale notify flag is false.
+        assertTrue(MotionMonitor.isMotionDetection(MotionMonitor.MODE_MOTION, false))
+        assertTrue(MotionMonitor.isMotionDetection(MotionMonitor.MODE_MOTION, true))
+        assertFalse(MotionMonitor.isMotionDetection(MotionMonitor.MODE_CONTINUOUS, false))
+        assertTrue(MotionMonitor.isMotionDetection(MotionMonitor.MODE_CONTINUOUS, true))
     }
 
     @Test
