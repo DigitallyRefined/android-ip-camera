@@ -49,7 +49,7 @@ Some models include an option to only charge to 80%, make sure this is enabled w
 
 Note: running at a higher image quality may cause some phones to over heat, which can also damage the battery.
 
-Continuous streaming - whether from a continuous camera mode (**Notify on motion**, **Motion clips** or **Continuous recording**), a browser or an NVR - can cause some devices to over heat and power off. Use **Pause streaming at battery temperature** under **Stream → Device Safety** to protect the device.
+Continuous streaming - whether from an always-on camera mode (**Camera always on**, **Motion clips** or **Continuous recording**), a browser or an NVR - can cause some devices to over heat and power off. Use **Pause streaming at battery temperature** under **Stream → Device Safety** to protect the device.
 
 ## 🔋 Background Usage
 
@@ -168,12 +168,12 @@ Examples:
 
 ### 🛰️ ONVIF camera
 
-ONVIF lets NVRs and home automation systems discover and control the camera as a standard IP camera. It is enabled by **Settings > RTSP / ONVIF > Enable RTSP**, or automatically while an always-on recording mode (**Notify only**, **Motion clips** or **Continuous recording**) is selected.
+ONVIF lets NVRs and home automation systems discover and control the camera as a standard IP camera. It is enabled by **Settings > RTSP / ONVIF > Enable RTSP**, or automatically while an always-on camera mode (**Camera always on**, **Motion clips** or **Continuous recording**) is selected.
 
 * **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled
 * **Snapshot:** `https://[ip_address]:8000/onvif/snapshot.jpg` (or `http://` without TLS)
 * **RTSP:** `rtsps://[username]:[password]@[ip_address]:8554/live`, or `rtsps://` on the same port when TLS is enabled
-* **Motion events:** **Notify on motion**, **Motion clips** and **Continuous recording** keep the camera running and publish ONVIF motion events through both PullPoint and WS-BaseNotification, so polling clients and hardware NVRs both see motion. **Camera always on** keeps the stream ready for NVRs without running motion detection. Recording modes, event delivery and notification details are in **Server URL Paths & Remote Control API** below.
+* **Motion events:** **Notify on motion** publishes ONVIF motion events through both PullPoint and WS-BaseNotification, so polling clients and hardware NVRs both see motion. It can be enabled with **Camera always on** or **Continuous recording** and is always enabled for **Motion clips**. When it is off, the motion detector does not run. **Camera always on** without notifications keeps the stream ready for NVRs without motion detection. Recording modes, event delivery and notification details are in **Server URL Paths & Remote Control API** below.
 
 #### UniFi Protect
 
@@ -321,7 +321,8 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `audio_gain=<value>`: Changes microphone gain multiplier (e.g., `1.0`, `2.0`).
   * `focus_distance=<0..1|-1>`: Set manual focus distance (0..1). Use `-1` to restore autofocus.
   * `snapshot_res=<max|stream>`: Choose snapshot resolution for the selected camera (`max` for full sensor, `stream` to match current stream resolution).
-  * `recording_mode=<off|always_on|notify|motion|continuous>`: Camera/recording behaviour with no viewer connected: on demand (`off`), camera always on (`always_on`: keeps the stream ready for NVRs and Camera AE, but runs no motion detection, notifications or recording), notify on motion (`notify`), motion clips (`motion`), or continuous segmented recording (`continuous`).
+  * `recording_mode=<off|always_on|motion|continuous>`: Camera/recording behaviour with no viewer connected: on demand (`off`), camera always on (`always_on`: keeps the stream ready for NVRs and Camera AE, with optional notifications and recording), motion clips (`motion`: always enables notifications and records a clip on motion), or continuous segmented recording (`continuous`: notifications are optional). The legacy `notify` value is still accepted as `always_on` with `notify_on_motion=true`.
+  * `notify_on_motion=<true|false>`: Enable motion detection, ONVIF motion events and phone motion notifications. It is forced on for `motion`, forced off for `off`, and otherwise independent of the recording mode. When off for `always_on` or `continuous`, the detector does not run and no motion events are sent; continuous recording still records.
   * `recording_segment_minutes=<1..120>`: Length of each continuous-recording clip (default 5).
   * `recording_storage_limit_percent=<50..99>`: Delete the oldest recordings once the drive reaches this usage (default 90).
   * `motion_sensitivity=<1..10>`: Motion detector sensitivity.
@@ -341,7 +342,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `auto_night_lux=<lux>`: LUX threshold for `lux` and `gps_lux` modes (default 5). Night mode turns on below the value and off at or above it.
   * `auto_night_schedule_start=<HH:mm>` / `auto_night_schedule_end=<HH:mm>`: Local-time window for the `schedule` trigger (default `21:00`–`06:00`). The window may cross midnight.
   * `auto_night_camera_ae_threshold=<50..100>`: ISO percentage used to enter night in `camera_ae` mode (default 95). Entry also requires exposure at least 90% of the frame duration and 15 seconds of continuous darkness; exit takes 60 seconds of brightness.
-  * `night_torch_mode=<off|motion|always>`: Torch profile while the automatic schedule says it is dark. `motion` turns the torch on for motion, then restores night mode after the timer. `always` forces normal video and keeps the torch on for the whole dark period. `camera_ae` cannot be combined with `always` because the torch would blind the meter. Requires a recording mode other than On demand and is disabled in that state. `motion` also requires motion detection, so it is inactive in **Camera always on**. `/info.json` reports `settings.nightMode.torchMode` (legacy `autoFlash` remains true only for `motion`).
+  * `night_torch_mode=<off|motion|always>`: Torch profile while the automatic schedule says it is dark. `motion` turns the torch on for motion, then restores night mode after the timer. `always` forces normal video and keeps the torch on for the whole dark period. `camera_ae` cannot be combined with `always` because the torch would blind the meter. Requires a recording mode other than On demand and is disabled in that state. `motion` also requires motion detection, so it is inactive in **Camera always on** unless **Notify on motion** is enabled. `/info.json` reports `settings.nightMode.torchMode` (legacy `autoFlash` remains true only for `motion`).
   * `night_auto_flash=<true|false>`: Legacy alias for `night_torch_mode=motion|off`.
   * `night_auto_flash_seconds=<1..99>`: Seconds to keep the torch on after motion clears (default 10). Additional motion during this wait restarts the timer.
   * `osd_enabled=<true|false>`: Burn the text overlay into the video itself (H.264 and MJPEG, including RTSP and recordings). `/info.json` reports the per-element choices under `settings.osd`.
@@ -352,15 +353,16 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
 
 ### 🎬 Motion events and recording
 
-Choose a recording mode in the web interface or with `recording_mode`:
+Choose a camera and automatic-recording mode in the web interface or with `recording_mode`:
 
-* **On demand** (`off`): the camera opens when a viewer connects (HTTP/RTSP) and is released when the last one leaves. Nothing else (night mode, Camera AE, auto-night switching) keeps it open.
-* **Camera always on** (`always_on`): keeps the camera running with no viewer so NVRs connect quickly and Camera AE has live telemetry. It runs no motion detection, sends no motion notifications and records nothing locally.
-* **Notify only** (`notify`): the camera stays on, detects motion and publishes ONVIF events, but writes no local MP4 files.
-* **Motion clips** (`motion`): like **Notify only**, and also records a `-motion.mp4` clip while motion is present.
-* **Continuous recording** (`continuous`): records every moment into `-continuous.mp4` segments, with the camera always on.
+* **On demand** (`off`): the camera opens when a viewer connects (HTTP/RTSP) and is released when the last one leaves. Nothing else (night mode, Camera AE, auto-night switching) keeps it open. Notify on motion and automatic recording are disabled.
+* **Camera always on** (`always_on`): keeps the camera running with no viewer so NVRs connect quickly and Camera AE has live telemetry. **No auto recording** writes nothing locally; **Motion clips** and **Continuous recording** add automatic recording below.
+* **Notify on motion** (`notify_on_motion=true`): enables motion detection, publishes ONVIF motion events and posts phone notifications. It is optional with **Camera always on** and **Continuous recording**, and forced on with **Motion clips**.
+* **No auto recording**: the camera stays on but writes no clips automatically.
+* **Motion clips** (`motion`): records a `-motion.mp4` clip while motion is present. Motion detection and notifications are always on.
+* **Continuous recording** (`continuous`): records every moment into `-continuous.mp4` segments, with the camera always on. Notifications are optional; when off, motion detection does not run.
 
-In **Notify only**, **Motion clips** and **Continuous recording**, the app compares luma frames in the background. **Sensitivity** (1 = least sensitive, 10 = most sensitive, default 5) controls how much the frame must change; lighting changes such as a TV cutting between scenes are ignored. Motion is published as `tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm` over both PullPoint (`CreatePullPointSubscription` + `PullMessages`) and WS-BaseNotification (`wsnt:Subscribe`, `Renew`, `Unsubscribe`). Home Assistant, ONVIF Device Manager and UniFi Protect poll via PullPoint; hardware NVRs (for example Xiongmai/VMS) subscribe and receive `wsnt:Notify` HTTP POSTs at their consumer address whenever motion starts or stops. **Camera always on** keeps the ONVIF service available but publishes no motion events.
+When Notify on motion is enabled (or Motion clips is selected), the app compares luma frames in the background. **Sensitivity** (1 = least sensitive, 10 = most sensitive, default 5) controls how much the frame must change; lighting changes such as a TV cutting between scenes are ignored. Motion is published as `tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm` over both PullPoint (`CreatePullPointSubscription` + `PullMessages`) and WS-BaseNotification (`wsnt:Subscribe`, `Renew`, `Unsubscribe`). Home Assistant, ONVIF Device Manager and UniFi Protect poll via PullPoint; hardware NVRs (for example Xiongmai/VMS) subscribe and receive `wsnt:Notify` HTTP POSTs at their consumer address whenever motion starts or stops. With Notify on motion off, the ONVIF service stays available but no motion events are published.
 
 Notifications to an NVR contain event metadata only (topic and motion state, no video) and are posted to the consumer URL the authenticated NVR supplies, which is normally plain HTTP on the local network.
 

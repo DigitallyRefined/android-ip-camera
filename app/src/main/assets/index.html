@@ -447,10 +447,20 @@
       background: #263449;
     }
 
-    .mode-option input[type=radio] {
+    .mode-option input[type=radio],
+    .mode-option input[type=checkbox] {
       margin: 2px 0 0;
       flex: none;
       accent-color: #007AFF;
+    }
+
+    .mode-option:has(input:disabled) {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .mode-option:has(input:disabled):hover {
+      background: #2c2c2c;
     }
 
     .mode-copy {
@@ -1178,9 +1188,9 @@
             <div id="recordSettingsPanel" class="setting-group" style="display:none;">
               <p class="group-title" style="margin-top:0;">Camera/Recording Mode</p>
 
-              <div class="mode-list" role="radiogroup" aria-label="Recording mode">
+              <div class="mode-list" role="radiogroup" aria-label="Camera mode">
                 <label class="mode-option">
-                  <input type="radio" name="recordingMode" value="off" onchange="selectRecordingMode(this.value)">
+                  <input type="radio" name="cameraMode" value="off" onchange="selectCameraMode(this.value)">
                   <span class="mode-copy">
                     <span class="mode-name">On demand</span>
                     <span class="mode-desc">Camera stays off until a viewer connects</span>
@@ -1195,40 +1205,50 @@
                     streaming stops before it gets too hot.
                   </div>
                   <label class="mode-option">
-                    <input type="radio" name="recordingMode" value="always_on" onchange="selectRecordingMode(this.value)">
+                    <input type="radio" name="cameraMode" value="always_on" onchange="selectCameraMode(this.value)">
                     <span class="mode-copy">
                       <span class="mode-name">Camera always on</span>
-                      <span class="mode-desc">For night/low-light detection &amp; faster connection times. No motion detection</span>
+                      <span class="mode-desc">For night/low-light detection &amp; faster connection times</span>
                     </span>
                   </label>
                   <label class="mode-option">
-                    <input type="radio" name="recordingMode" value="notify" onchange="selectRecordingMode(this.value)">
+                    <input type="checkbox" id="notifyOnMotionCheckbox" onchange="setNotifyOnMotion(this.checked)">
                     <span class="mode-copy">
                       <span class="mode-name">Notify on motion</span>
-                      <span class="mode-desc">Camera stays on but does not automatically record</span>
+                      <span class="mode-desc">Send ONVIF motion events and phone notifications while the camera stays on</span>
                     </span>
                   </label>
-                  <label class="mode-option">
-                    <input type="radio" name="recordingMode" value="motion" onchange="selectRecordingMode(this.value)">
-                    <span class="mode-copy">
-                      <span class="mode-name">Motion clips (+ notify)</span>
-                      <span class="mode-desc">Camera stays on and records a clip when motion starts</span>
-                    </span>
-                  </label>
-                  <label class="mode-option">
-                    <input type="radio" name="recordingMode" value="continuous" onchange="selectRecordingMode(this.value)">
-                    <span class="mode-copy">
-                      <span class="mode-name">Continuous recording (+ notify)</span>
-                      <span class="mode-desc">Camera stays on and records continuously in segments</span>
-                    </span>
-                  </label>
+                  <div id="autoRecordModes" class="mode-list" role="radiogroup" aria-label="Automatic recording" style="margin-bottom:0;">
+                    <label class="mode-option">
+                      <input type="radio" name="autoRecordMode" value="none" onchange="selectAutoRecordMode(this.value)">
+                      <span class="mode-copy">
+                        <span class="mode-name">No auto recording</span>
+                        <span class="mode-desc">Camera stays on but writes no clips automatically</span>
+                      </span>
+                    </label>
+                    <label class="mode-option">
+                      <input type="radio" name="autoRecordMode" value="motion" onchange="selectAutoRecordMode(this.value)">
+                      <span class="mode-copy">
+                        <span class="mode-name">Motion clips</span>
+                        <span class="mode-desc">Records a clip when motion starts. Notify on motion is always on</span>
+                      </span>
+                    </label>
+                    <label class="mode-option">
+                      <input type="radio" name="autoRecordMode" value="continuous" onchange="selectAutoRecordMode(this.value)">
+                      <span class="mode-copy">
+                        <span class="mode-name">Continuous recording</span>
+                        <span class="mode-desc">Records continuously in segments; notifications are optional</span>
+                      </span>
+                    </label>
+                  </div>
                 </fieldset>
               </div>
 
               <div class="hint" style="margin:0 0 4px; font-size:12px; color:#ccc">
-                Notify on motion, Motion clips and Continuous recording detect motion and send notifications to
+                Notify on motion sends motion events to
                 <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a>
-                (like Home Assistant &amp; UniFi Protect). Camera always on keeps the stream ready without motion work.
+                (like Home Assistant &amp; UniFi Protect) and phone notifications. Motion clips always enables it;
+                Continuous recording can record without it.
               </div>
 
               <div id="motionSettings" style="display:none;">
@@ -1347,6 +1367,7 @@
     let deviceHasFlash = false;
     let cameraList = [];
     let recordingMode = 'off';
+    let notifyOnMotion = false;
     let lastRecordingStatus = null;
     // When the burned-in OSD is active, the HTML status badge would duplicate the same values.
     let osdEnabled = false;
@@ -2148,7 +2169,7 @@
       const mode = normalizeAutoNightMode(value);
       if (mode === 'camera_ae' && recordingMode === 'off') {
         if (select) select.value = autoNightModeValue;
-        alert('Camera AE needs the camera to stay on. In Recordings → Settings, choose "Camera always on" (or Notify on motion, Motion clips, or Continuous recording) instead of On demand, then select Camera AE again.');
+        alert('Camera AE needs the camera to stay on. In Recordings → Settings, choose "Camera always on" (with Notify on motion if you want alerts), Motion clips, or Continuous recording instead of On demand, then select Camera AE again.');
         return;
       }
       if (mode !== 'off' && autoNightModeIncludesGps(mode) && !autoNightLocationGranted) {
@@ -2239,11 +2260,11 @@
       const hint = getElById('autoFlashHint');
       if (!hint) return;
       if (recordingMode === 'off') {
-        hint.textContent = 'Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Notify on motion, Motion clips, or Continuous recording instead of On demand.';
+        hint.textContent = 'Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Motion clips, or Continuous recording instead of On demand.';
       } else if (autoTorchModeValue === 'always') {
         hint.textContent = 'Always on forces normal video and keeps the torch lit for the whole dark period. Camera AE cannot be combined with this mode.';
-      } else if (autoTorchModeValue === 'motion' && !recordingModeHasMotion(recordingMode)) {
-        hint.textContent = 'On motion needs motion detection, which Camera always on does not run. Choose Notify on motion, Motion clips, or Continuous recording to use it.';
+      } else if (autoTorchModeValue === 'motion' && !motionDetectionActive()) {
+        hint.textContent = 'On motion needs motion detection. Turn on Notify on motion or select Motion clips to use it.';
       } else if (autoTorchModeValue === 'motion') {
         hint.textContent = 'On motion lights the torch while the automatic schedule is dark, then returns to night mode after motion ends and the timer expires.';
       } else {
@@ -2261,7 +2282,7 @@
       const alwaysOption = select.querySelector('option[value="always"]');
       if (alwaysOption) alwaysOption.disabled = autoNightModeValue === 'camera_ae';
       const motionOption = select.querySelector('option[value="motion"]');
-      if (motionOption) motionOption.disabled = !recordingModeHasMotion(recordingMode);
+      if (motionOption) motionOption.disabled = !motionDetectionActive();
       section.style.display = scheduleActive ? '' : 'none';
       section.style.opacity = allowed ? '1' : '0.65';
       const row = getElById('autoFlashDurationRow');
@@ -2274,12 +2295,12 @@
       const mode = normalizeTorchMode(value);
       if (mode !== 'off' && recordingMode === 'off') {
         if (select) select.value = autoTorchModeValue;
-        alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Notify on motion, Motion clips, or Continuous recording instead of On demand.');
+        alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Motion clips, or Continuous recording instead of On demand.');
         return;
       }
-      if (mode === 'motion' && !recordingModeHasMotion(recordingMode)) {
+      if (mode === 'motion' && !motionDetectionActive()) {
         if (select) select.value = autoTorchModeValue;
-        alert('On-motion torch needs motion detection. Camera always on does not run motion detection; choose Notify on motion, Motion clips, or Continuous recording to use it.');
+        alert('On-motion torch needs motion detection. Turn on Notify on motion or select Motion clips to use it.');
         return;
       }
       if (mode === 'always' && autoNightModeValue === 'camera_ae') {
@@ -2299,7 +2320,7 @@
       if (!select || !select.disabled) return;
       event.preventDefault();
       event.stopPropagation();
-      alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Notify on motion, Motion clips, or Continuous recording instead of On demand.');
+      alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Motion clips, or Continuous recording instead of On demand.');
     }
 
     function sendAutoFlashSeconds(value) {
@@ -2373,24 +2394,29 @@
       }
     }
 
-    // ---- Recording mode: on demand / camera always on / notify / motion clips / continuous ----
+    // ---- Recording mode: on demand / camera always on / motion clips / continuous ----
     function normalizeRecordingMode(mode) {
-      return ['off', 'always_on', 'notify', 'motion', 'continuous'].includes(mode) ? mode : 'off';
+      // Legacy "notify" was always-on with notifications and no automatic recording.
+      if (mode === 'notify') return 'always_on';
+      return ['off', 'always_on', 'motion', 'continuous'].includes(mode) ? mode : 'off';
     }
 
     function recordingModeLabel(mode) {
-      switch (normalizeRecordingMode(mode)) {
-        case 'always_on': return 'Camera always on';
-        case 'notify': return 'Notify on motion';
+      const normalized = normalizeRecordingMode(mode);
+      switch (normalized) {
+        case 'always_on':
+          return notifyOnMotion ? 'Camera always on · Notify' : 'Camera always on';
         case 'motion': return 'Motion clips';
-        case 'continuous': return 'Continuous';
+        case 'continuous':
+          return notifyOnMotion ? 'Continuous · Notify' : 'Continuous';
         default: return 'On demand';
       }
     }
 
-    // Motion detection runs only in these modes; Camera always on is stream-only.
-    function recordingModeHasMotion(mode) {
-      return mode === 'notify' || mode === 'motion' || mode === 'continuous';
+    // Motion clips always needs detection; the other always-on modes only detect when Notify is on.
+    function motionDetectionActive(mode = recordingMode, notify = notifyOnMotion) {
+      const normalized = normalizeRecordingMode(mode);
+      return normalized !== 'off' && (normalized === 'motion' || !!notify);
     }
 
     function formatRecordingDuration(ms) {
@@ -2413,7 +2439,7 @@
     function updateRecordingModeSections() {
       const motionSettings = getElById('motionSettings');
       if (motionSettings) {
-        motionSettings.style.display = recordingModeHasMotion(recordingMode) ? '' : 'none';
+        motionSettings.style.display = motionDetectionActive() ? '' : 'none';
       }
       const stopDelay = getElById('motionStopDelayRow');
       if (stopDelay) {
@@ -2425,11 +2451,32 @@
       }
     }
 
-    function setRecordingModeUi(mode) {
+    function setRecordingModeUi(mode, notify) {
       recordingMode = normalizeRecordingMode(mode);
-      document.querySelectorAll('input[name="recordingMode"]').forEach(radio => {
-        radio.checked = radio.value === recordingMode;
+      if (notify !== undefined) notifyOnMotion = !!notify;
+      if (recordingMode === 'off') notifyOnMotion = false;
+      // Motion clips always publishes motion. Keep this forced even if a stale value arrives.
+      if (recordingMode === 'motion') notifyOnMotion = true;
+
+      const cameraOff = recordingMode === 'off';
+      document.querySelectorAll('input[name="cameraMode"]').forEach(radio => {
+        radio.checked = radio.value === (cameraOff ? 'off' : 'always_on');
       });
+
+      const autoValue = recordingMode === 'motion'
+        ? 'motion'
+        : (recordingMode === 'continuous' ? 'continuous' : 'none');
+      document.querySelectorAll('input[name="autoRecordMode"]').forEach(radio => {
+        radio.checked = radio.value === autoValue;
+        radio.disabled = cameraOff;
+      });
+
+      const notifyBox = getElById('notifyOnMotionCheckbox');
+      if (notifyBox) {
+        notifyBox.checked = notifyOnMotion;
+        notifyBox.disabled = cameraOff || recordingMode === 'motion';
+      }
+
       updateRecordingModeSections();
       updateHeatWarnings();
       updateAutoTorchAvailability();
@@ -2460,12 +2507,44 @@
       }
     }
 
-    function selectRecordingMode(mode) {
-      setRecordingMode(normalizeRecordingMode(mode));
+    function selectCameraMode(mode) {
+      if (mode === 'off') {
+        notifyOnMotion = false;
+        setRecordingMode('off');
+      } else {
+        // Coming from On demand always starts with no automatic recording.
+        setRecordingMode('always_on');
+      }
+    }
+
+    function selectAutoRecordMode(value) {
+      if (recordingMode === 'off') return;
+      if (value === 'motion') {
+        notifyOnMotion = true;
+        setRecordingMode('motion');
+      } else if (value === 'continuous') {
+        setRecordingMode('continuous');
+      } else {
+        setRecordingMode('always_on');
+      }
+    }
+
+    function setNotifyOnMotion(enabled) {
+      // On demand and Motion clips own this switch; ignore and restore the forced state.
+      if (recordingMode === 'off' || recordingMode === 'motion') {
+        setRecordingModeUi(recordingMode, notifyOnMotion);
+        return;
+      }
+      notifyOnMotion = !!enabled;
+      setRecordingModeUi(recordingMode, notifyOnMotion);
+      sendControl('notify_on_motion', notifyOnMotion ? 'true' : 'false');
     }
 
     function setRecordingMode(mode) {
-      setRecordingModeUi(mode);
+      const next = normalizeRecordingMode(mode);
+      if (next === 'off') notifyOnMotion = false;
+      if (next === 'motion') notifyOnMotion = true;
+      setRecordingModeUi(next, notifyOnMotion);
       // The server disables Camera AE on On demand (it would otherwise keep the camera open).
       // Reflect that immediately for the user who just made the change.
       if (recordingMode === 'off' && autoNightModeValue === 'camera_ae') {
@@ -2475,6 +2554,7 @@
         updateAutoNightRows('off');
       }
       sendControl('recording_mode', recordingMode);
+      if (recordingMode === 'off') sendControl('notify_on_motion', 'false');
       // The server stops or starts clips asynchronously, so refresh the button shortly after.
       setTimeout(checkRecordingStatus, 600);
       // Switching to On demand disables Camera AE server-side, so refresh the night settings too.
@@ -2489,6 +2569,7 @@
       // Motion detection and RTSP/substream settings are global, not lens settings.
       if (param === 'motion_detection_enabled' || param === 'motion_sensitivity' ||
         param === 'motion_record_stop_delay' || param === 'recording_mode' ||
+        param === 'notify_on_motion' ||
         param === 'recording_segment_minutes' ||
         param === 'recording_storage_limit_percent' || param.startsWith('rtsp_') ||
         param === 'stream_bitrate' || param === 'stream_bitrate_mode' ||
@@ -3644,11 +3725,19 @@
       // Per-camera `lensSettings` callers pass no recording mode; only touch the radios when the
       // global settings payload actually carries the mode (or the old motion flag).
       const hasRecordingMode = settings.recordingMode !== undefined && settings.recordingMode !== null;
-      if (hasRecordingMode || settings.motionDetectionEnabled !== undefined) {
+      const hasNotifyOnMotion = settings.notifyOnMotion !== undefined && settings.notifyOnMotion !== null;
+      if (hasRecordingMode || hasNotifyOnMotion || settings.motionDetectionEnabled !== undefined) {
         const modeValue = hasRecordingMode
           ? normalizeRecordingMode(String(settings.recordingMode))
           : (isOn(settings.motionDetectionEnabled) ? 'motion' : 'off');
-        setRecordingModeUi(modeValue);
+        let notifyValue = hasNotifyOnMotion ? isOn(settings.notifyOnMotion) : notifyOnMotion;
+        if (!hasNotifyOnMotion && !hasRecordingMode) {
+          notifyValue = isOn(settings.motionDetectionEnabled);
+        } else if (!hasNotifyOnMotion && (modeValue === 'motion' || modeValue === 'continuous')) {
+          // Old server payload: motion and continuous modes implied notifications.
+          notifyValue = true;
+        }
+        setRecordingModeUi(modeValue, notifyValue);
       }
       const audioGain = getElById('audioGain');
       const audioGainVal = getElById('audioGainVal');
@@ -3789,13 +3878,13 @@
       isRecording = !!(statusData?.recording);
       lastRecordingStatus = statusData || null;
       if (statusData?.mode) {
-        recordingMode = normalizeRecordingMode(String(statusData.mode));
-        // Keep the radios in step if the mode was changed elsewhere (e.g. another browser).
-        if (!document.querySelector('input[name="recordingMode"]:checked')) {
-          setRecordingModeUi(recordingMode);
-        } else {
-          const checked = document.querySelector('input[name="recordingMode"]:checked');
-          if (checked && checked.value !== recordingMode) setRecordingModeUi(recordingMode);
+        const nextMode = normalizeRecordingMode(String(statusData.mode));
+        const nextNotify = statusData.notifyOnMotion !== undefined
+          ? !!statusData.notifyOnMotion
+          : notifyOnMotion;
+        // Keep the controls in step if the mode was changed elsewhere (e.g. another browser).
+        if (nextMode !== recordingMode || nextNotify !== notifyOnMotion) {
+          setRecordingModeUi(nextMode, nextNotify);
         }
       }
       if (recordingMode === 'continuous') {
@@ -3857,9 +3946,9 @@
 
     function toggleRecording() {
       // Continuous recording is owned by the mode radio, so the Record button stops it by
-      // switching to the notify-only (no recording) mode.
+      // switching to Camera always on with no automatic recording, keeping Notify as it is.
       if (recordingMode === 'continuous') {
-        setRecordingMode('notify');
+        setRecordingMode('always_on');
         return;
       }
       const wasRecording = isRecording;

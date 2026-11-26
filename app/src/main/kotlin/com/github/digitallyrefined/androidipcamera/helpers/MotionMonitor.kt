@@ -17,8 +17,9 @@ import java.util.Locale
  * resulting motion state is published to the ONVIF server as motion events, used for motion
  * notifications and used to start/stop motion-triggered recordings.
  *
- * "Camera always on" keeps the camera open like the other non-off modes but deliberately runs no
- * motion detection, so it publishes no motion events and sends no notifications.
+ * Notifications are independent from recording. "Notify on motion" enables the detector when no
+ * recording mode needs it; Motion clips always enables it, while Continuous recording can run with
+ * notifications (and therefore motion detection) switched off.
  */
 class MotionMonitor(
     private val context: Context,
@@ -31,11 +32,16 @@ class MotionMonitor(
 
         /** Recording mode: camera behaviour with no viewer connected. */
         const val PREF_MODE = "recording_mode"
+
+        /** Independent "Notify on motion" switch. Forced on by [MODE_MOTION] and off by [MODE_OFF]. */
+        const val PREF_NOTIFY = "notify_on_motion"
         const val PREF_SEGMENT_MINUTES = "recording_segment_minutes"
         const val PREF_STORAGE_LIMIT_PERCENT = "recording_storage_limit_percent"
 
         const val MODE_OFF = "off"
         const val MODE_ALWAYS_ON = "always_on"
+
+        /** Legacy mode name: old clients used it to mean always-on plus notifications. */
         const val MODE_NOTIFY = "notify"
         const val MODE_MOTION = "motion"
         const val MODE_CONTINUOUS = "continuous"
@@ -61,21 +67,35 @@ class MotionMonitor(
             MODE_OFF, "on_demand", "ondemand", "demand", "false", "0", "off_camera" -> MODE_OFF
             MODE_ALWAYS_ON, "always", "always-on", "camera_always_on", "camera-always-on",
             "nvr", "stream_only" -> MODE_ALWAYS_ON
-            MODE_NOTIFY, "notification", "notify_only", "notify-only", "true", "1", "on" -> MODE_NOTIFY
+            // Legacy "Notify only" was always-on with notifications and no automatic recording.
+            MODE_NOTIFY, "notification", "notify_only", "notify-only", "true", "1", "on" -> MODE_ALWAYS_ON
             MODE_MOTION, "record_on_motion", "motion_clips", "motion_clip" -> MODE_MOTION
             MODE_CONTINUOUS, "continuous_recording", "always_record", "record" -> MODE_CONTINUOUS
             else -> null
+        }
+
+        /** True for the old composite mode values that meant "always on with notifications". */
+        fun isLegacyNotifyMode(raw: String?): Boolean = when (raw?.trim()?.lowercase(Locale.US)) {
+            MODE_NOTIFY, "notification", "notify_only", "notify-only", "true", "1", "on" -> true
+            else -> false
         }
 
         /** True when the camera must stay on with no viewer (every mode except [MODE_OFF]). */
         fun isCameraAlwaysOn(mode: String): Boolean = mode != MODE_OFF
 
         /**
-         * True when the mode runs frame-difference detection. Only these modes publish ONVIF motion
-         * events, post motion notifications and start motion clips; [MODE_ALWAYS_ON] is stream-only.
+         * True when the mode needs frame-difference detection. Motion clips always needs it; the
+         * other always-on modes only run it when Notify on motion is enabled. [MODE_OFF] never runs.
          */
-        fun isMotionDetection(mode: String): Boolean =
-            mode == MODE_NOTIFY || mode == MODE_MOTION || mode == MODE_CONTINUOUS
+        fun isMotionDetection(mode: String, notify: Boolean): Boolean =
+            mode != MODE_OFF && (mode == MODE_MOTION || notify)
+
+        /**
+         * Legacy notification default used before [PREF_NOTIFY] existed. The old "notify", motion
+         * clips and continuous modes all implied notifications; Camera always on did not.
+         */
+        fun legacyNotifyDefault(rawMode: String?, mode: String): Boolean =
+            isLegacyNotifyMode(rawMode) || mode == MODE_MOTION || mode == MODE_CONTINUOUS
 
         /**
          * The stored mode, with a one-time migration from the old Record on Motion checkbox:
@@ -88,11 +108,25 @@ class MotionMonitor(
             return if (prefs.getBoolean(PREF_ENABLED, false)) MODE_MOTION else DEFAULT_MODE
         }
 
+        /**
+         * The effective Notify on motion state. Motion clips forces it on, On demand forces it off,
+         * and the other modes use the stored switch.
+         */
+        fun notifyEnabled(context: Context): Boolean {
+            val mode = modeFor(context)
+            if (mode == MODE_OFF) return false
+            if (mode == MODE_MOTION) return true
+            val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+            if (prefs.contains(PREF_NOTIFY)) return prefs.getBoolean(PREF_NOTIFY, false)
+            return legacyNotifyDefault(prefs.getString(PREF_MODE, null), mode)
+        }
+
         /** True when the camera must stay on with no viewer (every mode except [MODE_OFF]). */
         fun isEnabled(context: Context): Boolean = isCameraAlwaysOn(modeFor(context))
 
-        /** True when the selected mode runs motion detection (and therefore publishes events). */
-        fun motionDetectionEnabled(context: Context): Boolean = isMotionDetection(modeFor(context))
+        /** True when the selected mode and notification switch run motion detection. */
+        fun motionDetectionEnabled(context: Context): Boolean =
+            isMotionDetection(modeFor(context), notifyEnabled(context))
     }
 
     private val prefs get() = PreferenceManager.getDefaultSharedPreferences(context)
@@ -107,8 +141,8 @@ class MotionMonitor(
     /** Camera stays on with no viewer (every mode except [MODE_OFF], including stream-only). */
     val cameraAlwaysOn get() = isCameraAlwaysOn(mode)
 
-    /** Frame-difference motion detection is active (not in On demand or Camera always on). */
-    val motionDetection get() = isMotionDetection(mode)
+    /** Frame-difference motion detection is active for recording or notifications. */
+    val motionDetection get() = isMotionDetection(mode, notifyEnabled(context))
 
     /** Motion starts a clip (the "Motion clips" mode). */
     val recordingOnMotion get() = mode == MODE_MOTION
@@ -116,8 +150,8 @@ class MotionMonitor(
     /** Continuous segmented recording is active. */
     val continuousRecording get() = mode == MODE_CONTINUOUS
 
-    /** Motion detection modes post a notification on motion. */
-    val notifyOnMotion get() = motionDetection
+    /** Public motion events and notifications are enabled (and detection is therefore running). */
+    val notifyOnMotion get() = notifyEnabled(context) && motionDetection
 
     /** Seconds to keep recording after motion has cleared (0 = stop immediately). */
     val stopDelaySeconds: Int
