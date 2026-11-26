@@ -7,9 +7,13 @@ on:
     branches:
       - main
     paths:
+      - README.md
+      - screenshot.webp
       - website/**
   pull_request:
     paths:
+      - README.md
+      - screenshot.webp
       - website/**
   workflow_dispatch:
 

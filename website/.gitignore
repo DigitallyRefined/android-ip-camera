@@ -7,6 +7,7 @@
 # Generated files
 .docusaurus
 .cache-loader
+/static/screenshot.webp
 
 # Documentation generated from /README.md by plugins/readme-docs
 /docs

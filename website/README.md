@@ -10,10 +10,12 @@ Edit the root `README.md` instead, then restart the dev server so the generated
 pages and sidebar are rebuilt.
 
 The site does **not** keep copies of the app artwork. The logo, favicon and
-screenshots — including `screenshot.webp` — live in the Fastlane image
-directory, mounted at `/workspace/assets` in the container and exposed through
-Docusaurus's `staticDirectories` setting. They are copied into `build/` at build
-time.
+store screenshots live in the Fastlane image directory, mounted at
+`/workspace/assets` in the container and exposed through Docusaurus's
+`staticDirectories` setting. The README screenshot, `screenshot.webp`, lives at
+the repository root and is copied to `website/static/` by the
+[`readme-docs` plugin](plugins/readme-docs/index.ts) before the dev server starts
+or the site builds. All of these are copied into `build/` at build time.
 
 ## Local development
 
@@ -26,6 +28,7 @@ docker run -d --name nodejs \
   -w /workspace/website \
   -v "$PWD/website:/workspace/website" \
   -v "$PWD/README.md:/workspace/README.md:ro" \
+  -v "$PWD/screenshot.webp:/workspace/screenshot.webp:ro" \
   -v "$PWD/fastlane/metadata/android/en-US/images:/workspace/assets:ro" \
   -e DOCUSAURUS_ASSETS_DIR=/workspace/assets \
   -p 3000:3000 \
@@ -43,8 +46,10 @@ npm start
 ```
 
 Without `DOCUSAURUS_ASSETS_DIR`, the images default to
-`../fastlane/metadata/android/en-US/images`. Set `README_PATH` if the README is
-not mounted at `/workspace/README.md` or found at `../README.md`.
+`../fastlane/metadata/android/en-US/images`. The plugin copies the root
+`screenshot.webp` into `website/static/` when the dev server starts or the site
+builds. Set `README_PATH` if the README is not mounted at `/workspace/README.md`
+or found at `../README.md`.
 
 ## Build
 
@@ -55,6 +60,7 @@ docker run --rm \
   -w /workspace/website \
   -v "$PWD/website:/workspace/website" \
   -v "$PWD/README.md:/workspace/README.md:ro" \
+  -v "$PWD/screenshot.webp:/workspace/screenshot.webp:ro" \
   -v "$PWD/fastlane/metadata/android/en-US/images:/workspace/assets:ro" \
   -e DOCUSAURUS_ASSETS_DIR=/workspace/assets \
   node:lts \
@@ -92,8 +98,8 @@ npm run build
 
 [`deploy-website.yml`](../.github/workflows/deploy-website.yml) builds the site
 with Node LTS and deploys `website/build` to Cloudflare Pages on pushes to
-`main` that touch `README.md`, `website/**`, or the Fastlane images. It can also
-be run manually with `workflow_dispatch`.
+`main` that touch `README.md`, `screenshot.webp`, `website/**`, or the Fastlane
+images. It can also be run manually with `workflow_dispatch`.
 
 #### Cloudflare credentials
 

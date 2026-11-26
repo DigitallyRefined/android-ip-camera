@@ -15,6 +15,7 @@ import type {LoadContext, Plugin} from '@docusaurus/types';
 const REPO_URL = 'https://github.com/DigitallyRefined/android-ip-camera';
 const DEFAULT_OUTPUT_DIR = 'docs';
 const DEFAULT_SIDEBAR_FILE = 'sidebars.js';
+const ROOT_SCREENSHOT = 'screenshot.webp';
 
 type SectionMeta = {
   slug: string;
@@ -223,8 +224,8 @@ function makeDescription(markdown: string): string {
 
 function rewriteLinks(markdown: string): string {
   return markdown
-    // The screenshot is part of the Fastlane images mounted as a Docusaurus
-    // static directory, so serve the built asset instead of GitHub.
+    // The plugin mirrors the root screenshot into website/static, so serve the
+    // built asset instead of GitHub.
     .replace(
       /\]\((?:fastlane\/metadata\/android\/en-US\/images\/)?screenshot\.webp\)/g,
       '](/screenshot.webp)',
@@ -418,6 +419,26 @@ function resolveReadmePath(siteDir: string, explicitPath?: string): string {
   );
 }
 
+/**
+ * The README's screenshot lives at the repository root, but Docusaurus only
+ * serves files from its static directories. Mirror it into website/static
+ * before the dev server or build reads those directories.
+ */
+function mirrorRootScreenshot(siteDir: string): void {
+  const source = path.resolve(siteDir, '..', ROOT_SCREENSHOT);
+  const destination = path.resolve(siteDir, 'static', ROOT_SCREENSHOT);
+
+  if (!fs.existsSync(source)) {
+    throw new Error(
+      `[readme-docs] Could not find ${ROOT_SCREENSHOT} at ${source}`,
+    );
+  }
+
+  fs.mkdirSync(path.dirname(destination), {recursive: true});
+  fs.copyFileSync(source, destination);
+  console.log(`[readme-docs] Copied ${source} to ${destination}`);
+}
+
 export function generateReadmeDocs({
   readmePath,
   outputDir,
@@ -531,6 +552,8 @@ export default function readmeDocsPlugin(
   );
   const readmePath = resolveReadmePath(context.siteDir, options.readmePath);
   const sidebarFile = options.sidebarFile ?? DEFAULT_SIDEBAR_FILE;
+
+  mirrorRootScreenshot(context.siteDir);
 
   const {docs} = generateReadmeDocs({
     readmePath,

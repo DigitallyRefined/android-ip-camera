@@ -11,6 +11,7 @@ on:
       - main
     paths:
       - README.md
+      - screenshot.webp
       - website/**
       - fastlane/metadata/android/en-US/images/**
   workflow_dispatch:
