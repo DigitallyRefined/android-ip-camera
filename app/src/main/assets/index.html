@@ -518,6 +518,10 @@
       color: #ffb340;
     }
 
+    .mode-group > .heat-warning {
+      margin: 0;
+    }
+
     .docs-link {
       position: fixed;
       bottom: max(12px, env(safe-area-inset-bottom));
@@ -1184,6 +1188,12 @@
                 </label>
                 <fieldset class="mode-group">
                   <legend>Camera is always on / running</legend>
+                  <div id="recordingModeHeatWarning" class="heat-warning" role="status" style="display:none;">
+                    <strong>⚠️ Leaving the camera running can overheat the device</strong>
+                    These modes keep the camera on continuously, which can cause some devices to
+                    overheat and power off. Set a pause temperature under Stream → Device Safety so
+                    streaming stops before it gets too hot.
+                  </div>
                   <label class="mode-option">
                     <input type="radio" name="recordingMode" value="always_on" onchange="selectRecordingMode(this.value)">
                     <span class="mode-copy">
@@ -2421,26 +2431,37 @@
         radio.checked = radio.value === recordingMode;
       });
       updateRecordingModeSections();
+      updateHeatWarnings();
       updateAutoTorchAvailability();
       updateCameraAeAvailability();
       updateRecordingSummary();
     }
 
-    const CONTINUOUS_MODE_HEAT_WARNING =
-      'Continuous camera modes keep the camera running instead of turning it off between viewers.\n\n' +
-      'Leaving the camera continuously running or recording can cause some devices to overheat and ' +
-      'power off.\n\n' +
-      'Use "Pause streaming at battery temperature" under Stream → Device Safety so the camera stops ' +
-      'streaming before it gets too hot.';
+    // The inline heat warning sits in the continuous-modes group, so it is explained where the
+    // mode is chosen and disappears once a pause temperature protects the device.
+    function overheatPauseTemperature() {
+      const input = getElById('overheatPauseC');
+      const n = parseInt(input ? input.value : '', 10);
+      return Number.isFinite(n) ? Math.max(0, n) : 0;
+    }
+
+    function updateHeatWarnings() {
+      const running = recordingMode !== 'off';
+      const protectedFromHeat = overheatPauseTemperature() > 0;
+      const modeWarning = getElById('recordingModeHeatWarning');
+      if (modeWarning) {
+        modeWarning.style.display = (running && !protectedFromHeat) ? '' : 'none';
+      }
+      // The Device Safety notice describes the same risk, so it is stale once a pause
+      // temperature is set.
+      const safetyWarning = getElById('overheatModeWarning');
+      if (safetyWarning) {
+        safetyWarning.style.display = protectedFromHeat ? 'none' : '';
+      }
+    }
 
     function selectRecordingMode(mode) {
-      const next = normalizeRecordingMode(mode);
-      // Warn when moving into a mode that keeps the camera running. Switching between continuous
-      // modes does not change the heat risk, so it stays quiet.
-      if (recordingMode === 'off' && next !== 'off') {
-        alert(CONTINUOUS_MODE_HEAT_WARNING);
-      }
-      setRecordingMode(next);
+      setRecordingMode(normalizeRecordingMode(mode));
     }
 
     function setRecordingMode(mode) {
@@ -2685,6 +2706,14 @@
         const n = parseInt(settings.overheatPauseC, 10);
         input.value = String(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0);
       }
+      updateHeatWarnings();
+    }
+
+    const overheatPauseInput = getElById('overheatPauseC');
+    if (overheatPauseInput) {
+      // Hide or show the warnings as soon as the value is typed, not only when it is sent.
+      overheatPauseInput.addEventListener('input', updateHeatWarnings);
+      overheatPauseInput.addEventListener('change', updateHeatWarnings);
     }
 
     // The sponsor button is opt-out through the app's "Hide Sponsor" setting.
