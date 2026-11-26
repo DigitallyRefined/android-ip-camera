@@ -13,9 +13,11 @@ import kotlin.math.max
  *
  * The decision uses hysteresis and dwell times so a passing light or a single dark frame cannot
  * flap night mode:
- *  - Enter night: ISO >= threshold% of maximum AND exposure >= 90% of the frame duration.
- *  - Exit day: ISO < 35% of maximum OR exposure < 40 ms.
- *  - Luma fallback: enter below 40, exit above 70 (0..255 scale).
+ *  - Enter night: ISO >= threshold% of maximum AND exposure >= 90% of the frame duration,
+ *    OR a clearly dark frame luma (<= 40).
+ *  - Exit day: low ISO/exposure AND a bright frame luma (>= 70). When luma is unavailable the
+ *    AE decision is used alone.
+ *  - Luma-only fallback: enter below 40, exit above 70 (0..255 scale).
  *  - 15 seconds of continuous darkness to enter, 60 seconds of continuous brightness to leave.
  */
 object CameraLightMeter {
@@ -28,7 +30,7 @@ object CameraLightMeter {
         val atMs: Long,
     )
 
-    const val DEFAULT_THRESHOLD_PERCENT = 95
+    const val DEFAULT_THRESHOLD_PERCENT = 90
     const val MIN_THRESHOLD_PERCENT = 50
     const val MAX_THRESHOLD_PERCENT = 100
 
@@ -168,17 +170,26 @@ object CameraLightMeter {
 
         val aeUsable = isoValue != null && isoMaxValue != null && exposureValue != null &&
             frameValue != null && frameValue > 0
+        val lumaValue = luma
+        val lumaEnter = lumaValue != null && lumaValue <= LUMA_ENTER_MAX
+        val lumaExit = lumaValue != null && lumaValue >= LUMA_EXIT_MIN
+
+        // A visibly dark frame must be able to override AE telemetry. Some HALs stay well below
+        // the ISO/exposure ceilings even when the picture is almost black, and relying on AE alone
+        // left Camera AE stuck in day mode on real devices.
         val enterDark: Boolean
         val exitDay: Boolean
         if (aeUsable) {
             val isoFraction = isoValue.toDouble() / isoMaxValue.toDouble()
             val exposureFraction = exposureValue.toDouble() / frameValue.toDouble()
-            enterDark = isoFraction >= threshold && exposureFraction >= ENTER_EXPOSURE_FRACTION
-            exitDay = isoFraction < EXIT_ISO_FRACTION || exposureValue < EXIT_EXPOSURE_NS
+            enterDark = (isoFraction >= threshold && exposureFraction >= ENTER_EXPOSURE_FRACTION) || lumaEnter
+            // Leaving night mode requires the picture to be bright again, not just low AE values.
+            exitDay = (isoFraction < EXIT_ISO_FRACTION || exposureValue < EXIT_EXPOSURE_NS) &&
+                (lumaValue == null || lumaExit)
         } else {
-            val lumaValue = luma ?: return null
-            enterDark = lumaValue <= LUMA_ENTER_MAX
-            exitDay = lumaValue >= LUMA_EXIT_MIN
+            val value = lumaValue ?: return null
+            enterDark = value <= LUMA_ENTER_MAX
+            exitDay = value >= LUMA_EXIT_MIN
         }
 
         val target = if (decidedNight) !exitDay else enterDark

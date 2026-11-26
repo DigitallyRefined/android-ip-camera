@@ -76,6 +76,35 @@ class CameraLightMeterTest {
     }
 
     @Test
+    fun `dark frame luma enters night even when ae is not at its ceiling`() {
+        val start = 5_000_000L
+        CameraLightMeter.reportAe(200, 6400, 30_000_000, 33_000_000, start)
+        CameraLightMeter.reportLuma(20f, start)
+        assertFalse(CameraLightMeter.decide(90, start) == true)
+
+        CameraLightMeter.reportAe(200, 6400, 30_000_000, 33_000_000, start + 15_000)
+        CameraLightMeter.reportLuma(20f, start + 15_000)
+        assertTrue(CameraLightMeter.decide(90, start + 15_000) == true)
+    }
+
+    @Test
+    fun `dark luma keeps night mode on even when ae values are low`() {
+        val start = 6_000_000L
+        dark(start)
+        CameraLightMeter.decide(90, start)
+        dark(start + 15_000)
+        assertTrue(CameraLightMeter.decide(90, start + 15_000) == true)
+
+        val after = start + 20_000
+        CameraLightMeter.reportAe(200, 6400, 30_000_000, 33_000_000, after)
+        CameraLightMeter.reportLuma(20f, after)
+        assertTrue(CameraLightMeter.decide(90, after) == true)
+        CameraLightMeter.reportAe(200, 6400, 30_000_000, 33_000_000, after + 60_000)
+        CameraLightMeter.reportLuma(20f, after + 60_000)
+        assertTrue(CameraLightMeter.decide(90, after + 60_000) == true)
+    }
+
+    @Test
     fun `stale telemetry produces no decision`() {
         val start = 4_000_000L
         dark(start)
