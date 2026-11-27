@@ -1753,9 +1753,89 @@
       updateFlashButton();
     }
 
+    const needsWebAudio = /iP(hone|ad|od)/.test(navigator.userAgent)
+      || (/Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Android/.test(navigator.userAgent));
+    let audioCtx = null;
+    let audioOut = null;
+    let audioAbort = null;
+
+    function unlockWebAudio() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass)
+        return;
+      if (!audioCtx)
+        audioCtx = new AudioContextClass();
+      audioCtx.resume();
+    }
+
+    function stopWebAudio() {
+      if (audioAbort) {
+        try { audioAbort.abort(); } catch (_) { }
+      }
+      audioAbort = null;
+      if (audioOut) {
+        try { audioOut.disconnect(); } catch (_) { }
+      }
+      audioOut = null;
+    }
+
+    function playWebAudio(res, controller) {
+      stopWebAudio();
+      if (!audioCtx || !res.body)
+        return;
+      audioAbort = controller;
+      const ctx = audioCtx;
+      const out = ctx.createGain();
+      out.connect(ctx.destination);
+      audioOut = out;
+      const reader = res.body.getReader();
+      let skip = 44;
+      let carry = new Uint8Array(0);
+      let next = 0;
+      function pump() {
+        return reader.read().then(({ done, value }) => {
+          if (done || controller.signal.aborted)
+            return;
+          let bytes = value;
+          if (skip) {
+            const cut = Math.min(skip, bytes.length);
+            bytes = bytes.subarray(cut);
+            skip -= cut;
+          }
+          if (carry.length) {
+            const merged = new Uint8Array(carry.length + bytes.length);
+            merged.set(carry);
+            merged.set(bytes, carry.length);
+            bytes = merged;
+          }
+          const samples = bytes.length >> 1;
+          carry = bytes.slice(samples * 2);
+          if (samples) {
+            const pcm = new DataView(bytes.buffer, bytes.byteOffset, samples * 2);
+            const data = new Float32Array(samples);
+            for (let i = 0; i < samples; i++)
+              data[i] = pcm.getInt16(i * 2, true) / 32768;
+            const buffer = ctx.createBuffer(1, samples, 44100);
+            buffer.copyToChannel(data, 0);
+            const source = ctx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(out);
+            if (next < ctx.currentTime)
+              next = ctx.currentTime + Math.max(videoDelayMs / 1000, 0.2);
+            source.start(next);
+            next += buffer.duration;
+          }
+          return pump();
+        });
+      }
+      pump().catch(() => { });
+    }
+
     muteBtn.addEventListener('click', () => {
       const willUnmute = audioEl.muted;
       if (willUnmute) {
+        if (needsWebAudio)
+          unlockWebAudio();
         // Preflight check to detect 403 without toggling UI state
         const controller = new AbortController();
         fetch('/audio', {
@@ -1766,6 +1846,12 @@
         }).then(res => {
           if (res?.status === 403) {
             alert('Audio is disabled because microphone permission is not granted.');
+            return;
+          }
+          if (needsWebAudio) {
+            audioEl.muted = false;
+            playWebAudio(res, controller);
+            updateMuteButton();
             return;
           }
           try { controller.abort(); } catch (_) { }
@@ -1780,6 +1866,7 @@
           // Network or other error: keep muted and do not toggle button
         });
       } else {
+        stopWebAudio();
         audioEl.muted = true;
         audioEl.pause();
         audioEl.removeAttribute('src');
