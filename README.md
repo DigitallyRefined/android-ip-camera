@@ -25,21 +25,25 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 
 ## Features
 
-* 🌎 Built in server, just open the video stream in a web browser, video app or even set it as a camera for [Frigate](https://github.com/blakeblackshear/frigate) or a Home Assistant MJPEG IP Camera (using `https://[ip_address]:4444/video/mjpeg`)
-* 📴 Option to turn the display off while streaming
-* 📡 Optional RTSP stream (H.264 video + AAC audio) for mpv, Frigate/go2rtc, NVRs and other RTSP clients (using `rtsps://[ip_address]:8554/live`, plus a lighter sub stream at `/live/sub`)
-* 🛰️ Optional ONVIF camera mode with WS-Discovery, snapshots and motion events for UniFi Protect, Home Assistant and other NVRs
-* 🤳 Switch between the main or selfie camera
-* 🏃‍➡️ Motion detection & notifications (via ONVIF), automatic recording on motion & continuous recording (with automatic deletion of old recordings) 
-* 🎛️ Remote web interface with controls for camera section, image rotation, manual video recording, audio/video sync, flash light toggle, resolution, zoom, exposure, contrast and optional GPU noise reduction
-* 🌙 Night-sight mode: on phones with a astrophotography/night-sight photo mode, camera still photos are continually taken & are streamed as video. An optional automatic mode can follow sunrise/sunset (−6° civil twilight), the phone's ambient light sensor, or either.
-* 📝 Optional burned-in text overlay (time, date, camera name, battery, Wi-Fi and battery temperature) for H.264/MJPEG streams, RTSP and recordings, plus an optional overheat-pause threshold.
-* ✂️ Crop the live stream (and snapshots) to a rectangle drawn over the preview; the crop is applied on the phone
-* ☁️ Optionally connect your device to a hosted or [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server) cloud [OpenTunnel](https://github.com/anomalyco/opentunnel) server for remote access when you're not on your home/work network
-* 🖼️ Choose between different image quality settings and frame rates (to help reduce phone over heating)
-* 🛂 Username and password protection
-* 🔐 Automatic TLS certificate support to protect stream and login details via HTTPS/RTSPS
-* 🥾 Optional start on boot
+* 🌎 Built-in server that streams MJPEG and H.264 video to any web browser, video app or NVR.
+* 🎛️ Remote web interface for live view, camera, image, recording and zoom controls.
+* 🎙️ Live microphone audio and two-way push-to-talk from the web interface.
+* ☁️ Optional OpenTunnel remote access outside your home network.
+* 🤳 Switch between the main and selfie camera.
+* 🏃 Motion detection with notifications, record on motion, continuous recording and automatic cleanup of old recordings.
+* 💾 Start manual recordings and browse, play, download or delete them in the web interface, saved to internal storage or an SD card.
+* 📡 Optional RTSP stream (H.264 + AAC) with a lighter sub stream for players and NVRs.
+* 🛰️ Optional ONVIF camera mode for UniFi Protect, Home Assistant and other NVRs.
+* 🔐 Username and password protection with automatic or custom TLS certificates for HTTPS and RTSPS.
+* 🧩 Provides an HTTP control API for automation and integrations.
+* ⚙️ Configure the streaming, RTSP and ONVIF ports and choose which network interface to listen on.
+* 🖼️ Adjustable image quality and frame rate, plus automatic pause at a configurable battery temperature.
+* 🌙 Night-sight mode that streams long-exposure stills as video.
+* 🌗 Automatically switch night mode by GPS twilight, ambient light, schedule or camera auto-exposure, with optional grayscale and torch-on-motion.
+* 📝 Optional burned-in text overlay for streams and recordings.
+* ✂️ Controls to crop the live stream and snapshots.
+* 📴 Turn the display off while streaming.
+* 🥾 Optional start on boot.
 
 ## ⚠️ Warning
 
@@ -61,6 +65,63 @@ The app runs as a foreground service with a persistent notification, so it won't
 * The display can be safely turned off while streaming.
 * **Disable automatic updates:** Installing an update stops the app and its background streaming service. App stores and updaters (Google Play, F-Droid, Obtainium, etc.) may install updates in the background, interrupting 24/7 operation. Turn off auto-update for Android IP Camera in the store or updater, and install updates manually when you are able to reopen the app and start streaming again.
 * Enable **Start on Boot** in the app settings for unattended setups. On Android 14 and newer, Android does not allow the camera/microphone foreground service to start from the background, so the app posts a notification after boot; tap it to open the app and start streaming.
+
+## 🎛️ Web control panel
+
+Open `http://[ip_address]:4444` (or `https://` when TLS is enabled) and use the three tabs.
+
+### Camera
+
+* **Quick controls:** switch camera, torch, mute audio, push-to-talk, start a recording and take a snapshot.
+* **Lens:** zoom, focus, exposure and contrast.
+* **Night Vision:**
+  * **Night-sight mode** replaces live video with night-sight stills. Expect a much lower frame rate and a pause while each photo is captured.
+  * Cameras without manual night exposure can produce slow stills without getting brighter; normal video with grayscale may look better.
+  * **Night exposure** and **Night ISO**: higher values brighten a dark room, while very long exposures blur movement.
+  * **Grayscale Night Mode** removes colour noise from live video and night stills on both MJPEG and H.264. It does not change exposure or ISO.
+* **Automatic night mode:** choose `GPS`, `LUX`, `GPS or LUX`, `Schedule` or `Camera AE`.
+  * GPS follows civil twilight (−6° sun elevation); the offset shifts both transitions later (positive) or earlier (negative).
+  * LUX switches night on below the threshold and day at or above it.
+  * Schedule uses the phone's local time and may cross midnight.
+  * Camera AE uses the camera's ISO/exposure telemetry with a frame-luma fallback. Lower the threshold to switch earlier (default 75%).
+  * **Automatic night mode switching** turns the selected trigger into an actual night-mode switch. When off, the schedule is only used for torch-on-motion.
+  * **Grayscale with night mode** applies grayscale whenever night mode is on and overrides the manual grayscale checkbox.
+  * **Torch:** `On motion` lights the torch while the schedule says it is dark and restores night mode afterwards; `Always on in night mode` forces normal video and keeps the torch lit for the whole dark period. Camera AE cannot be combined with the always-on torch.
+* **Framing & orientation:** rotation, mirror and output scale. **Crop** is available from a desktop browser; drag a rectangle over the preview to set it.
+* **Snapshot settings:** choose stream/full-sensor resolution and an optional countdown before the snapshot (0 = instant).
+
+### Stream
+
+* **Browser Playback:** H.264 needs HTTPS/TLS and a browser with WebCodecs; MJPEG works everywhere. The choice is per browser.
+* **Main stream:**
+  * **Target bitrate:** Auto scales about 0.2 bits per pixel per frame with resolution and frame rate. A manual value stays fixed and is clamped to what the device encoder supports.
+  * **Bitrate mode:** VBR favours quality; CBR favours steadier bandwidth. CBR falls back to VBR when unsupported. Android 12+ applies a VBR quality floor, so a low target can still produce a higher average bitrate.
+  * **Keyframe interval:** longer intervals reduce average bandwidth for 24/7 recording; new viewers request a keyframe when they connect.
+* **Image processing:** noise reduction applies only to the rear camera's GPU H.264 path.
+* **Audio:** audio gain applies to the camera microphone output, including RTSP audio.
+* **Text overlay (OSD):** burns time, date, battery, Wi-Fi, temperature and camera name into the video. Leave the camera name blank to use the selected lens.
+* **RTSP substream:** a smaller stream for slow links. Keep its bitrate around half the viewer's connection speed so dips do not stall it. Changes apply the next time an RTSP viewer connects.
+* **Device Safety:** pause streaming at a chosen battery temperature. `0` disables the guard; streaming resumes after the battery cools by 3°C. Continuous streaming from an always-on mode, browser or NVR can overheat some devices.
+
+### Recordings
+
+* **On demand** starts the camera for a viewer and releases it when the last viewer leaves. The on-phone preview also keeps it running while shown.
+* **Camera always on** keeps the camera ready for fast connections and continuous Camera AE. **Notify on motion** adds ONVIF motion events and phone notifications.
+* **No automatic recording**, **Record on motion** and **Continuous recording** choose whether clips are written. Motion clips always enable notifications; continuous recording can run without them.
+* Motion sensitivity, stop delay, continuous clip length and storage cleanup are set here. Storage cleanup deletes the oldest clips once the drive reaches the configured usage.
+
+The full remote-control API and every parameter are documented below.
+
+## 🌐 Remote access with OpenTunnel
+
+The app can publish its local web server through [OpenTunnel](https://github.com/anomalyco/opentunnel) as a public HTTPS URL, without opening a port on your router. OpenTunnel is a blind TLS tunnel: the certificate's private key stays on the phone.
+
+1. Set a **Username** and **Password** in the app settings and keep **Enable Authentication** on. The tunnel refuses to start without both, because its URL is public.
+2. In **Settings > Remote Access (OpenTunnel)**, leave the server at `https://opentunnel.xyz` or enter a [self-hosted OpenTunnel server](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server).
+3. Tap **Register**. The first run creates the tunnel identity and waits for a certificate; this can take a minute or two. The main screen shows one line of progress while it happens.
+4. Once connected, the main screen shows the public `https://…` URL. Tap it to open the camera in a browser.
+
+The identity, generated certificate, route config and runtime log are stored in the app's private files under `files/opentunnel/{config,data,state}`. **Disconnect & disassociate** removes the tunnel from the server and deletes all of those files; the URL cannot be recovered afterwards. A registered tunnel reconnects automatically while the app is running. The OpenTunnel client is built into the APK for **arm64-v8a** and **armeabi-v7a**.
 
 ## 🎥 Frigate config
 
@@ -137,17 +198,6 @@ cameras:
             - detect
 ```
 
-## 🌐 Remote access with OpenTunnel
-
-The app can publish its local web server through [OpenTunnel](https://github.com/anomalyco/opentunnel) as a public HTTPS URL, without opening a port on your router. OpenTunnel is a blind TLS tunnel: the certificate's private key stays on the phone.
-
-1. Set a **Username** and **Password** in the app settings and keep **Enable Authentication** on. The tunnel refuses to start without both, because its URL is public.
-2. In **Settings > Remote Access (OpenTunnel)**, leave the server at `https://opentunnel.xyz` or enter a [self-hosted OpenTunnel server](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server).
-3. Tap **Register**. The first run creates the tunnel identity and waits for a certificate; this can take a minute or two. The main screen shows one line of progress while it happens.
-4. Once connected, the main screen shows the public `https://…` URL. Tap it to open the camera in a browser.
-
-The identity, generated certificate, route config and runtime log are stored in the app's private files under `files/opentunnel/{config,data,state}`. **Disconnect & disassociate** removes the tunnel from the server and deletes all of those files; the URL cannot be recovered afterwards. A registered tunnel reconnects automatically while the app is running. The OpenTunnel client is built into the APK for **arm64-v8a** and **armeabi-v7a**.
-
 ### 📡 RTSP stream
 
 The app can also serve the camera over RTSP, the protocol most NVRs, home automation systems and video players expect from an IP camera. It is off by default: enable it in **Settings > RTSP / ONVIF > Enable RTSP**. The address is then shown on the main screen:
@@ -170,7 +220,7 @@ Examples:
 
 ONVIF lets NVRs and home automation systems discover and control the camera as a standard IP camera. It is enabled by **Settings > RTSP / ONVIF > Enable RTSP**, or automatically while an always-on camera mode (**Camera always on**, **Motion clips** or **Continuous recording**) is selected.
 
-* **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled
+* **ONVIF:** `https://[ip_address]:8000/onvif/device_service` (Profile S device, media and media2 services, WS-Discovery), or `http://` on the same port when TLS is disabled. The port is `8000` by default and configurable with **ONVIF Port**.
 * **Snapshot:** `https://[ip_address]:8000/onvif/snapshot.jpg` (or `http://` without TLS)
 * **RTSP:** `rtsps://[username]:[password]@[ip_address]:8554/live`, or `rtsps://` on the same port when TLS is enabled
 * **Motion events:** **Notify on motion** publishes ONVIF motion events through both PullPoint and WS-BaseNotification, so polling clients and hardware NVRs both see motion. It can be enabled with **Camera always on** or **Continuous recording** and is always enabled for **Motion clips**. When it is off, the motion detector does not run. **Camera always on** without notifications keeps the stream ready for NVRs without motion detection. Recording modes, event delivery and notification details are in **Server URL Paths & Remote Control API** below.
@@ -214,13 +264,13 @@ Some of the code in this repository may be generated with the assistance of AI t
 <details>
 <summary>Server URL Paths & Remote Control API</summary>
 
-When the streaming server is running (default port `4444`, via `https://` or `http://` depending on TLS configuration), you can access the following endpoints:
+When the streaming server is running (default port `4444`, via `https://` or `http://` depending on TLS configuration), you can access the following endpoints. The streaming port can be changed under **Settings > Startup > Streaming Port**, and the interface all servers bind to under **Listen Interface**.
 
 ### 📺 Streams and Interfaces
 
 * **Web Control Panel (`/`)**
   * **Usage:** Open `https://[ip_address]:[port]/` (or `http://...`) in any web browser.
-  * **Description:** Serves the built-in control panel, which plays the rear or front camera video stream and allows muting/unmuting audio. Remote controls include: camera section, image rotation, flash light toggle, resolution, zoom, exposure and contrast.
+  * **Description:** Serves the built-in control panel, which plays the rear or front camera video stream and allows muting/unmuting audio. Remote controls include: camera selection, image rotation, manual video recording, audio/video sync, flashlight toggle, resolution, zoom, exposure, contrast and optional GPU noise reduction.
 * **Motion JPEG Video Stream (`/video/mjpeg`)**
   * **Usage:** Open directly in a web browser or configure in external home automation tools (e.g. Home Assistant MJPEG IP Camera).
   * **Format:** `multipart/x-mixed-replace; boundary=frame`
@@ -368,6 +418,8 @@ Notifications to an NVR contain event metadata only (topic and motion state, no 
 
 * **Stop Recording After Motion** (under Sensitivity, default 10 seconds): how long a motion recording keeps running after motion clears; `0` stops immediately.
 * **Continuous Clip Length** (default 5 minutes): how often continuous recording closes the current file. **Delete Oldest Clips at** (default 90%) removes the oldest recordings once that drive usage is reached.
+
+Recordings are saved to `Movies/AndroidIPCamera` by default. Choose another folder, such as one on an SD card, under **Settings > Recording > Recording Storage Location**.
 
 ONVIF and RTSP use the username and password from the Authentication settings. ONVIF discovery uses UDP multicast, so the phone and the client must be on the same network (or reachable through a VPN that forwards multicast).
 

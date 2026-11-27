@@ -28,9 +28,9 @@ Builds:
       - skipSigning=true
       - enableAbiSplits=false
 
-  - versionName: 0.18.0
-    versionCode: 180
-    commit: b6ca540e2b002143c94a2be227f3c303b326755c
+  - versionName: 0.19.0
+    versionCode: 190
+    commit: d24b428a8fe5e160d43c9d79bb9c24ad9e9d4a5e
     subdir: app
     sudo:
       - apt-get update
@@ -45,6 +45,6 @@ Builds:
 AllowedAPKSigningKeys: 1111be81c861e199c6485d367c37680c4b778fba301980d2f0f9a2800f77f70a
 
 AutoUpdateMode: Version
-UpdateCheckMode: Tags
-CurrentVersion: 0.18.0
-CurrentVersionCode: 180
+UpdateCheckMode: Tags ^v[\d.+]+$
+CurrentVersion: 0.19.0
+CurrentVersionCode: 190

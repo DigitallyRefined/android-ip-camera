@@ -753,19 +753,17 @@
               data-badge='exposureVal'>
 
             <div id="nightVisionSection" style="display:none;">
-              <p class="group-title">Night Vision</p>
+              <p class="group-title" style="margin-top:0;">Night Vision</p>
 
               <label id="nightModeRow" style="margin-top:0;">
                 <input type="checkbox" id="nightModeCheckbox" onchange="setNightMode(this.checked)" style="margin:0;vertical-align:middle;">
                 <span style="vertical-align:middle;">🌙 Night-sight mode</span>
               </label>
               <div id="nightModeHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                Replaces live video with brighter night-sight photos, sent into the stream as they are taken.
-                Expect a much lower frame rate and a pause while each photo is captured.
+                Streams night-sight stills instead of live video; frame rate is much lower.
               </div>
               <div id="nightModeQualityHint" class="hint" style="display:none; margin:4px 0 0; font-size:12px; color:#e0a040">
-                This camera has no manual night exposure. Night stills may be much slower without
-                getting brighter; normal video with grayscale may look better.
+                No manual night exposure: stills may be slow without getting brighter; grayscale video may look better.
               </div>
 
               <div id="nightModeLoading" style="display:none; align-items:center; gap:8px; margin-top:8px; color:#aaa; font-size:12px;">
@@ -782,7 +780,7 @@
                 <input id="nightIso" type="range" min="100" max="6400" step="50" value="1600"
                   oninput="updateNightIsoBadge()" onchange="sendNightIso()" style="margin-bottom:8px">
                 <div class="hint" style="margin:0; font-size:12px; color:#ccc">
-                  Longer exposure and higher ISO brighten a dark room. Very long exposures blur movement.
+                  Higher values brighten; long exposures blur motion.
                 </div>
               </div>
 
@@ -792,8 +790,7 @@
                 <span style="vertical-align:middle;">Grayscale Night Mode</span>
               </label>
               <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
-                Removes colour from night footage to reduce visible colour noise. Applies live to
-                video and night stills on both MJPEG and H.264, without changing exposure or ISO.
+                Removes colour noise; does not change exposure.
               </div>
 
               <details id="nightModeAdvanced" class="advanced-stream" style="margin-top:14px;">
@@ -809,12 +806,6 @@
                     <option value="camera_ae" id="autoNightCameraAeOption">Camera AE</option>
                   </select>
                 </div>
-                <div class="hint" style="margin:0 0 12px; font-size:12px; color:#ccc">
-                  Choose how automatic night mode decides it is dark. GPS follows civil twilight (−6° sun
-                  elevation), LUX follows the ambient light sensor, GPS or LUX uses either, Schedule uses
-                  fixed times, and Camera AE reads the camera's own exposure and frame brightness.
-                </div>
-
                 <div id="autoNightOffsetRow" style="display:none;">
                   <label for="autoNightOffset">GPS offset (minutes)</label>
                   <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
@@ -825,9 +816,6 @@
                       Night mode --:-- – --:--
                     </span>
                   </div>
-                  <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    Shifts both GPS switches later (positive) or earlier (negative).
-                  </div>
                 </div>
 
                 <div id="autoNightLuxRow" style="display:none; margin-top:12px;">
@@ -836,7 +824,7 @@
                     inputmode="numeric" value="5" onchange="sendAutoNightLux(this.value)"
                     style="width:110px; margin-top:0;">
                   <div id="autoNightLuxHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    Night mode turns on below this value and off at or above it. Default 5 LUX.
+                    On below, off at/above. Default 5 LUX.
                   </div>
                 </div>
 
@@ -848,9 +836,6 @@
                     <span style="color:#aaa;">to</span>
                     <input id="autoNightScheduleEnd" type="time" value="06:00"
                       onchange="sendAutoNightSchedule('end', this.value)" style="width:130px; margin-top:0;">
-                  </div>
-                  <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    Uses the phone's local time. The end time may be after midnight.
                   </div>
                 </div>
 
@@ -864,7 +849,7 @@
                       style="font-size:12px; color:#459eff; font-weight:600;">Luma --</span>
                   </div>
                   <div id="autoNightCameraAeHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    Enters night near maximum ISO/exposure, or when the frame is visibly dark. Returns to day when the image is bright or almost white. Lower the percentage to trigger more easily. In On demand it samples only while a viewer or the preview runs the camera; Camera always on samples continuously.
+                    Lower = switch earlier. Samples only while the camera runs.
                   </div>
                 </div>
 
@@ -876,8 +861,7 @@
                     <span style="vertical-align:middle;">Automatic night mode switching</span>
                   </label>
                   <div class="hint" style="margin:0; font-size:12px; color:#ccc">
-                    Turn this off to use the selected schedule only for torch on motion, without
-                    automatically switching night mode.
+                    Off uses the trigger only for torch on motion.
                   </div>
                   <label style="margin:10px 0 0;">
                     <input type="checkbox" id="autoGrayscaleFollowCheckbox"
@@ -885,8 +869,7 @@
                     <span style="vertical-align:middle;">Grayscale with night mode</span>
                   </label>
                   <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    Applies Grayscale Night Mode while night mode is on. The manual Grayscale Night
-                    Mode checkbox is an override when this is off.
+                    Follows night mode; overrides the manual grayscale checkbox.
                   </div>
                 </div>
 
@@ -901,17 +884,13 @@
                     </select>
                   </div>
                   <div id="autoFlashHint" class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
-                    On motion lights the torch while the automatic schedule is dark and returns to night
-                    mode afterwards. Always on forces normal video with the torch for the whole dark period.
+                    On motion lights the torch after dark; Always on keeps it lit.
                   </div>
                   <div id="autoFlashDurationRow" style="display:none; margin-top:10px;">
                     <label for="autoFlashSeconds">Torch-on time after motion (seconds)</label>
                     <input id="autoFlashSeconds" type="number" min="1" max="99" step="1" value="10"
                       inputmode="numeric" onchange="sendAutoFlashSeconds(this.value)"
                       style="width:90px; margin-top:0;">
-                    <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                      Keeps the torch on this many seconds after motion clears.
-                    </div>
                   </div>
                 </div>
               </details>
@@ -959,7 +938,7 @@
               <label for="timerInput">Snapshot Delay (seconds)</label>
               <input type="number" id="timerInput" min="0" max="300" step="1" value="0">
               <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                Countdown before a snapshot is captured. Set to 0 to take it instantly. Use the Take Snapshot button above.
+                0 = instant.
               </div>
             </details>
 
@@ -1017,23 +996,11 @@
                 <option value="6000">6000 kbps (6 Mbps)</option>
                 <option value="8000">8000 kbps (8 Mbps)</option>
               </select>
-              <div class="hint" style="margin:0 0 14px; font-size:12px; color:#ccc">
-                Auto targets ~0.2 bits per pixel per frame, scaled by resolution and frame rate.
-                A manual value (500–8000 kbps) stays fixed when the resolution changes and is
-                clamped to what the device encoder supports.
-              </div>
-
               <label for="streamBitrateMode">Bitrate Mode</label>
               <select id="streamBitrateMode" data-control="stream_bitrate_mode" style="margin-bottom: 6px">
                 <option value="vbr">VBR (better quality)</option>
                 <option value="cbr">CBR (steadier bandwidth)</option>
               </select>
-              <div class="hint" style="margin:0 0 14px; font-size:12px; color:#ccc">
-                CBR limits bandwidth spikes but can lower quality in complex scenes. Falls back
-                to VBR on devices whose encoder does not support CBR. Android 12+ applies a minimum
-                quality floor in VBR, so a low target may produce a higher average bitrate; choose
-                CBR when you need the stream to stay close to the target.
-              </div>
 
               <label for="streamKeyframeInterval">Keyframe Interval</label>
               <select id="streamKeyframeInterval" data-control="stream_keyframe_interval">
@@ -1047,10 +1014,6 @@
                 <option value="60">60 seconds (1 minute)</option>
                 <option value="120">120 seconds (2 minutes)</option>
               </select>
-              <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
-                Longer intervals cut average bandwidth for 24/7 recording. New viewers request a
-                keyframe when they connect, so they do not wait for the next scheduled one.
-              </div>
             </details>
 
             <p class="group-title">Image Processing</p>
@@ -1073,7 +1036,7 @@
             <input id="audioGain" type='range' min='0.5' max='3.0' step='0.1' value='1.0' data-control='audio_gain'
               data-badge='audioGainVal'>
             <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
-              Applies to the camera microphone output, including RTSP audio.
+              Also applies to RTSP audio.
             </div>
 
             <div id="osdSection">
@@ -1125,7 +1088,7 @@
                   onchange="sendControl('osd_camera_name', this.value)"
                   onblur="sendControl('osd_camera_name', this.value)">
                 <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                  Leave blank to use the selected lens.
+                  Blank = selected lens.
                 </div>
               </div>
             </div>
@@ -1140,7 +1103,7 @@
                 <span style="vertical-align:middle;">Include Audio</span>
               </label>
               <div class="hint" style="margin:0 0 14px; font-size:12px; color:#ccc">
-                Add the microphone to the RTSP stream as an AAC audio track (requires the microphone permission).
+                Adds AAC audio to RTSP.
               </div>
 
               <label for="rtspSubSize">Substream Resolution</label>
@@ -1168,7 +1131,7 @@
                 <option value="2000">2000 kbps</option>
               </select>
               <div class="hint" style="margin:6px 0 0; font-size:12px; color:#ccc">
-                Smaller stream for slow links such as 4G. Keep the bitrate to about half the viewer's connection speed so dips don't stall it. Changes apply the next time an RTSP viewer connects.
+                For slow links. Changes apply on the next connection.
               </div>
             </details>
 
@@ -1178,14 +1141,11 @@
             <input id="overheatPauseC" type="number" min="0" max="100" step="1" inputmode="numeric"
               value="0" onchange="sendControl('overheat_pause_c', this.value)">
             <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-              0 disables. Above this temperature streaming stops (the same as /control/stop) and
-              resumes after the battery cools by 3°C.
+              0 disables. Resumes after cooling by 3°C.
             </div>
             <div id="overheatModeWarning" class="heat-warning" role="status">
               <strong>⚠️ Continuous streaming can overheat the device</strong>
-              Leaving the camera running - in a continuous camera mode, a browser or an NVR - can
-              cause some devices to overheat and power off. Set a pause temperature above to protect
-              the device.
+              Set a pause temperature above to protect it.
             </div>
           </div>
         </div>
@@ -1208,51 +1168,49 @@
                   <input type="radio" name="cameraMode" value="off" onchange="selectCameraMode(this.value)">
                   <span class="mode-copy">
                     <span class="mode-name">On demand</span>
-                    <span class="mode-desc">Camera stays off until a viewer connects</span>
+                    <span class="mode-desc">Camera off until a viewer connects</span>
                   </span>
                 </label>
                 <fieldset class="mode-group">
                   <legend>Camera is always on / running</legend>
                   <div id="recordingModeHeatWarning" class="heat-warning" role="status" style="display:none;">
                     <strong>⚠️ Leaving the camera running can overheat the device</strong>
-                    These modes keep the camera on continuously, which can cause some devices to
-                    overheat and power off. Set a pause temperature under Stream → Device Safety so
-                    streaming stops before it gets too hot.
+                    Set a pause temperature under Stream → Device Safety.
                   </div>
                   <label class="mode-option">
                     <input type="radio" name="cameraMode" value="always_on" onchange="selectCameraMode(this.value)">
                     <span class="mode-copy">
                       <span class="mode-name">Camera always on</span>
-                      <span class="mode-desc">For night/low-light detection &amp; faster connection times</span>
+                      <span class="mode-desc">Fast connections and continuous Camera AE</span>
                     </span>
                   </label>
                   <label class="mode-option">
                     <input type="checkbox" id="notifyOnMotionCheckbox" onchange="setNotifyOnMotion(this.checked)">
                     <span class="mode-copy">
                       <span class="mode-name">Notify on motion</span>
-                      <span class="mode-desc">Send ONVIF motion events and phone notifications while the camera stays on</span>
+                      <span class="mode-desc">ONVIF events and phone notifications</span>
                     </span>
                   </label>
                   <div id="autoRecordModes" class="mode-list" role="radiogroup" aria-label="Automatic recording" style="margin-bottom:0;">
                     <label class="mode-option">
                       <input type="radio" name="autoRecordMode" value="none" onchange="selectAutoRecordMode(this.value)">
                       <span class="mode-copy">
-                        <span class="mode-name">No auto recording</span>
-                        <span class="mode-desc">Camera stays on but writes no clips automatically</span>
+                        <span class="mode-name">No automatic recording</span>
+                        <span class="mode-desc">Camera stays on; no clips written</span>
                       </span>
                     </label>
                     <label class="mode-option">
                       <input type="radio" name="autoRecordMode" value="motion" onchange="selectAutoRecordMode(this.value)">
                       <span class="mode-copy">
-                        <span class="mode-name">Motion clips</span>
-                        <span class="mode-desc">Records a clip when motion starts. Notify on motion is always on</span>
+                        <span class="mode-name">Record on motion</span>
+                        <span class="mode-desc">Clips while motion is present</span>
                       </span>
                     </label>
                     <label class="mode-option">
                       <input type="radio" name="autoRecordMode" value="continuous" onchange="selectAutoRecordMode(this.value)">
                       <span class="mode-copy">
                         <span class="mode-name">Continuous recording</span>
-                        <span class="mode-desc">Records continuously in segments; notifications are optional</span>
+                        <span class="mode-desc">Segmented 24/7 recording</span>
                       </span>
                     </label>
                   </div>
@@ -1260,10 +1218,8 @@
               </div>
 
               <div class="hint" style="margin:0 0 4px; font-size:12px; color:#ccc">
-                Notify on motion sends motion events to
-                <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF clients</a>
-                (like Home Assistant &amp; UniFi Protect) and phone notifications. Motion clips always enables it;
-                Continuous recording can record without it.
+                Sends <a href="https://github.com/DigitallyRefined/android-ip-camera#-onvif-camera" target="_blank">ONVIF</a>
+                events and phone notifications.
               </div>
 
               <div id="motionSettings" style="display:none;">
@@ -1275,9 +1231,6 @@
                 <div id="motionStopDelayRow" style="display:none;">
                   <label for="motionStopDelay">Stop Recording After Motion (seconds)</label>
                   <input id="motionStopDelay" type="number" min="0" max="300" step="1" value="10" data-control="motion_record_stop_delay">
-                  <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    How long to keep a motion recording after motion stops.
-                  </div>
                 </div>
               </div>
 
@@ -1286,10 +1239,6 @@
 
                 <label for="segmentMinutes">Continuous Clip Length (minutes)</label>
                 <input id="segmentMinutes" type="number" min="1" max="120" step="1" value="5" data-control="recording_segment_minutes">
-                <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                  Continuous recording saves a new video each time this many minutes pass. Files use the
-                  <code>-continuous.mp4</code> suffix.
-                </div>
               </div>
 
               <div id="storageSection">
@@ -1298,8 +1247,7 @@
                 <label for="storageLimit">Delete Oldest Clips at (% storage used)</label>
                 <input id="storageLimit" type="number" min="50" max="99" step="1" value="90" data-control="recording_storage_limit_percent">
                 <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                  When the drive that holds the recordings reaches this usage, the oldest recordings are
-                  deleted until there is room again. Default 90%.
+                  Deletes oldest clips at this usage.
                 </div>
               </div>
             </div>
@@ -1525,7 +1473,7 @@
 
     function toggleCropMode() {
       if (isMobileLayout()) {
-        alert('Cropping can only be changed from a desktop browser. Open this page on a computer on the same network to set a crop area.');
+        alert('Cropping can only be changed from a desktop browser.');
         return;
       }
       if (!cropMode && !lastImageRect) {
@@ -1537,7 +1485,7 @@
 
     function resetCrop() {
       if (isMobileLayout()) {
-        alert('Cropping can only be changed from a desktop browser. Open this page on a computer on the same network to reset the crop area.');
+        alert('Cropping can only be changed from a desktop browser.');
         return;
       }
       setCropMode(false);
@@ -2148,17 +2096,17 @@
       const luxHint = getElById('autoNightLuxHint');
       if (!luxHint) return;
       if (!autoNightLuxAvailable) {
-        luxHint.textContent = 'No ambient light sensor detected on this phone; LUX switching is unavailable.';
+        luxHint.textContent = 'No light sensor; LUX is unavailable.';
         return;
       }
       const reading = Number(night.autoLux);
       const hasReading = night.autoLux !== null && night.autoLux !== undefined && Number.isFinite(reading);
       const current = autoNightModeIncludesLux(mode)
         ? (hasReading
-          ? `Current light level: ${formatLuxReading(reading)} LUX. `
-          : 'Waiting for a light-sensor reading… ')
+          ? `${formatLuxReading(reading)} LUX. `
+          : 'Waiting for light… ')
         : '';
-      luxHint.textContent = `${current}Night mode turns on below this value and off at or above it. Default 5 LUX.`;
+      luxHint.textContent = `${current}On below, off at/above. Default 5 LUX.`;
     }
 
     // info.json is polled once a minute, which is too slow for a live light-level readout.
@@ -2336,7 +2284,7 @@
       if (state !== null && state !== undefined) parts.push(state ? 'currently night' : 'currently day');
       hint.textContent = parts.length
         ? `Live: ${parts.join(' · ')}`
-        : 'Waiting for camera telemetry… Camera AE samples while the camera is running and does not keep it on. Start a stream to begin.';
+        : 'Waiting for telemetry… start a stream.';
     }
 
     function setAutoNightMode(value) {
@@ -2344,17 +2292,17 @@
       const mode = normalizeAutoNightMode(value);
       if (mode !== 'off' && autoNightModeIncludesGps(mode) && !autoNightLocationGranted) {
         if (select) select.value = autoNightModeValue;
-        alert('Location permission is required for GPS automatic night mode. Enable location access for Android IP Camera in Android Settings, then try again.');
+        alert('GPS night mode needs location permission.');
         return;
       }
       if (mode === 'lux' && !autoNightLuxAvailable) {
         if (select) select.value = autoNightModeValue;
-        alert('This phone has no ambient light sensor, so LUX automatic night mode cannot be used. Choose GPS instead.');
+        alert('No ambient light sensor; use GPS instead.');
         return;
       }
       if (mode === 'camera_ae' && autoTorchModeValue === 'always') {
         if (select) select.value = autoNightModeValue;
-        alert('Camera AE cannot be used with "Always on in night mode" because the torch would blind the light meter. Choose GPS, Schedule, or LUX for an always-on torch.');
+        alert('Camera AE cannot be combined with an always-on torch.');
         return;
       }
       autoNightModeValue = mode;
@@ -2430,15 +2378,15 @@
       const hint = getElById('autoFlashHint');
       if (!hint) return;
       if (recordingMode === 'off') {
-        hint.textContent = 'Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Motion clips, or Continuous recording instead of On demand.';
+        hint.textContent = 'Torch needs an always-on camera mode.';
       } else if (autoTorchModeValue === 'always') {
-        hint.textContent = 'Always on forces normal video and keeps the torch lit for the whole dark period. Camera AE cannot be combined with this mode.';
+        hint.textContent = 'Forces normal video with the torch all night.';
       } else if (autoTorchModeValue === 'motion' && !motionDetectionActive()) {
-        hint.textContent = 'On motion needs motion detection. Turn on Notify on motion or select Motion clips to use it.';
+        hint.textContent = 'On motion needs motion detection.';
       } else if (autoTorchModeValue === 'motion') {
-        hint.textContent = 'On motion lights the torch while the automatic schedule is dark, then returns to night mode after motion ends and the timer expires.';
+        hint.textContent = 'Lights the torch while dark; night mode returns afterwards.';
       } else {
-        hint.textContent = 'The automatic schedule will not turn the torch on.';
+        hint.textContent = 'Torch stays off.';
       }
     }
 
@@ -2465,17 +2413,17 @@
       const mode = normalizeTorchMode(value);
       if (mode !== 'off' && recordingMode === 'off') {
         if (select) select.value = autoTorchModeValue;
-        alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Motion clips, or Continuous recording instead of On demand.');
+        alert('Torch needs Camera always on, Motion clips or Continuous recording.');
         return;
       }
       if (mode === 'motion' && !motionDetectionActive()) {
         if (select) select.value = autoTorchModeValue;
-        alert('On-motion torch needs motion detection. Turn on Notify on motion or select Motion clips to use it.');
+        alert('On-motion torch needs motion detection.');
         return;
       }
       if (mode === 'always' && autoNightModeValue === 'camera_ae') {
         if (select) select.value = autoTorchModeValue;
-        alert('Always-on torch cannot be used with Camera AE because the torch would blind the light meter.');
+        alert('Always-on torch cannot be used with Camera AE.');
         return;
       }
       autoTorchModeValue = mode;
@@ -2490,7 +2438,7 @@
       if (!select || !select.disabled) return;
       event.preventDefault();
       event.stopPropagation();
-      alert('Torch profiles need the camera to stay on. Open Recordings → Settings and choose Camera always on, Motion clips, or Continuous recording instead of On demand.');
+      alert('Torch needs Camera always on, Motion clips or Continuous recording.');
     }
 
     function sendAutoFlashSeconds(value) {

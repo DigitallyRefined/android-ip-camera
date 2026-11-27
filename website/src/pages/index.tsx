@@ -25,7 +25,7 @@ const features: Feature[] = [
     icon: 'camera',
     title: 'Live in any browser',
     description:
-      'The phone runs its own web server. Open the stream in any browser, media player via H.264/MJPEG - no viewer app required.',
+      'The phone runs its own web server. Watch H.264/MJPEG in any browser, listen to live audio and use push-to-talk - no viewer app required.',
     href: '/docs/getting-started#features',
     linkLabel: 'See the feature list',
   },
@@ -41,7 +41,7 @@ const features: Feature[] = [
     icon: 'motion',
     title: 'Motion detection',
     description:
-      'Notify-only mode, automatic motion clips or continuous recording, with storage limits that delete the oldest footage first.',
+      'On-demand or always-on camera, automatic motion clips or continuous recording, with SD card storage and automatic cleanup of old footage.',
     href: '/docs/server-api',
     linkLabel: 'Recording API',
   },
@@ -49,15 +49,15 @@ const features: Feature[] = [
     icon: 'sliders',
     title: 'Remote controls',
     description:
-      'Zoom, rotate, crop, switch lenses, toggle the torch and tune resolution, exposure, contrast and frame rate from the web UI.',
+      'Zoom, rotate, crop, switch lenses, toggle the torch and tune resolution, exposure, contrast and frame rate from the web UI or HTTP API.',
     href: '/docs/server-api',
     linkLabel: 'Control reference',
   },
   {
     icon: 'shield',
-    title: 'Secure by default',
+    title: 'Encrypted & authenticated',
     description:
-      'Username and password protection with one TLS certificate shared by the web, RTSP and ONVIF endpoints.',
+      'Username and password protection, plus automatic or custom TLS shared by the web, RTSP and ONVIF endpoints.',
     href: '/docs/tls-certificates',
     linkLabel: 'TLS setup',
   },
@@ -65,7 +65,7 @@ const features: Feature[] = [
     icon: 'globe',
     title: 'Remote access',
     description:
-      'Optionally publish the camera through a self-hosted OpenTunnel server, without opening a port on your router.',
+      'Optionally publish the camera through a hosted or self-hosted OpenTunnel server, without opening a port on your router.',
     href: '/docs/remote-access',
     linkLabel: 'How OpenTunnel works',
   },
@@ -164,8 +164,9 @@ function Hero(): ReactNode {
           <div className={styles.heroBadge}>
             <Icon name="shield" />
             <div>
-              <strong>TLS everywhere</strong>
-              <span>Web · RTSP · ONVIF</span>
+              <strong>Secure by default</strong>
+              <span>TLS password protected:</span>
+              <span>Web · RTSP · ONVIF streams</span>
             </div>
           </div>
         </div>
@@ -246,7 +247,7 @@ function Showcase(): ReactNode {
               </li>
               <li>
                 <Icon name="check" />
-                Works with Frigate, Home Assistant, UniFi Protect and VLC
+                Works with Frigate, Home Assistant, UniFi Protect and mpv
               </li>
             </ul>
             <Link className="button button--primary" to="/docs/getting-started">
@@ -295,11 +296,11 @@ function Showcase(): ReactNode {
               </li>
               <li>
                 <Icon name="check" />
-                Night-sight mode on supported cameras
+                Night-sight and automatic night mode on supported cameras
               </li>
               <li>
                 <Icon name="check" />
-                Automatic TLS certificates for HTTPS and RTSPS
+                Automatic or custom TLS for HTTPS, RTSPS and ONVIF
               </li>
             </ul>
             <Link className="button button--primary" to="/docs/server-api">
@@ -323,9 +324,9 @@ function WarningCallout(): ReactNode {
           <Heading as="h2">Built for 24/7</Heading>
           <p>
             Leaving a phone plugged in at 100% for months can damage the
-            battery. Use the 80% charge limit where available and keep an eye
-            on temperature. The documentation covers background operation,
-            boot startup and automatic updates.
+            battery. Use the 80% charge limit where available, keep an eye on
+            temperature and enable automatic pause at a battery temperature
+            threshold. The documentation covers background operation and automatic updates.
           </p>
         </div>
         <Link className="button button--secondary" to="/docs/getting-started#warning">

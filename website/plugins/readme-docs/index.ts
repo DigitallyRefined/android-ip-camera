@@ -64,6 +64,16 @@ const SECTION_META: Record<string, SectionMeta> = {
     title: 'Warning',
     category: 'Operating the Camera',
   },
+  'Web control panel': {
+    slug: 'web-control-panel',
+    title: 'Web control panel',
+    category: 'Operating the Camera',
+  },
+  'Remote access with OpenTunnel': {
+    slug: 'remote-access',
+    title: 'Remote Access & Streaming',
+    category: 'Integrations',
+  },
   'Background Usage': {
     slug: 'background-usage',
     title: 'Background Usage',
@@ -76,25 +86,10 @@ const SECTION_META: Record<string, SectionMeta> = {
     description:
       'Example Frigate and go2rtc configuration for the HTTPS and RTSP streams, including two-way talk audio.',
   },
-  'Remote access with OpenTunnel': {
-    slug: 'remote-access',
-    title: 'Remote Access & Streaming',
-    category: 'Integrations',
-  },
   'HTTPS/TLS certificates': {
     slug: 'tls-certificates',
     title: 'HTTPS & TLS Certificates',
     category: 'Operating the Camera',
-  },
-  'Why open source': {
-    slug: 'why-open-source',
-    title: 'Why Open Source',
-    category: 'Project',
-  },
-  'AI generated code disclaimer': {
-    slug: 'ai-generated-code',
-    title: 'AI-Generated Code',
-    category: 'Project',
   },
   'Server URL Paths & Remote Control API': {
     slug: 'server-api',
@@ -117,7 +112,25 @@ const SECTION_META: Record<string, SectionMeta> = {
     description:
       'Build release APKs in the Docker builder and verify them against the published F-Droid release.',
   },
+  'Why open source': {
+    slug: 'why-open-source',
+    title: 'Why Open Source',
+    category: 'Project',
+  },
+  'AI generated code disclaimer': {
+    slug: 'ai-generated-code',
+    title: 'AI-Generated Code',
+    category: 'Project',
+  },
 };
+
+/**
+ * Sections appear in the sidebar in the order they are declared in
+ * SECTION_META, not in the order the README happens to use them.
+ */
+const SECTION_META_ORDER = new Map(
+  Object.keys(SECTION_META).map((label, index) => [label, index]),
+);
 
 const CATEGORY_ORDER = [
   'Getting Started',
@@ -483,6 +496,12 @@ export function generateReadmeDocs({
     PAGE_GROUPS.flatMap((group) => group.members),
   );
 
+  // Known sections keep the SECTION_META order; anything else follows after
+  // them in README order.
+  let fallbackOrder = SECTION_META_ORDER.size;
+  const orderFor = (label: string): number =>
+    SECTION_META_ORDER.get(label) ?? fallbackOrder++;
+
   // Build the multi-section pages first, in sidebar order.
   for (const group of PAGE_GROUPS) {
     const members = group.members
@@ -509,7 +528,7 @@ export function generateReadmeDocs({
       buildDoc({
         label: group.label,
         body: parts.join('\n\n'),
-        order: docs.length,
+        order: orderFor(group.label),
         usedSlugs,
       }),
     );
@@ -523,7 +542,7 @@ export function generateReadmeDocs({
       buildDoc({
         label: block.label,
         body: block.body,
-        order: docs.length,
+        order: orderFor(block.label),
         usedSlugs,
       }),
     );
