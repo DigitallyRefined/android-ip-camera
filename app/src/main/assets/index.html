@@ -699,7 +699,6 @@
       <div id="streamLoading" class="stream-loading">Loading...</div>
       <canvas id='streamCanvas'></canvas>
       <canvas id="cropOverlayCanvas" aria-label="Crop selection overlay"></canvas>
-      <audio id="audioEl" preload="none" muted></audio>
     </div>
 
     <div class='controls-panel loading' id='controlsPanel'>
@@ -1365,7 +1364,7 @@
     }
 
     let currentCamera = '';
-    const audioEl = getElById('audioEl');
+    let audioOn = false;
     const muteBtn = getElById('muteBtn');
     const audioControls = getElById('audioControls');
     const streamContainer = getElById('streamContainer');
@@ -1712,13 +1711,13 @@
     }
 
     function updateMuteButton() {
-      muteBtn.textContent = audioEl.muted
-        ? '🔇 Unmute Audio'
-        : '🔊 Mute Audio';
+      muteBtn.textContent = audioOn
+        ? '🔊 Mute Audio'
+        : '🔇 Unmute Audio';
 
-      audioControls.style.display = audioEl.muted
-        ? 'none'
-        : 'block';
+      audioControls.style.display = audioOn
+        ? 'block'
+        : 'none';
     }
 
     const flashBtn = getElById('flashBtn');
@@ -1753,10 +1752,123 @@
       updateFlashButton();
     }
 
+    // The panel plays the PCM from /audio itself instead of feeding an <audio>
+    // element: Safari refuses the chunked, unsized WAV response, and scheduling
+    // the samples directly keeps A/V sync identical in every browser without
+    // user-agent checks.
+    const AUDIO_SAMPLE_RATE = 44100;   // must match createWavHeader() on the server
+    const AUDIO_CHANNELS = 1;
+    const WAV_HEADER_BYTES = 44;       // RIFF header written once at stream start
+    const AUDIO_MIN_LEAD_SEC = 0.2;    // never schedule audio in the past
+
+    let audioCtx = null;
+    let audioOut = null;
+    let audioAbort = null;
+
+    // Must be called from the click handler: browsers only start audio in a gesture.
+    function unlockAudio() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass)
+        return null;
+      try {
+        if (!audioCtx)
+          audioCtx = new AudioContextClass();
+      } catch (_) {
+        return null;
+      }
+      audioCtx.resume().catch(() => { });
+      return audioCtx;
+    }
+
+    function stopAudio() {
+      if (audioAbort) {
+        try { audioAbort.abort(); } catch (_) { }
+      }
+      audioAbort = null;
+      if (audioOut) {
+        try { audioOut.disconnect(); } catch (_) { }
+      }
+      audioOut = null;
+      audioOn = false;
+    }
+
+    function audioLeadSeconds() {
+      return Math.max(videoDelayMs / 1000, AUDIO_MIN_LEAD_SEC);
+    }
+
+    function startAudio(res, controller) {
+      const ctx = audioCtx;
+      if (!ctx || !res.body || typeof res.body.getReader !== 'function')
+        return false;
+      stopAudio();
+      audioAbort = controller;
+      const out = ctx.createGain();
+      out.connect(ctx.destination);
+      audioOut = out;
+      const reader = res.body.getReader();
+      let skip = WAV_HEADER_BYTES;
+      let carry = new Uint8Array(0);
+      let next = 0;
+      function pump() {
+        return reader.read().then(({ done, value }) => {
+          if (done) {
+            if (!controller.signal.aborted) {
+              stopAudio();
+              updateMuteButton();
+            }
+            return;
+          }
+          if (controller.signal.aborted)
+            return;
+          let bytes = value;
+          if (skip) {
+            const cut = Math.min(skip, bytes.length);
+            bytes = bytes.subarray(cut);
+            skip -= cut;
+          }
+          if (carry.length) {
+            const merged = new Uint8Array(carry.length + bytes.length);
+            merged.set(carry);
+            merged.set(bytes, carry.length);
+            bytes = merged;
+          }
+          const samples = bytes.length >> 1;
+          carry = bytes.slice(samples * 2);
+          if (samples) {
+            const pcm = new DataView(bytes.buffer, bytes.byteOffset, samples * 2);
+            const data = new Float32Array(samples);
+            for (let i = 0; i < samples; i++)
+              data[i] = pcm.getInt16(i * 2, true) / 32768;
+            const buffer = ctx.createBuffer(AUDIO_CHANNELS, samples, AUDIO_SAMPLE_RATE);
+            buffer.copyToChannel(data, 0);
+            const source = ctx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(out);
+            if (next < ctx.currentTime)
+              next = ctx.currentTime + audioLeadSeconds();
+            source.start(next);
+            next += buffer.duration;
+          }
+          return pump();
+        });
+      }
+      pump().catch(() => {
+        if (!controller.signal.aborted) {
+          stopAudio();
+          updateMuteButton();
+        }
+      });
+      return true;
+    }
+
     muteBtn.addEventListener('click', () => {
-      const willUnmute = audioEl.muted;
-      if (willUnmute) {
-        // Preflight check to detect 403 without toggling UI state
+      if (!audioOn) {
+        if (!unlockAudio()) {
+          alert('Audio playback is not supported by this browser.');
+          return;
+        }
+        // The response that proves the microphone is available is the one that
+        // gets played, so there is no extra connection.
         const controller = new AbortController();
         fetch('/audio', {
           method: 'GET',
@@ -1764,26 +1876,22 @@
           credentials: 'include',
           signal: controller.signal
         }).then(res => {
-          if (res?.status === 403) {
+          if (res.status === 403) {
             alert('Audio is disabled because microphone permission is not granted.');
+            try { controller.abort(); } catch (_) { }
             return;
           }
-          try { controller.abort(); } catch (_) { }
-          if (!audioEl.src) {
-            audioEl.src = '/audio';
-            audioEl.load();
+          if (!res.ok || !startAudio(res, controller)) {
+            try { controller.abort(); } catch (_) { }
+            return;
           }
-          audioEl.muted = false;
-          audioEl.play().catch(() => { });
+          audioOn = true;
           updateMuteButton();
         }).catch(() => {
           // Network or other error: keep muted and do not toggle button
         });
       } else {
-        audioEl.muted = true;
-        audioEl.pause();
-        audioEl.removeAttribute('src');
-        audioEl.load();
+        stopAudio();
         updateMuteButton();
       }
     });
@@ -2927,7 +3035,7 @@
         if (!drawing)
           return;
         const now = performance.now();
-        const effDelay = (audioEl && !audioEl.muted)
+        const effDelay = audioOn
           ? videoDelayMs
           : 0;
         let candidate = null;
@@ -3268,7 +3376,7 @@
         let len = au.reduce((a, n) => a + 4 + n.length, 0);
         const data = new Uint8Array(len); let o = 0;
         for (const n of au) { data[o + 3] = 1; o += 4; data.set(n, o); o += n.length; }  // 00 00 00 01 start code
-        const effDelay = (audioEl && !audioEl.muted) ? videoDelayMs : 0;
+        const effDelay = audioOn ? videoDelayMs : 0;
         if (effDelay === 0 && !h264Queue.length) {
           try { decoder.decode(new EncodedVideoChunk({ type: auKey ? 'key' : 'delta', timestamp: ts, data })); ts += 33333; }
           catch (e) { console.error('decode:', e); }
@@ -3312,7 +3420,7 @@
       function playLoop() {
         if (controller.signal.aborted) return;
         const now = performance.now();
-        const effDelay = (audioEl && !audioEl.muted) ? videoDelayMs : 0;
+        const effDelay = audioOn ? videoDelayMs : 0;
         while (h264Queue.length && h264Queue[0].receiveTime <= now - effDelay) {
           const item = h264Queue.shift();
           try {
