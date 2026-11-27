@@ -1,5 +1,6 @@
 package com.github.digitallyrefined.androidipcamera.helpers
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -20,6 +21,11 @@ class CameraLightMeterTest {
             frameDurationNs = 1_000_000_000,
             nowMs = at,
         )
+    }
+
+    @Test
+    fun `camera ae defaults to a balanced iso threshold`() {
+        assertEquals(75, CameraLightMeter.DEFAULT_THRESHOLD_PERCENT)
     }
 
     private fun bright(at: Long) {

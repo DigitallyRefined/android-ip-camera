@@ -19,14 +19,17 @@ data class CameraDemand(
     val snapshot: Boolean = false,
     /** The on-phone preview is attached. */
     val preview: Boolean = false,
-    /** Camera AE auto-night-mode needs frames for brightness telemetry. */
+    /**
+     * Camera AE auto-night-mode wants brightness telemetry. This is passive: it samples frames the
+     * running session already produces, so it never starts the camera or keeps it open by itself.
+     */
     val lightMeter: Boolean = false,
 ) {
     /** Some consumer needs frames: the start checks that CameraX delivers them, or uses Camera1. */
-    val frames: Boolean get() = h264Viewers || mjpegViewers || recording || motion || keepAlive || snapshot || lightMeter
+    val frames: Boolean get() = h264Viewers || mjpegViewers || recording || motion || keepAlive || snapshot
     /** CameraX feeds H.264 through the encoder surface, on cameras that support one. */
     val h264: Boolean get() = h264Viewers || recording
-    /** Camera1 installs its NV21 preview callback, which feeds MJPEG and motion detection. */
+    /** Camera1 installs its NV21 preview callback, which feeds MJPEG, motion detection and Camera AE luma. */
     val nv21: Boolean get() = mjpegViewers || motion || keepAlive || lightMeter
     /** CameraX binds the on-phone preview: attached and no network viewer watching. */
     val screenPreview: Boolean get() = preview && !h264Viewers && !mjpegViewers

@@ -117,6 +117,8 @@ class StreamingServerHelper(
     private val MAX_AUTHENTICATED_CONNECTION_DURATION_MS = 24 * 60 * 60 * 1000L // 24 hours for authenticated users
     private val CONNECTION_READ_TIMEOUT_MS = 30 * 1000 // 30 seconds read timeout
     private val SOCKET_TIMEOUT_MS = 60_000 // 60 seconds socket timeout
+    /** Short blocking-read timeout used to notice a streaming client's EOF promptly. */
+    private val STREAM_READ_PROBE_TIMEOUT_MS = 5_000
     /** Disconnect streaming clients whose writes have not completed within this window. */
     private val STALE_WRITE_TIMEOUT_MS = 15_000L
     private val CONNECTION_CLEANUP_INTERVAL_MS = 60_000L
@@ -938,11 +940,7 @@ class StreamingServerHelper(
                 }
                 onClientConnected()  // starts camera + encoder
                 try {
-                    while (socket.isConnected && !socket.isClosed) {
-                        if (reader.ready()) { if (reader.readLine() == null) break }
-                        Thread.sleep(1000)
-                    }
-                } catch (_: Exception) {
+                    awaitStreamClientClose(socket, reader)
                 } finally {
                     removeH264Client(client)
                 }
@@ -975,20 +973,10 @@ class StreamingServerHelper(
                 }
                 onClientConnected()
 
-                // Keep connection alive - frames will be sent from MainActivity.processImage()
-                // Wait for connection to close or be removed
+                // Keep connection alive - frames are written by [MjpegStreamingEncoder]. Wait for
+                // the client to close so the camera can be released as soon as the last one leaves.
                 try {
-                    // Read from socket to detect when client disconnects
-                    while (socket.isConnected && !socket.isClosed) {
-                        // Check if socket has data (client disconnect will cause exception)
-                        if (reader.ready()) {
-                            val line = reader.readLine()
-                            if (line == null) break // Client disconnected
-                        }
-                        Thread.sleep(1000) // Check every second
-                    }
-                } catch (e: IOException) {
-                    // Client disconnected
+                    awaitStreamClientClose(socket, reader)
                 } finally {
                     removeClient(client)
                 }
@@ -1441,6 +1429,31 @@ class StreamingServerHelper(
             onLog("Error closing client socket: ${e.message}")
         }
         onClientDisconnected()
+    }
+
+    /**
+     * Wait for an HTTP streaming client to close.
+     *
+     * A blocking read is the only reliable EOF signal here: [BufferedReader.ready] returns false at
+     * EOF, so the old polling loops never noticed an abruptly disconnected client and kept the
+     * camera running for a viewer that was already gone.
+     */
+    private fun awaitStreamClientClose(socket: Socket, reader: BufferedReader) {
+        try {
+            socket.soTimeout = STREAM_READ_PROBE_TIMEOUT_MS
+        } catch (_: Exception) {
+        }
+        try {
+            while (socket.isConnected && !socket.isClosed) {
+                val line = try {
+                    reader.readLine()
+                } catch (_: java.net.SocketTimeoutException) {
+                    continue
+                }
+                if (line == null) return
+            }
+        } catch (_: Exception) {
+        }
     }
 
     /** Estimated stream bandwidth at a given resolution: H.264 target and MJPEG at the current fps. */

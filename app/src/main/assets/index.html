@@ -858,13 +858,13 @@
                   <label for="autoNightCameraAeThreshold">Camera AE night threshold (%)</label>
                   <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                     <input id="autoNightCameraAeThreshold" type="number" min="50" max="100" step="1"
-                      inputmode="numeric" value="90" onchange="sendAutoNightCameraAeThreshold(this.value)"
+                      inputmode="numeric" value="75" onchange="sendAutoNightCameraAeThreshold(this.value)"
                       style="width:110px; margin-top:0;">
                     <span id="autoNightCameraAeLuma"
                       style="font-size:12px; color:#459eff; font-weight:600;">Luma --</span>
                   </div>
                   <div id="autoNightCameraAeHint" class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-                    Enters night near maximum ISO/exposure, or when the frame is visibly dark. Returns to day when the image is bright or almost white. Lower the percentage to trigger more easily.
+                    Enters night near maximum ISO/exposure, or when the frame is visibly dark. Returns to day when the image is bright or almost white. Lower the percentage to trigger more easily. In On demand it samples only while a viewer or the preview runs the camera; Camera always on samples continuously.
                   </div>
                 </div>
 
@@ -2246,7 +2246,7 @@
       const aeThreshold = getElById('autoNightCameraAeThreshold');
       if (aeThreshold && night.autoCameraAeThreshold != null && document.activeElement !== aeThreshold) {
         const n = parseInt(night.autoCameraAeThreshold, 10);
-        aeThreshold.value = String(Number.isFinite(n) ? Math.max(50, Math.min(100, n)) : 90);
+        aeThreshold.value = String(Number.isFinite(n) ? Math.max(50, Math.min(100, n)) : 75);
       }
       updateCameraAeHint(night);
       const seconds = getElById('autoFlashSeconds');
@@ -2262,12 +2262,9 @@
 
     function updateCameraAeAvailability() {
       const option = getElById('autoNightCameraAeOption');
-      const blocked = recordingMode === 'off';
       if (option) {
-        // Deliberately not using the native `disabled` attribute: a disabled <option> cannot
-        // reliably raise a click/change event, and we need the explanatory alert.
-        option.dataset.blocked = blocked ? '1' : '0';
-        option.textContent = blocked ? '🔒 Camera AE (needs Camera always on)' : 'Camera AE';
+        option.dataset.blocked = '0';
+        option.textContent = 'Camera AE';
       }
     }
 
@@ -2339,17 +2336,12 @@
       if (state !== null && state !== undefined) parts.push(state ? 'currently night' : 'currently day');
       hint.textContent = parts.length
         ? `Live: ${parts.join(' · ')}`
-        : 'Waiting for camera telemetry… The camera stays running while Camera AE is selected.';
+        : 'Waiting for camera telemetry… Camera AE samples while the camera is running and does not keep it on. Start a stream to begin.';
     }
 
     function setAutoNightMode(value) {
       const select = getElById('autoNightModeSelect');
       const mode = normalizeAutoNightMode(value);
-      if (mode === 'camera_ae' && recordingMode === 'off') {
-        if (select) select.value = autoNightModeValue;
-        alert('Camera AE needs the camera to stay on. In Recordings → Settings, choose "Camera always on" (with Notify on motion if you want alerts), Motion clips, or Continuous recording instead of On demand, then select Camera AE again.');
-        return;
-      }
       if (mode !== 'off' && autoNightModeIncludesGps(mode) && !autoNightLocationGranted) {
         if (select) select.value = autoNightModeValue;
         alert('Location permission is required for GPS automatic night mode. Enable location access for Android IP Camera in Android Settings, then try again.');
@@ -2427,7 +2419,7 @@
     function sendAutoNightCameraAeThreshold(value) {
       const input = getElById('autoNightCameraAeThreshold');
       let percent = parseInt(value, 10);
-      if (!Number.isFinite(percent)) percent = 90;
+      if (!Number.isFinite(percent)) percent = 75;
       percent = Math.max(50, Math.min(100, percent));
       if (input) input.value = String(percent);
       sendControl('auto_night_camera_ae_threshold', String(percent));
@@ -2723,19 +2715,11 @@
       if (next === 'off') notifyOnMotion = false;
       if (next === 'motion') notifyOnMotion = true;
       setRecordingModeUi(next, notifyOnMotion);
-      // The server disables Camera AE on On demand (it would otherwise keep the camera open).
-      // Reflect that immediately for the user who just made the change.
-      if (recordingMode === 'off' && autoNightModeValue === 'camera_ae') {
-        autoNightModeValue = 'off';
-        const select = getElById('autoNightModeSelect');
-        if (select) select.value = 'off';
-        updateAutoNightRows('off');
-      }
       sendControl('recording_mode', recordingMode);
       if (recordingMode === 'off') sendControl('notify_on_motion', 'false');
       // The server stops or starts clips asynchronously, so refresh the button shortly after.
       setTimeout(checkRecordingStatus, 600);
-      // Switching to On demand disables Camera AE server-side, so refresh the night settings too.
+      // Camera AE stays selected in every mode; refresh the night settings after the change.
       setTimeout(() => loadDeviceInfo(true), 900);
     }
 

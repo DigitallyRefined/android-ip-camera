@@ -15,7 +15,17 @@ class CameraDemandTest {
         assertTrue(CameraDemand(keepAlive = true).frames)
         assertTrue(CameraDemand(snapshot = true).frames)
         assertFalse(CameraDemand(preview = true).frames)
+        assertFalse(CameraDemand(lightMeter = true).frames)
         assertFalse(CameraDemand().frames)
+    }
+
+    @Test
+    fun `camera ae metering is passive but requests the camera1 preview callback`() {
+        // Camera AE never starts or holds the camera open: it only samples a running session.
+        assertFalse(CameraDemand(lightMeter = true).frames)
+        // On Camera1 the luma plane comes from the NV21 preview callback, so it must be installed
+        // when a session is already running for another consumer.
+        assertTrue(CameraDemand(lightMeter = true).nv21)
     }
 
     @Test

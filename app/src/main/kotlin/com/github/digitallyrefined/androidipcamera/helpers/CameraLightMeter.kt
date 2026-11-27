@@ -33,7 +33,7 @@ object CameraLightMeter {
         val atMs: Long,
     )
 
-    const val DEFAULT_THRESHOLD_PERCENT = 90
+    const val DEFAULT_THRESHOLD_PERCENT = 75
     const val MIN_THRESHOLD_PERCENT = 50
     const val MAX_THRESHOLD_PERCENT = 100
 

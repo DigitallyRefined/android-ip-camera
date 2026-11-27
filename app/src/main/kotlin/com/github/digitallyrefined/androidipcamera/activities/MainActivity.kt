@@ -52,6 +52,8 @@ class MainActivity : AppCompatActivity() {
     private var isBound = false
     private var hasRequestedPermissions = false
     private var userHiddenPreview = false
+    /** True only while the activity is resumed, so a client callback cannot reattach the preview while backgrounded. */
+    private var activityResumed = false
     private lateinit var noClientMessage: TextView
     private lateinit var openTunnelText: TextView
     private var openTunnelPollJob: Job? = null
@@ -226,6 +228,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        activityResumed = true
         if (isBound && !userHiddenPreview) {
             val hasClients = streamingService?.hasActiveClients() == true
             if (hasClients) {
@@ -457,6 +460,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        activityResumed = false
         openTunnelPollJob?.cancel()
         openTunnelPollJob = null
         if (isBound) {
@@ -621,7 +625,10 @@ class MainActivity : AppCompatActivity() {
                 viewBinding.viewFinder.visibility = View.VISIBLE
                 rootView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
             }
-            if (isBound) {
+            // Do not reattach the camera while the activity is paused (screen off / app in the
+            // background) or the user chose the black-screen preview. Otherwise the last viewer
+            // leaving would wake an On demand camera again, defeating its idle release.
+            if (isBound && activityResumed && !userHiddenPreview) {
                 streamingService?.setPreviewSurface(viewBinding.viewFinder.surfaceProvider)
             }
         } else {
