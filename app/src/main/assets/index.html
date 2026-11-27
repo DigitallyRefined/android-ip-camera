@@ -3030,6 +3030,77 @@
       } catch (_) { /* ignore */ }
     });
 
+    function startMjpegDrawLoop(ctx) {
+      function drawLoop() {
+        if (!drawing)
+          return;
+        const now = performance.now();
+        const effDelay = audioOn
+          ? videoDelayMs
+          : 0;
+        let candidate = null;
+        while (frameQueue.length && frameQueue[0].ts <= now - effDelay) {
+          candidate = frameQueue.shift();
+        }
+        if (!candidate && frameQueue.length) {
+          const idx = frameQueue.findIndex(f => f.ts > now - effDelay);
+          if (idx > 0) {
+            candidate = frameQueue
+              .splice(0, idx)
+              .pop() || null;
+          }
+        }
+        if (candidate?.bmp) {
+          const size = targetCanvasSize(candidate.bmp);
+          const w = size.w;
+          const h = size.h;
+          applyCanvasSize(size);
+          const iw = candidate.bmp.width;
+          const ih = candidate.bmp.height;
+          const userScale = getUserScale();
+          const scale = Math.min(w / iw, h / ih) * userScale;
+          const dw = Math.max(1, Math.floor(iw * scale));
+          const dh = Math.max(1, Math.floor(ih * scale));
+          const dx = Math.floor((w - dw) / 2);
+          const dy = Math.floor((h - dh) / 2);
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(candidate.bmp, dx, dy, dw, dh);
+          lastImageRect = { x: dx, y: dy, w: dw, h: dh };
+          lastDrawn = candidate.bmp;
+          hideStreamLoading();
+        }
+        requestAnimationFrame(drawLoop);
+      }
+      if (!drawing) {
+        drawing = true;
+        requestAnimationFrame(drawLoop);
+      }
+    }
+
+    function startMjpegImgFallback(controller, ctx) {
+      mjpegRunning = true;
+      const img = new Image();
+      img.src = STREAM_SRC;
+      const timer = setInterval(() => {
+        if (controller.signal.aborted) {
+          clearInterval(timer);
+          img.src = '';
+          return;
+        }
+        if (!img.naturalWidth)
+          return;
+        createImageBitmap(img)
+          .then(bitmap => {
+            frameQueue.push({ ts: performance.now(), bmp: bitmap });
+            if (frameQueue.length > 180)
+              frameQueue.shift();
+            refreshStreamStatus();
+          })
+          .catch(() => { });
+      }, 50);
+      startMjpegDrawLoop(ctx);
+    }
+
     function startMjpegStream() {
       if (!streamCanvas)
         return;
@@ -3105,53 +3176,18 @@
                 return pump();
               });
           }
-          pump().catch(() => { mjpegRunning = false; });
-          function drawLoop() {
-            if (!drawing)
-              return;
-            const now = performance.now();
-            const effDelay = audioOn
-              ? videoDelayMs
-              : 0;
-            let candidate = null;
-            while (frameQueue.length && frameQueue[0].ts <= now - effDelay) {
-              candidate = frameQueue.shift();
-            }
-            if (!candidate && frameQueue.length) {
-              const idx = frameQueue.findIndex(f => f.ts > now - effDelay);
-              if (idx > 0) {
-                candidate = frameQueue
-                  .splice(0, idx)
-                  .pop() || null;
-              }
-            }
-            if (candidate?.bmp) {
-              const size = targetCanvasSize(candidate.bmp);
-              const w = size.w;
-              const h = size.h;
-              applyCanvasSize(size);
-              const iw = candidate.bmp.width;
-              const ih = candidate.bmp.height;
-              const userScale = getUserScale();
-              const scale = Math.min(w / iw, h / ih) * userScale;
-              const dw = Math.max(1, Math.floor(iw * scale));
-              const dh = Math.max(1, Math.floor(ih * scale));
-              const dx = Math.floor((w - dw) / 2);
-              const dy = Math.floor((h - dh) / 2);
-              ctx.clearRect(0, 0, w, h);
-              ctx.drawImage(candidate.bmp, dx, dy, dw, dh);
-              lastImageRect = { x: dx, y: dy, w: dw, h: dh };
-              lastDrawn = candidate.bmp;
-              hideStreamLoading();
-            }
-            requestAnimationFrame(drawLoop);
-          }
-          if (!drawing) {
-            drawing = true;
-            requestAnimationFrame(drawLoop);
-          }
+          pump().catch(() => {
+            mjpegRunning = false;
+            if (!controller.signal.aborted)
+              startMjpegImgFallback(controller, ctx);
+          });
+          startMjpegDrawLoop(ctx);
         })
-        .catch(() => { mjpegRunning = false; });
+        .catch(() => {
+          mjpegRunning = false;
+          if (!controller.signal.aborted)
+            startMjpegImgFallback(controller, ctx);
+        });
     }
 
     loadDeviceInfo(true).finally(() => initStreamUi());
@@ -3356,6 +3392,7 @@
       const onNal = (nal) => {
         if (!nal.length) return;
         const type = nal[0] & 0x1f;
+        if (auHasVcl && type >= 6 && type <= 9) flush();
         if (type === 7) {
           // Every IDR carries a fresh SPS. Reconfigure only when the stream itself
           // restarted with new encoding parameters (e.g. rotation swapped the encoder
