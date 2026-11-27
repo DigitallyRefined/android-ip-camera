@@ -59,6 +59,19 @@ class CameraSessionTest {
     }
 
     @Test
+    fun `camera ae metering never needs frames and only adds the camera1 nv21 callback`() {
+        val meteringOnly = CameraDemand(lightMeter = true)
+        assertTrue(cameraX(idle, true).serves(meteringOnly, fps, back))
+        assertTrue(cameraX(idle, false).serves(meteringOnly, fps, back))
+        assertTrue(cameraX(h264, true).serves(CameraDemand(h264Viewers = true, lightMeter = true), fps, back))
+        // Camera1 needs its preview callback to expose luma, so selecting Camera AE while an
+        // H.264-only session runs rebuilds that session once.
+        assertFalse(camera1(h264).serves(CameraDemand(h264Viewers = true, lightMeter = true), fps, back))
+        assertTrue(camera1(CameraDemand(h264Viewers = true, lightMeter = true))
+            .serves(CameraDemand(h264Viewers = true, lightMeter = true), fps, back))
+    }
+
+    @Test
     fun `cameraX with the encoder surface restarts when H264 or the preview flips`() {
         assertFalse(cameraX(mjpeg, true).serves(both, fps, back))
         assertFalse(cameraX(both, true).serves(mjpeg, fps, back))

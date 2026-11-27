@@ -17,4 +17,14 @@
     <issue id="ObsoleteLintCustomCheck">
         <ignore regexp=".*lifecycle-runtime.*lint\.jar" />
     </issue>
+
+    <!--
+      Lint reports the Gradle wrapper and Android Gradle Plugin as outdated in
+      AndroidGradlePluginVersion as soon as a newer release is published. That would fail
+      CI on an unrelated commit through no change of ours, so the update is not treated as
+      a lint finding. The wrapper version is deliberately pinned in
+      gradle-wrapper.properties together with its distributionSha256Sum, and is upgraded
+      as its own change.
+    -->
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
 </lint>
