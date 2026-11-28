@@ -39,7 +39,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * ⚙️ Configure the streaming, RTSP and ONVIF ports and choose which network interface to listen on.
 * 🖼️ Adjustable image quality and frame rate, plus automatic pause at a configurable battery temperature.
 * 🌙 Night-sight mode that streams long-exposure stills as video.
-* 🌗 Automatically switch night mode by GPS twilight, ambient light, schedule or camera auto-exposure, with optional grayscale, dark torch and torch-on-motion.
+* 🌗 Automatically switch night mode by GPS twilight, ambient light, schedule or camera auto-exposure, with optional grayscale, torch-on when dark and torch-on-motion.
 * 📝 Optional burned-in text overlay for streams and recordings.
 * ✂️ Controls to crop the live stream and snapshots.
 * 📴 Turn the display off while streaming.
@@ -108,7 +108,7 @@ Open `http://[ip_address]:4444` (or `https://` when TLS is enabled) and use the 
 * **On demand** starts the camera for a viewer and releases it when the last viewer leaves. The on-phone preview also keeps it running while shown.
 * **Camera always on** keeps the camera ready for fast connections and continuous Camera AE. **Notify on motion** adds ONVIF motion events and phone notifications.
 * **No automatic recording**, **Record on motion** and **Continuous recording** choose whether clips are written. Motion clips always enable notifications; continuous recording can run without them.
-* Motion sensitivity, stop delay, continuous clip length and storage cleanup are set here. Storage cleanup deletes the oldest clips once the drive reaches the configured usage.
+* Motion sensitivity, stop delay, continuous clip length and storage cleanup are configured here. Event delivery, clip timing defaults and storage paths are described in **Motion events and recording** below.
 
 The full remote-control API and every parameter are documented below.
 
@@ -123,7 +123,8 @@ The app can publish its local web server through [OpenTunnel](https://github.com
 
 The identity, generated certificate, route config and runtime log are stored in the app's private files under `files/opentunnel/{config,data,state}`. **Disconnect & disassociate** removes the tunnel from the server and deletes all of those files; the URL cannot be recovered afterwards. A registered tunnel reconnects automatically while the app is running. The OpenTunnel client is built into the APK for **arm64-v8a** and **armeabi-v7a**.
 
-## 🎥 Frigate config
+<details>
+<summary>🎥 Frigate config</summary>
 
 ### Using the HTTPS streams
 
@@ -198,9 +199,14 @@ cameras:
             - detect
 ```
 
-### 📡 RTSP stream
+</details>
 
-The app can also serve the camera over RTSP, the protocol most NVRs, home automation systems and video players expect from an IP camera. It is off by default: enable it in **Settings > RTSP / ONVIF > Enable RTSP**. The address is then shown on the main screen:
+## 📡 RTSP stream
+
+<details>
+<summary>RTSP endpoints, streams and playback</summary>
+
+The app can serve the camera over RTSP, the protocol most NVRs, home automation systems and video players expect from an IP camera. It is off by default: enable it in **Settings > RTSP / ONVIF > Enable RTSP**. The address is then shown on the main screen:
 
 ```
 rtsps://[username]:[password]@[ip_address]:8554/live
@@ -208,15 +214,24 @@ rtsps://[username]:[password]@[ip_address]:8554/live
 
 > **Note:** VLC does not reliably handle self-signed TLS certificates for RTSPS streams. Use **mpv** or **ffplay** to play, or use a trusted certificate. Disabling TLS may work with VLC, at the risk of sending your username/password in plaintext.
 
-* **Streams:** `/live` is the main H.264 stream; `/live/sub` is an optional smaller stream for slow links. The camera starts when a client connects and is released when the last one leaves.
-* **Security:** RTSP Digest authentication with the app username and password, port `8554` by default, and TLS (`rtsps://`) when enabled. Sub stream, audio, transport, authentication and TLS details are in **Server URL Paths & Remote Control API** below.
+* **Endpoints:** `/live` is the main H.264 stream and `/live/sub` is the optional smaller stream (use `rtsp://` when TLS is disabled).
+* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, target bitrate, bitrate mode, keyframe interval, rotation, mirror and noise reduction follow the web controls; noise reduction only affects the GPU H.264 path). Each client starts at a keyframe.
+* **Sub stream:** a smaller version of the same picture for slow links such as 4G, watchable alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled). Changes apply the next time a viewer connects. The phone encodes it only while someone watches it; where the picture does not go through the GPU path, the sub stream carries the main stream instead.
+* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. It can be turned off with **Include Audio** and is left out when microphone permission is not granted.
+* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports so players keep them in sync.
+* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front).
+* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming and ONVIF ports).
+* **Lifecycle:** the camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
+* **TLS:** when enabled, RTSP is served over TLS (`rtsps://`) using the same certificate as the web server and ONVIF, so the control connection and credentials are encrypted. With TLS disabled it is plain `rtsp://`, so only use it on a trusted network (or through a VPN) in that case.
 
 Examples:
 
 * **mpv:** `mpv "rtsps://[username]:[password]@[ip_address]:8554/live"`
 * **ffplay:** `ffplay -rtsp_transport tcp "rtsps://[username]:[password]@[ip_address]:8554/live"`
 
-### 🛰️ ONVIF camera
+</details>
+
+## 🛰️ ONVIF camera
 
 ONVIF lets NVRs and home automation systems discover and control the camera as a standard IP camera. It is enabled by **Settings > RTSP / ONVIF > Enable RTSP**, or automatically while an always-on camera mode (**Camera always on**, **Motion clips** or **Continuous recording**) is selected.
 
@@ -277,6 +292,8 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
 * **Raw H.264 Video Stream (`/video/h264`)**
   * **Usage:** Play in media players that support raw Annex-B H.264 stream demuxing.
     * **mpv:** Run `mpv "https://[ip_address]:[port]/video/h264"`
+* **RTSP stream**
+  * **Usage:** The RTSP endpoints, sub stream, audio, transport, authentication, lifecycle and TLS are documented in **📡 RTSP stream** above.
 * **Live Audio Stream (`/audio`)**
   * **Usage:** Listen to the live microphone audio.
   * **Format:** `audio/wav` chunked transfer-encoding (WAV container, 16-bit PCM mono, 44.1kHz).
@@ -338,19 +355,6 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query whether streaming is currently enabled.
   * **Format:** `application/json` - `{"streaming":<bool>}`
 
-### 📡 RTSP stream
-
-The RTSP endpoints are `rtsps://[username]:[password]@[ip_address]:8554/live` and `.../live/sub` (use `rtsp://` when TLS is disabled).
-
-* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, target bitrate, bitrate mode, keyframe interval, rotation, mirror and noise reduction follow the web controls; noise reduction only affects the GPU H.264 path). Each client starts at a keyframe.
-* **Sub stream:** `/live/sub` is a smaller version of the same picture for slow links such as 4G, and can be watched alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled); changes apply the next time a viewer connects. The phone encodes it in addition to the main stream only while someone watches it. Where the picture does not go through the GPU path (front camera, devices whose camera is not FULL level), the sub stream carries the main stream instead.
-* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
-* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
-* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front).
-* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming and ONVIF ports).
-* **Lifecycle:** the camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
-* **TLS:** when enabled, RTSP is served over TLS (`rtsps://`) using the same certificate as the web server and ONVIF, so the control connection and credentials are encrypted. With TLS disabled it is plain `rtsp://`, so only use it on a trusted network (or through a VPN) in that case.
-
 ### 🎛️ Remote Control Commands
 
 Settings can be changed dynamically by passing query parameters in HTTP GET requests (e.g., to the root path `/` or any control endpoint).
@@ -405,14 +409,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
 
 ### 🎬 Motion events and recording
 
-Choose a camera and automatic-recording mode in the web interface or with `recording_mode`:
-
-* **On demand** (`off`): the camera opens when a viewer connects (HTTP/RTSP) or the on-phone preview is shown, and is released when the last one leaves. Nothing else (night mode, Camera AE, auto-night switching) keeps it open. Camera AE samples only while the camera is running; each new camera session starts in day video and re-detects. Notify on motion and automatic recording are disabled.
-* **Camera always on** (`always_on`): keeps the camera running with no viewer so NVRs connect quickly and Camera AE samples continuously. **No auto recording** writes nothing locally; **Motion clips** and **Continuous recording** add automatic recording below.
-* **Notify on motion** (`notify_on_motion=true`): enables motion detection, publishes ONVIF motion events and posts phone notifications. It is optional with **Camera always on** and **Continuous recording**, and forced on with **Motion clips**.
-* **No auto recording**: the camera stays on but writes no clips automatically.
-* **Motion clips** (`motion`): records a `-motion.mp4` clip while motion is present. Motion detection and notifications are always on.
-* **Continuous recording** (`continuous`): records every moment into `-continuous.mp4` segments, with the camera always on. Notifications are optional; when off, motion detection does not run.
+Choose a camera and automatic-recording mode under **Recordings** above. This section covers motion-event delivery and where clips are stored.
 
 When Notify on motion is enabled (or Motion clips is selected), the app compares luma frames in the background. **Sensitivity** (1 = least sensitive, 10 = most sensitive, default 5) controls how much the frame must change; lighting changes such as a TV cutting between scenes are ignored. Motion is published as `tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm` over both PullPoint (`CreatePullPointSubscription` + `PullMessages`) and WS-BaseNotification (`wsnt:Subscribe`, `Renew`, `Unsubscribe`). Home Assistant, ONVIF Device Manager and UniFi Protect poll via PullPoint; hardware NVRs (for example Xiongmai/VMS) subscribe and receive `wsnt:Notify` HTTP POSTs at their consumer address whenever motion starts or stops. With Notify on motion off, the ONVIF service stays available but no motion events are published.
 
