@@ -26,6 +26,20 @@ class OverheatProtectionTest {
     }
 
     @Test
+    fun `defaults to 45 degrees when unset or invalid`() {
+        assertEquals(45, OverheatProtection.resolve(null))
+        assertEquals(45, OverheatProtection.resolve(""))
+        assertEquals(45, OverheatProtection.resolve("   "))
+        assertEquals(45, OverheatProtection.resolve("hot"))
+    }
+
+    @Test
+    fun `keeps an explicit threshold including disabled`() {
+        assertEquals(0, OverheatProtection.resolve("0"))
+        assertEquals(40, OverheatProtection.resolve("40"))
+    }
+
+    @Test
     fun `parses overlay booleans`() {
         assertEquals(true, CameraOsd.parseBoolean("on"))
         assertEquals(true, CameraOsd.parseBoolean("TRUE"))

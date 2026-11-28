@@ -185,7 +185,7 @@ class StreamingService : LifecycleService() {
     private var nightModeGeneration = 0
     /** Polls the sun position for the auto-night-mode option; runs for the service lifetime. */
     private var autoNightModeJob: kotlinx.coroutines.Job? = null
-    /** Optional battery-temperature guard; runs for the service lifetime. */
+    /** Battery-temperature safety guard; runs for the service lifetime. */
     private var overheatJob: kotlinx.coroutines.Job? = null
     /** Last automatic-night-mode decision: true = schedule says night, null = unknown/disabled. */
     @Volatile private var autoNightScheduleOn: Boolean? = null
@@ -1893,9 +1893,11 @@ class StreamingService : LifecycleService() {
     }
 
     /**
-     * Optional battery-temperature guard. Uses the same streaming gate as `/control/stop`, so the
-     * camera stops once the last viewer is dropped. Streaming resumes when the battery cools by
-     * [OverheatProtection.RESUME_HYSTERESIS_C] degrees, or immediately when the threshold is set to 0.
+     * Battery-temperature safety guard, on by default at [OverheatProtection.DEFAULT_C] degrees.
+     * Uses the same streaming gate as `/control/stop`, so the camera stops once the last viewer is
+     * dropped. Streaming resumes when the battery cools by
+     * [OverheatProtection.RESUME_HYSTERESIS_C] degrees, or immediately when the threshold is set
+     * to [OverheatProtection.DISABLED].
      */
     private fun startOverheatMonitor() {
         if (overheatJob != null) return
