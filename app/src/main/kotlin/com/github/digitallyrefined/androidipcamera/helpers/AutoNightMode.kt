@@ -102,6 +102,27 @@ object AutoNightMode {
     private var luxManager: SensorManager? = null
     private var luxListener: SensorEventListener? = null
 
+    /**
+     * Last settled trigger decision (true = dark/night). Null means no trigger is selected or the
+     * trigger has no usable input yet. Auto grayscale reads this independently of night-sight.
+     */
+    @Volatile
+    private var lastDark: Boolean? = null
+
+    /** Changes whenever the trigger crosses night/day, so temporary overrides can expire. */
+    @Volatile
+    private var darkVersion = 0L
+
+    fun currentDark(): Boolean? = lastDark
+
+    fun currentDarkVersion(): Long = darkVersion
+
+    fun setCurrentDark(value: Boolean?) {
+        if (lastDark == value) return
+        lastDark = value
+        darkVersion++
+    }
+
     /** Do not ask the provider again for this long after a failed attempt. */
     private const val LOCATION_RETRY_MS = 15 * 60 * 1000L
 
