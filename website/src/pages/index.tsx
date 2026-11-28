@@ -325,8 +325,9 @@ function WarningCallout(): ReactNode {
           <p>
             Leaving a phone plugged in at 100% for months can damage the
             battery. Use the 80% charge limit where available, keep an eye on
-            temperature and enable automatic pause at a battery temperature
-            threshold. The documentation covers background operation and automatic updates.
+            temperature and use the automatic pause at a battery temperature
+            threshold (45 °C by default). The documentation covers background
+            operation and automatic updates.
           </p>
         </div>
         <Link className="button button--secondary" to="/docs/getting-started#warning">

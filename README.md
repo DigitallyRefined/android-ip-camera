@@ -53,7 +53,7 @@ Some models include an option to only charge to 80%, make sure this is enabled w
 
 Note: running at a higher image quality may cause some phones to over heat, which can also damage the battery.
 
-Continuous streaming - whether from an always-on camera mode (**Camera always on**, **Motion clips** or **Continuous recording**), a browser or an NVR - can cause some devices to over heat and power off. Use **Pause streaming at battery temperature** under **Stream → Device Safety** to protect the device.
+Continuous streaming - whether from an always-on camera mode (**Camera always on**, **Motion clips** or **Continuous recording**), a browser or an NVR - can cause some devices to over heat and power off. Use **Pause streaming at battery temperature** under **Stream → Device Safety** to protect the device. It is enabled by default at 45 °C and can be adjusted or set to 0 to disable it.
 
 ## 🔋 Background Usage
 
@@ -101,7 +101,7 @@ Open `http://[ip_address]:4444` (or `https://` when TLS is enabled) and use the 
 * **Audio:** audio gain applies to the camera microphone output, including RTSP audio.
 * **Text overlay (OSD):** burns time, date, battery, Wi-Fi, temperature and camera name into the video. Leave the camera name blank to use the selected lens.
 * **RTSP substream:** a smaller stream for slow links. Keep its bitrate around half the viewer's connection speed so dips do not stall it. Changes apply the next time an RTSP viewer connects.
-* **Device Safety:** pause streaming at a chosen battery temperature. `0` disables the guard; streaming resumes after the battery cools by 3°C. Continuous streaming from an always-on mode, browser or NVR can overheat some devices.
+* **Device Safety:** pause streaming at a chosen battery temperature. Defaults to 45 °C when no value has been set; `0` disables the guard. Streaming resumes after the battery cools by 3°C. Continuous streaming from an always-on mode, browser or NVR can overheat some devices.
 
 ### Recordings
 
@@ -407,7 +407,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `osd_enabled=<true|false>`: Burn the text overlay into the video itself (H.264 and MJPEG, including RTSP and recordings). `/info.json` reports the per-element choices under `settings.osd`.
   * `osd_time=<true|false>`, `osd_date=<true|false>`, `osd_battery=<true|false>`, `osd_wifi=<true|false>`, `osd_temperature=<true|false>`, `osd_camera_name_enabled=<true|false>`: Choose which overlay elements are shown. All elements are enabled by default when the overlay is switched on.
   * `osd_camera_name=<text>`: Camera-name line in the overlay. Leave empty to use the selected lens (for example `Back 0`). Maximum 40 characters.
-  * `overheat_pause_c=<0..100>`: Pause streaming when the battery reaches this temperature in °C. `0` disables the guard. Streaming uses the same gate as `/control/stop` and resumes after the battery cools by 3°C.
+  * `overheat_pause_c=<0..100>`: Pause streaming when the battery reaches this temperature in °C. Defaults to `45` when never set; `0` disables the guard. Streaming uses the same gate as `/control/stop` and resumes after the battery cools by 3°C.
 * **Example command:** `https://[ip_address]:[port]/?torch=on&zoom=2.0`
 
 ### 🎬 Motion events and recording

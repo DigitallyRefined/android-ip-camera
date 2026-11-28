@@ -1156,10 +1156,11 @@
             <p class="group-title">Device Safety</p>
 
             <label for="overheatPauseC">Pause streaming at battery temperature (°C)</label>
+            <!-- Keep the initial value in sync with OverheatProtection.DEFAULT_C. -->
             <input id="overheatPauseC" type="number" min="0" max="100" step="1" inputmode="numeric"
-              value="0" onchange="sendControl('overheat_pause_c', this.value)">
+              value="45" onchange="sendControl('overheat_pause_c', this.value)">
             <div class="hint" style="margin:4px 0 0; font-size:12px; color:#ccc">
-              0 disables. Resumes after cooling by 3°C.
+              Defaults to 45. 0 disables. Resumes after cooling by 3°C.
             </div>
             <div id="overheatModeWarning" class="heat-warning" role="status">
               <strong>⚠️ Continuous streaming can overheat the device</strong>
@@ -3083,7 +3084,7 @@
       const input = getElById('overheatPauseC');
       if (input && document.activeElement !== input && settings.overheatPauseC != null) {
         const n = parseInt(settings.overheatPauseC, 10);
-        input.value = String(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0);
+        input.value = String(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 45);
       }
       updateHeatWarnings();
     }
