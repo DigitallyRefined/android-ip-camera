@@ -1523,7 +1523,7 @@ class StreamingServerHelper(
         val effectiveResolution: String,
         /** Estimated H.264 and MJPEG bitrates for [effectiveResolution], in kbps. */
         val streamBitrateKbps: Bitrates,
-        /** User preference: the stream currently comes from night-mode stills. */
+        /** Selected night-sight mode; `nightMode.active` also accounts for flash suppression. */
         val nightMode: Boolean,
         /** Remove colour from both the live GL and night still pipelines. */
         val nightGrayscale: Boolean,
@@ -1540,7 +1540,7 @@ class StreamingServerHelper(
         /** Automatic night mode: "off", "gps", "lux" or "gps_lux". */
         val nightAutoMode: String,
         val nightAuto: Boolean,
-        /** Whether the schedule is allowed to switch night mode itself. */
+        /** Whether the trigger is allowed to switch night-sight stills itself. */
         val nightAutoSwitching: Boolean,
         val nightAutoOffsetMinutes: Int,
         /** Whether location permission is granted, so the UI can explain why GPS mode is unavailable. */
@@ -1662,8 +1662,14 @@ class StreamingServerHelper(
                 put("effectiveResolution", settings.effectiveResolution)
                 put("nightMode", JSONObject().apply {
                     put("enabled", settings.nightMode)
+                    put("nightSightOverride", NightMode.currentNightSightOverride(context) ?: JSONObject.NULL)
+                    put("nightSightDesired", NightMode.desiredNightSight(context))
+                    put("active", NightMode.isActive(context))
+                    put("flashPaused", NightMode.isFlashSuppressed())
                     put("grayscale", settings.nightGrayscale)
+                    put("grayscaleDesired", NightMode.desiredGrayscale(context))
                     put("grayscaleFollow", NightMode.isGrayscaleFollowEnabled(context))
+                    put("grayscaleOverride", NightMode.currentGrayscaleOverride(context) ?: JSONObject.NULL)
                     put("grayscaleEffective", NightMode.effectiveGrayscale(context))
                     put("torchMode", NightMode.torchMode(context))
                     put("available", settings.nightModeSupported)
@@ -1677,6 +1683,7 @@ class StreamingServerHelper(
                     put("auto", settings.nightAuto)
                     put("autoMode", settings.nightAutoMode)
                     put("autoSwitching", settings.nightAutoSwitching)
+                    put("autoDark", AutoNightMode.currentDark() ?: JSONObject.NULL)
                     put("autoOffsetMinutes", settings.nightAutoOffsetMinutes)
                     put("autoLocationGranted", settings.nightAutoLocationGranted)
                     put("autoLocationAcquiring", settings.nightAutoLocationAcquiring)

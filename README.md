@@ -28,7 +28,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🌎 Built-in server that streams MJPEG and H.264 video to any web browser, video app or NVR.
 * 🎛️ Remote web interface for live view, camera, image, recording and zoom controls.
 * 🎙️ Live microphone audio and two-way push-to-talk from the web interface.
-* ☁️ Optional OpenTunnel remote access outside your home network.
+* ☁️ Optional [OpenTunnel](https://github.com/anomalyco/opentunnel) remote access outside your home network (can be [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server)).
 * 🤳 Switch between the main and selfie camera.
 * 🏃 Motion detection with notifications, record on motion, continuous recording and automatic cleanup of old recordings.
 * 💾 Start manual recordings and browse, play, download or delete them in the web interface, saved to internal storage or an SD card.
@@ -39,7 +39,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * ⚙️ Configure the streaming, RTSP and ONVIF ports and choose which network interface to listen on.
 * 🖼️ Adjustable image quality and frame rate, plus automatic pause at a configurable battery temperature.
 * 🌙 Night-sight mode that streams long-exposure stills as video.
-* 🌗 Automatically switch night mode by GPS twilight, ambient light, schedule or camera auto-exposure, with optional grayscale and torch-on-motion.
+* 🌗 Automatically switch night mode by GPS twilight, ambient light, schedule or camera auto-exposure, with optional grayscale, torch-on when dark and torch-on-motion.
 * 📝 Optional burned-in text overlay for streams and recordings.
 * ✂️ Controls to crop the live stream and snapshots.
 * 📴 Turn the display off while streaming.
@@ -84,9 +84,9 @@ Open `http://[ip_address]:4444` (or `https://` when TLS is enabled) and use the 
   * LUX switches night on below the threshold and day at or above it.
   * Schedule uses the phone's local time and may cross midnight.
   * Camera AE uses the camera's ISO/exposure telemetry with a frame-luma fallback. Lower the threshold to switch earlier (default 75%).
-  * **Automatic night mode switching** turns the selected trigger into an actual night-mode switch. When off, the schedule is only used for torch-on-motion.
-  * **Grayscale with night mode** applies grayscale whenever night mode is on and overrides the manual grayscale checkbox.
-  * **Torch:** `On motion` lights the torch while the schedule says it is dark and restores night mode afterwards; `Always on in night mode` forces normal video and keeps the torch lit for the whole dark period. Camera AE cannot be combined with the always-on torch.
+  * **Auto Night-sight mode** turns the selected trigger into an actual night-sight switch. It is independent of Auto grayscale and the torch: any combination can be selected. The manual Night-sight checkbox stays enabled; toggling it while automation owns the switch creates a temporary override until the next night/day transition.
+  * **Auto grayscale** follows the trigger's dark/light decision independently of Night-sight mode, so grayscale can turn on while the stream stays live video. The manual Grayscale Night Mode checkbox stays enabled; toggling it while Auto grayscale is active creates a temporary override until the next night/day transition. With no trigger selected, the manual setting applies normally.
+  * **Torch:** `On motion` lights the torch on motion after dark (needs an always-on mode with motion notifications). `On while dark` keeps the torch lit while the trigger says dark; in On demand it runs only while the camera session is active (viewer, recording, snapshot or preview) and turns off when the camera is released. Camera AE can use it in On demand because the dark decision is latched for that session (LUX is also latched while the torch is on, since its sensor can see the torch); in always-on modes Camera AE cannot be combined with it because the torch would blind the meter. **While any torch is lit, Night-sight and grayscale are paused without clearing their selections or temporary overrides, then restored when the torch turns off.**
 * **Framing & orientation:** rotation, mirror and output scale. **Crop** is available from a desktop browser; drag a rectangle over the preview to set it.
 * **Snapshot settings:** choose stream/full-sensor resolution and an optional countdown before the snapshot (0 = instant).
 
@@ -108,7 +108,7 @@ Open `http://[ip_address]:4444` (or `https://` when TLS is enabled) and use the 
 * **On demand** starts the camera for a viewer and releases it when the last viewer leaves. The on-phone preview also keeps it running while shown.
 * **Camera always on** keeps the camera ready for fast connections and continuous Camera AE. **Notify on motion** adds ONVIF motion events and phone notifications.
 * **No automatic recording**, **Record on motion** and **Continuous recording** choose whether clips are written. Motion clips always enable notifications; continuous recording can run without them.
-* Motion sensitivity, stop delay, continuous clip length and storage cleanup are set here. Storage cleanup deletes the oldest clips once the drive reaches the configured usage.
+* Motion sensitivity, stop delay, continuous clip length and storage cleanup are configured here. Event delivery, clip timing defaults and storage paths are described in **Motion events and recording** below.
 
 The full remote-control API and every parameter are documented below.
 
@@ -121,9 +121,10 @@ The app can publish its local web server through [OpenTunnel](https://github.com
 3. Tap **Register**. The first run creates the tunnel identity and waits for a certificate; this can take a minute or two. The main screen shows one line of progress while it happens.
 4. Once connected, the main screen shows the public `https://…` URL. Tap it to open the camera in a browser.
 
-The identity, generated certificate, route config and runtime log are stored in the app's private files under `files/opentunnel/{config,data,state}`. **Disconnect & disassociate** removes the tunnel from the server and deletes all of those files; the URL cannot be recovered afterwards. A registered tunnel reconnects automatically while the app is running. The OpenTunnel client is built into the APK for **arm64-v8a** and **armeabi-v7a**.
+**Disconnect & disassociate** removes the tunnel from the server and deletes the saved identity, certificates and route config; the URL cannot be recovered afterwards. A registered tunnel reconnects automatically while the app is running. The OpenTunnel client is built into the APK for **arm64-v8a** and **armeabi-v7a**.
 
-## 🎥 Frigate config
+<details>
+<summary>🎥 Frigate config</summary>
 
 ### Using the HTTPS streams
 
@@ -198,9 +199,14 @@ cameras:
             - detect
 ```
 
-### 📡 RTSP stream
+</details>
 
-The app can also serve the camera over RTSP, the protocol most NVRs, home automation systems and video players expect from an IP camera. It is off by default: enable it in **Settings > RTSP / ONVIF > Enable RTSP**. The address is then shown on the main screen:
+## 📡 RTSP stream
+
+<details>
+<summary>RTSP endpoints, streams and playback</summary>
+
+The app can serve the camera over RTSP, the protocol most NVRs, home automation systems and video players expect from an IP camera. It is off by default: enable it in **Settings > RTSP / ONVIF > Enable RTSP**. The address is then shown on the main screen:
 
 ```
 rtsps://[username]:[password]@[ip_address]:8554/live
@@ -208,15 +214,25 @@ rtsps://[username]:[password]@[ip_address]:8554/live
 
 > **Note:** VLC does not reliably handle self-signed TLS certificates for RTSPS streams. Use **mpv** or **ffplay** to play, or use a trusted certificate. Disabling TLS may work with VLC, at the risk of sending your username/password in plaintext.
 
-* **Streams:** `/live` is the main H.264 stream; `/live/sub` is an optional smaller stream for slow links. The camera starts when a client connects and is released when the last one leaves.
-* **Security:** RTSP Digest authentication with the app username and password, port `8554` by default, and TLS (`rtsps://`) when enabled. Sub stream, audio, transport, authentication and TLS details are in **Server URL Paths & Remote Control API** below.
+* **Endpoints:** `/live` is the main H.264 stream and `/live/sub` is the optional smaller stream (use `rtsp://` when TLS is disabled).
+* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, target bitrate, bitrate mode, keyframe interval, rotation, mirror and noise reduction follow the web controls; noise reduction only affects the GPU H.264 path). Each client starts at a keyframe.
+* **Sub stream:** a smaller version of the same picture for slow links such as 4G, watchable alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled). Changes apply the next time a viewer connects. The phone encodes it only while someone watches it; where the picture does not go through the GPU path, the sub stream carries the main stream instead.
+* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. It can be turned off with **Include Audio** and is left out when microphone permission is not granted.
+* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports so players keep them in sync.
+* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front).
+* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming and ONVIF ports).
+* **Lifecycle:** the camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
+* **TLS:** when enabled, RTSP is served over TLS (`rtsps://`) using the same certificate as the web server and ONVIF, so the control connection and credentials are encrypted. With TLS disabled it is plain `rtsp://`, so only use it on a trusted network (or through a VPN) in that case.
 
 Examples:
 
 * **mpv:** `mpv "rtsps://[username]:[password]@[ip_address]:8554/live"`
 * **ffplay:** `ffplay -rtsp_transport tcp "rtsps://[username]:[password]@[ip_address]:8554/live"`
 
-### 🛰️ ONVIF camera
+</details>
+
+<details>
+<summary>🛰️ ONVIF camera</summary>
 
 ONVIF lets NVRs and home automation systems discover and control the camera as a standard IP camera. It is enabled by **Settings > RTSP / ONVIF > Enable RTSP**, or automatically while an always-on camera mode (**Camera always on**, **Motion clips** or **Continuous recording**) is selected.
 
@@ -234,6 +250,8 @@ ONVIF lets NVRs and home automation systems discover and control the camera as a
 #### Home Assistant
 
 Add the phone with the **ONVIF** integration (host `https://[phone-ip]`, port `8000`), or adopt it in UniFi Protect and use the Protect integration. Both expose the camera and a motion binary sensor.
+
+</details>
 
 ## 🔐 HTTPS/TLS certificates
 
@@ -277,6 +295,8 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
 * **Raw H.264 Video Stream (`/video/h264`)**
   * **Usage:** Play in media players that support raw Annex-B H.264 stream demuxing.
     * **mpv:** Run `mpv "https://[ip_address]:[port]/video/h264"`
+* **RTSP stream**
+  * **Usage:** The RTSP endpoints, sub stream, audio, transport, authentication, lifecycle and TLS are documented in **📡 RTSP stream** above.
 * **Live Audio Stream (`/audio`)**
   * **Usage:** Listen to the live microphone audio.
   * **Format:** `audio/wav` chunked transfer-encoding (WAV container, 16-bit PCM mono, 44.1kHz).
@@ -338,19 +358,6 @@ When the streaming server is running (default port `4444`, via `https://` or `ht
   * **Usage:** Query whether streaming is currently enabled.
   * **Format:** `application/json` - `{"streaming":<bool>}`
 
-### 📡 RTSP stream
-
-The RTSP endpoints are `rtsps://[username]:[password]@[ip_address]:8554/live` and `.../live/sub` (use `rtsp://` when TLS is disabled).
-
-* **Video:** the same hardware H.264 stream as `/video/h264` (resolution, frame rate, target bitrate, bitrate mode, keyframe interval, rotation, mirror and noise reduction follow the web controls; noise reduction only affects the GPU H.264 path). Each client starts at a keyframe.
-* **Sub stream:** `/live/sub` is a smaller version of the same picture for slow links such as 4G, and can be watched alongside the main stream. Choose its size (240p to 720p), frame rate and bitrate (300 to 2000 kbps, 500 by default), and whether to include audio, under **Substream** on the web interface's **Settings** tab (shown when RTSP is enabled); changes apply the next time a viewer connects. The phone encodes it in addition to the main stream only while someone watches it. Where the picture does not go through the GPU path (front camera, devices whose camera is not FULL level), the sub stream carries the main stream instead.
-* **Audio:** the microphone as AAC-LC (44.1 kHz mono), honouring the `audio_gain` control. Can be turned off with **Include Audio**, and is left out when the microphone permission is not granted.
-* **Transport:** RTP over UDP or interleaved in the RTSP TCP connection (`-rtsp_transport tcp`), whichever the client asks for. Audio and video carry RTCP sender reports, so players keep them in sync.
-* **Authentication:** the same username and password as the web server, using RTSP Digest authentication (Basic is accepted when a client sends it up front).
-* **Port:** `8554` by default, configurable with **RTSP Port** (it must differ from the streaming and ONVIF ports).
-* **Lifecycle:** the camera starts when a client connects and is released when the last one leaves, as with the web streams. `/control/stop` also disconnects RTSP clients and refuses new ones until `/control/start`.
-* **TLS:** when enabled, RTSP is served over TLS (`rtsps://`) using the same certificate as the web server and ONVIF, so the control connection and credentials are encrypted. With TLS disabled it is plain `rtsp://`, so only use it on a trusted network (or through a VPN) in that case.
-
 ### 🎛️ Remote Control Commands
 
 Settings can be changed dynamically by passing query parameters in HTTP GET requests (e.g., to the root path `/` or any control endpoint).
@@ -381,18 +388,20 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
   * `mirror=<true|false>`: Mirror the video.
   * `crop=<left,top,right,bottom|reset>`: Crop the stream and snapshots to a normalised rectangle (0..1) of the rotated frame, persisted per-camera. `reset` removes the crop and restores the full frame. Changes restart the camera so the H.264 encoder follows the crop's aspect ratio. In the web control panel, open **Settings → Crop** and drag a rectangle over the video preview; cropping is applied on the phone and can only be changed from a desktop browser.
   * `api=<auto|camerax|camera1>`: Prefer capture API implementation. In `auto`, a CameraX start whose H.264 GL surface never produces a frame falls back to Camera1; an explicit `camerax` choice stays on CameraX and switches H.264 to the software YUV path instead. A Camera1 HAL eviction (Camera error 2) also restarts the camera automatically.
-  * `night_mode=<on|off>`: Replace live video with night-mode still photos on cameras that support it. The camera takes one night-sight / night-scene / low-light still at a time and feeds it into the current MJPEG or H.264 stream, so the frame rate drops to match the exposure time. `/info.json` reports `settings.nightMode.available` for the selected camera and `cameras[].nightMode.available` for each lens; `settings.nightMode.enabled` is the current value.
+  * `night_mode=<on|off>`: Replace live video with night-mode still photos on cameras that support it. The camera takes one night-sight / night-scene / low-light still at a time and feeds it into the current MJPEG or H.264 stream, so the frame rate drops to match the exposure time. When Auto Night-sight mode owns the switch, the web UI sends `night_mode_override` instead so a manual toggle becomes a temporary override. `/info.json` reports `settings.nightMode.available` for the selected camera and `cameras[].nightMode.available` for each lens; `settings.nightMode.enabled` is the stored selection, while `nightSightDesired`, `nightSightOverride` and `active` describe the current automatic/override state.
   * `night_exposure=<ms>`: Night-mode shutter time in milliseconds, applied with auto-exposure off. Only available when `settings.nightMode.manual` is true. The usable range is reported as `settings.nightMode.exposureMinMs`/`exposureMaxMs` (also per lens under `cameras[].nightMode`), and the current value is `settings.nightMode.exposureMs`.
   * `night_iso=<value>`: Night-mode sensor sensitivity (ISO), applied with auto-exposure off. The usable range is reported as `settings.nightMode.isoMin`/`isoMax` (also per lens under `cameras[].nightMode`), and the current value is `settings.nightMode.iso`. Longer exposure and higher ISO brighten dark scenes; very long exposures blur movement.
   * `night_grayscale=<on|off>`: **Grayscale Night Mode** (default off). Removes chrominance from the live GL video pipeline and the night still loop while preserving luminance, contrast and detail, which hides coloured low-light sensor noise. It applies to both MJPEG and H.264 without restarting the stream, and never changes camera exposure or ISO. The current value is reported as `settings.nightMode.grayscale` in `/info.json`.
-  * `night_grayscale_follow=<true|false>`: Follow night mode with **Grayscale Night Mode** (default false). When enabled, the effective grayscale state is on whenever night mode is on; the manual `night_grayscale` checkbox is ignored until follow is turned off. `/info.json` reports `settings.nightMode.grayscaleFollow` and `grayscaleEffective`.
+  * `night_grayscale_follow=<true|false>`: **Auto grayscale** (default false). When an automatic night-mode trigger is selected, the effective grayscale state follows that trigger's dark/light decision, independently of whether Night-sight mode is on. A dark trigger enables grayscale even with `night_mode` off; a light trigger disables it even if the manual checkbox is on. The manual Grayscale Night Mode checkbox remains enabled; toggling it while Auto grayscale owns the state creates a temporary override that expires on the next night/day transition. With no trigger selected (or no usable sensor/location decision yet), the manual `night_grayscale` setting applies. While a torch is lit, night-sight and grayscale are paused without clearing either selection, then restored when the torch turns off. `/info.json` reports `settings.nightMode.grayscaleFollow`, `grayscaleOverride`, `grayscaleDesired` and `grayscaleEffective`.
+  * `night_grayscale_override=<on|off|clear>`: Temporary grayscale choice while Auto grayscale is active and the trigger has a night/day decision. It overrides the automatic state until the next trigger transition, then automation resumes. `clear` returns to the automatic state immediately. When Auto grayscale or the trigger is off, `on`/`off` update the manual `night_grayscale` setting instead.
   * `auto_night_mode=<off|gps|lux|gps_lux|schedule|camera_ae>`: Automatic night mode trigger. It is `off` until a trigger is explicitly selected. `gps` follows civil twilight (−6° sun elevation) from the phone's location; `lux` follows the phone's ambient light sensor; `gps_lux` uses either; `schedule` uses fixed local times; `camera_ae` uses the camera's ISO/exposure telemetry with frame-luma fallback. `camera_ae` works in every recording mode: in On demand it samples only while a viewer, recording, snapshot or the on-phone preview runs the camera and never keeps the camera open, and each new camera session starts in day video so it re-detects; with Camera always on it samples continuously. Selecting `off` stops the schedule and disables the switching, grayscale-follow and torch controls. The GPS position is requested once and cached for 48 hours. Requires location permission for GPS modes. `/info.json` reports the state as `settings.nightMode.autoMode` (and the legacy `auto` boolean), `autoSwitching`, `autoOffsetMinutes`, `autoLocationGranted`, `autoLocationAcquiring`, `autoLuxThreshold`, `autoLuxAvailable`, the live ambient-light reading `autoLux` (null unless a LUX trigger is selected), `autoScheduleStart`, `autoScheduleEnd`, `autoCameraAeThreshold`, the live `autoCameraAe*` telemetry fields, and the phone-local `autoStart`/`autoEnd` times for the current or upcoming period.
-  * `auto_night_switching=<true|false>`: Whether the selected schedule is allowed to switch night mode itself (default false). When false, the schedule still runs for torch-on-motion, but night mode is not toggled automatically. Manual night-mode toggles remain available while switching is on, and the schedule reasserts its decision shortly afterwards.
+  * `auto_night_switching=<true|false>`: **Auto Night-sight mode** (default false). When true, the selected trigger is allowed to switch night-sight stills itself. This is independent of Auto grayscale and the torch profile: any combination of the three can be selected. When false, the trigger still drives Auto grayscale and the torch profile, but night-sight is not toggled automatically. The manual Night-sight checkbox remains enabled; toggling it while Auto Night-sight owns the state creates a temporary override until the next night/day transition. `/info.json` reports the shared decision as `settings.nightMode.autoDark`, the stored selection as `enabled`, and the effective/override state as `nightSightDesired`, `nightSightOverride` and `active`.
+  * `night_mode_override=<on|off|clear>`: Temporary Night-sight choice while Auto Night-sight mode is active and the trigger has a night/day decision. It overrides the automatic state until the next trigger transition, then automation resumes. `clear` returns to the automatic state immediately. When Auto Night-sight mode or the trigger is off, `on`/`off` update the regular `night_mode` selection instead.
   * `auto_night_offset=<minutes>`: Shift both GPS night-mode transitions by this many minutes (−999 to 999). Positive values make both switches happen later; negative values make them earlier.
   * `auto_night_lux=<lux>`: LUX threshold for `lux` and `gps_lux` modes (default 5). Night mode turns on below the value and off at or above it.
   * `auto_night_schedule_start=<HH:mm>` / `auto_night_schedule_end=<HH:mm>`: Local-time window for the `schedule` trigger (default `21:00`–`06:00`). The window may cross midnight.
   * `auto_night_camera_ae_threshold=<50..100>`: ISO percentage used to enter night in `camera_ae` mode (default 75). Entry also requires exposure at least 90% of the frame duration, or a clearly dark frame luma, plus 15 seconds of continuous darkness. Exit normally takes 60 seconds of brightness; a nearly pure-white frame (luma ≥ 240) forces a day switch after 10 seconds. On demand meters only while the camera is running; Camera always on meters continuously.
-  * `night_torch_mode=<off|motion|always>`: Torch profile while the automatic schedule says it is dark. `motion` turns the torch on for motion, then restores night mode after the timer. `always` forces normal video and keeps the torch on for the whole dark period. `camera_ae` cannot be combined with `always` because the torch would blind the meter. Requires a recording mode other than On demand and is disabled in that state. `motion` also requires motion detection, so it is inactive in **Camera always on** unless **Notify on motion** is enabled. `/info.json` reports `settings.nightMode.torchMode` (legacy `autoFlash` remains true only for `motion`).
+  * `night_torch_mode=<off|motion|always>`: Torch profile while the automatic trigger says it is dark. It is independent of Auto Night-sight mode and Auto grayscale; all three can be selected together. `motion` turns the torch on for motion and restores night-sight/grayscale after the timer; it requires an always-on camera mode with motion notifications enabled (Motion clips, or Camera always on/Continuous recording with Notify on motion). `always` keeps the torch on while the trigger says dark: in On demand it runs only while the camera session is active (viewer, recording, snapshot or preview) and turns off when the camera is released, while always-on modes keep it on for the whole dark period. **While any torch (manual, motion or always) is lit, night-sight and grayscale are paused without clearing their selections, and return when the torch turns off.** Camera AE can be combined with `always` in On demand because the dark decision is latched for that streaming session (LUX is also latched while the torch is on); it cannot be combined with `always` in always-on modes because the torch would blind the meter. `/info.json` reports `settings.nightMode.torchMode` (legacy `autoFlash` remains true only for `motion`) and `flashPaused` while the suppression is active.
   * `night_auto_flash=<true|false>`: Legacy alias for `night_torch_mode=motion|off`.
   * `night_auto_flash_seconds=<1..99>`: Seconds to keep the torch on after motion clears (default 10). Additional motion during this wait restarts the timer.
   * `osd_enabled=<true|false>`: Burn the text overlay into the video itself (H.264 and MJPEG, including RTSP and recordings). `/info.json` reports the per-element choices under `settings.osd`.
@@ -403,14 +412,7 @@ Settings can be changed dynamically by passing query parameters in HTTP GET requ
 
 ### 🎬 Motion events and recording
 
-Choose a camera and automatic-recording mode in the web interface or with `recording_mode`:
-
-* **On demand** (`off`): the camera opens when a viewer connects (HTTP/RTSP) or the on-phone preview is shown, and is released when the last one leaves. Nothing else (night mode, Camera AE, auto-night switching) keeps it open. Camera AE samples only while the camera is running; each new camera session starts in day video and re-detects. Notify on motion and automatic recording are disabled.
-* **Camera always on** (`always_on`): keeps the camera running with no viewer so NVRs connect quickly and Camera AE samples continuously. **No auto recording** writes nothing locally; **Motion clips** and **Continuous recording** add automatic recording below.
-* **Notify on motion** (`notify_on_motion=true`): enables motion detection, publishes ONVIF motion events and posts phone notifications. It is optional with **Camera always on** and **Continuous recording**, and forced on with **Motion clips**.
-* **No auto recording**: the camera stays on but writes no clips automatically.
-* **Motion clips** (`motion`): records a `-motion.mp4` clip while motion is present. Motion detection and notifications are always on.
-* **Continuous recording** (`continuous`): records every moment into `-continuous.mp4` segments, with the camera always on. Notifications are optional; when off, motion detection does not run.
+Choose a camera and automatic-recording mode under **Recordings** above. This section covers motion-event delivery and where clips are stored.
 
 When Notify on motion is enabled (or Motion clips is selected), the app compares luma frames in the background. **Sensitivity** (1 = least sensitive, 10 = most sensitive, default 5) controls how much the frame must change; lighting changes such as a TV cutting between scenes are ignored. Motion is published as `tns1:RuleEngine/CellMotionDetector/Motion` and `tns1:VideoSource/MotionAlarm` over both PullPoint (`CreatePullPointSubscription` + `PullMessages`) and WS-BaseNotification (`wsnt:Subscribe`, `Renew`, `Unsubscribe`). Home Assistant, ONVIF Device Manager and UniFi Protect poll via PullPoint; hardware NVRs (for example Xiongmai/VMS) subscribe and receive `wsnt:Notify` HTTP POSTs at their consumer address whenever motion starts or stops. With Notify on motion off, the ONVIF service stays available but no motion events are published.
 

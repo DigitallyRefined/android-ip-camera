@@ -80,7 +80,11 @@ object NightMode {
         PreferenceManager.getDefaultSharedPreferences(context).edit { putBoolean(PREF_GRAYSCALE, enabled) }
     }
 
-    /** When enabled, grayscale follows the night-mode state instead of the manual checkbox. */
+    /**
+     * When enabled, grayscale follows the automatic night-mode trigger's dark/light decision
+     * instead of the manual checkbox. It is deliberately independent of the Night-sight pipeline,
+     * so a dark trigger can enable grayscale without also switching to still photos.
+     */
     fun isGrayscaleFollowEnabled(context: Context): Boolean =
         PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_GRAYSCALE_FOLLOW, false)
 
@@ -88,9 +92,173 @@ object NightMode {
         PreferenceManager.getDefaultSharedPreferences(context).edit { putBoolean(PREF_GRAYSCALE_FOLLOW, enabled) }
     }
 
+    /**
+     * True while a torch/flash is lit. Night-sight and grayscale are suspended without clearing
+     * the stored selections, and are restored when the torch turns off.
+     */
+    @Volatile
+    private var flashSuppressed = false
+
+    fun isFlashSuppressed(): Boolean = flashSuppressed
+
+    fun setFlashSuppressed(suppressed: Boolean) {
+        flashSuppressed = suppressed
+    }
+
+    /**
+     * Temporary manual grayscale choice while Auto grayscale owns the switch. It is tied to the
+     * current automatic trigger decision version and expires on the next night/day transition.
+     */
+    private data class GrayscaleOverride(val value: Boolean, val decisionVersion: Long)
+
+    @Volatile
+    private var grayscaleOverrideState: GrayscaleOverride? = null
+
+    fun setGrayscaleOverride(value: Boolean?) {
+        if (value == null) {
+            clearGrayscaleOverride()
+            return
+        }
+        grayscaleOverrideState = GrayscaleOverride(value, AutoNightMode.currentDarkVersion())
+    }
+
+    fun clearGrayscaleOverride() {
+        grayscaleOverrideState = null
+    }
+
+    /** Valid override for the current automatic decision, or null when automation owns the state. */
+    fun currentGrayscaleOverride(context: Context): Boolean? = activeOverride(
+        follow = isGrayscaleFollowEnabled(context),
+        autoModeEnabled = AutoNightMode.isEnabled(context),
+        autoDark = AutoNightMode.currentDark(),
+    )
+
+    private fun activeOverride(follow: Boolean, autoModeEnabled: Boolean, autoDark: Boolean?): Boolean? {
+        if (!follow || !autoModeEnabled || autoDark == null) return null
+        val override = grayscaleOverrideState ?: return null
+        if (override.decisionVersion != AutoNightMode.currentDarkVersion()) return null
+        return override.value
+    }
+
+    /** Grayscale selected by the manual checkbox or by the automatic trigger, before flash gating. */
+    fun desiredGrayscale(context: Context): Boolean {
+        val follow = isGrayscaleFollowEnabled(context)
+        val autoModeEnabled = AutoNightMode.isEnabled(context)
+        val autoDark = AutoNightMode.currentDark()
+        return effectiveGrayscale(
+            follow = follow,
+            autoModeEnabled = autoModeEnabled,
+            autoDark = autoDark,
+            autoOverride = activeOverride(follow, autoModeEnabled, autoDark),
+            manual = isGrayscaleEnabled(context),
+            pressedByFlash = false,
+        )
+    }
+
     /** The grayscale state the pipelines should use right now. */
-    fun effectiveGrayscale(context: Context): Boolean =
-        if (isGrayscaleFollowEnabled(context)) isEnabled(context) else isGrayscaleEnabled(context)
+    fun effectiveGrayscale(context: Context): Boolean {
+        val follow = isGrayscaleFollowEnabled(context)
+        val autoModeEnabled = AutoNightMode.isEnabled(context)
+        val autoDark = AutoNightMode.currentDark()
+        return effectiveGrayscale(
+            follow = follow,
+            autoModeEnabled = autoModeEnabled,
+            autoDark = autoDark,
+            autoOverride = activeOverride(follow, autoModeEnabled, autoDark),
+            manual = isGrayscaleEnabled(context),
+            pressedByFlash = flashSuppressed,
+        )
+    }
+
+    /**
+     * Pure decision used by the pipelines and unit tests. With no automatic trigger (or no
+     * decision yet), the manual grayscale preference applies. A temporary override wins over the
+     * trigger decision, and a lit torch always wins over both.
+     */
+    fun effectiveGrayscale(
+        follow: Boolean,
+        autoModeEnabled: Boolean,
+        autoDark: Boolean?,
+        autoOverride: Boolean?,
+        manual: Boolean,
+        pressedByFlash: Boolean,
+    ): Boolean {
+        if (pressedByFlash) return false
+        if (follow && autoModeEnabled && autoDark != null) return autoOverride ?: autoDark
+        return manual
+    }
+
+    /**
+     * Temporary Night-sight choice while Auto Night-sight mode owns the switch. Like Auto
+     * grayscale, it expires on the next automatic night/day transition.
+     */
+    private data class NightSightOverride(val value: Boolean, val decisionVersion: Long)
+
+    @Volatile
+    private var nightSightOverrideState: NightSightOverride? = null
+
+    fun setNightSightOverride(value: Boolean?) {
+        if (value == null) {
+            clearNightSightOverride()
+            return
+        }
+        nightSightOverrideState = NightSightOverride(value, AutoNightMode.currentDarkVersion())
+    }
+
+    fun clearNightSightOverride() {
+        nightSightOverrideState = null
+    }
+
+    /** Valid Night-sight override for the current automatic decision, or null. */
+    fun currentNightSightOverride(context: Context): Boolean? = activeNightSightOverride(
+        switching = AutoNightMode.isSwitchingEnabled(context),
+        autoModeEnabled = AutoNightMode.isEnabled(context),
+        autoDark = AutoNightMode.currentDark(),
+    )
+
+    private fun activeNightSightOverride(
+        switching: Boolean,
+        autoModeEnabled: Boolean,
+        autoDark: Boolean?,
+    ): Boolean? {
+        if (!switching || !autoModeEnabled || autoDark == null) return null
+        val override = nightSightOverrideState ?: return null
+        if (override.decisionVersion != AutoNightMode.currentDarkVersion()) return null
+        return override.value
+    }
+
+    /** Night-sight selected by the manual checkbox or by the automatic trigger, before flash gating. */
+    fun desiredNightSight(context: Context): Boolean =
+        currentNightSightOverride(context) ?: isEnabled(context)
+
+    /**
+     * Night-sight should be capturing now: selected (or overridden), not flash-paused, and not a
+     * stale day selection waiting for auto switching to turn it off.
+     */
+    fun isActive(context: Context): Boolean = nightSightActive(
+        selected = isEnabled(context),
+        override = currentNightSightOverride(context),
+        autoSwitching = AutoNightMode.isSwitchingEnabled(context),
+        autoModeEnabled = AutoNightMode.isEnabled(context),
+        autoDark = AutoNightMode.currentDark(),
+        flashSuppressed = flashSuppressed,
+    )
+
+    /** Pure decision shared by the service and unit tests. */
+    fun nightSightActive(
+        selected: Boolean,
+        override: Boolean?,
+        autoSwitching: Boolean,
+        autoModeEnabled: Boolean,
+        autoDark: Boolean?,
+        flashSuppressed: Boolean,
+    ): Boolean {
+        if (flashSuppressed) return false
+        if (override != null && autoSwitching && autoModeEnabled && autoDark != null) return override
+        if (!selected) return false
+        val autoDay = autoDark == false && autoModeEnabled && autoSwitching
+        return !autoDay
+    }
 
     /** Off, on motion, or continuously while the automatic night profile is active. */
     fun torchMode(context: Context): String {

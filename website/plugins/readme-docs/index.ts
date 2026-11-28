@@ -17,6 +17,21 @@ const DEFAULT_OUTPUT_DIR = 'docs';
 const DEFAULT_SIDEBAR_FILE = 'sidebars.js';
 const ROOT_SCREENSHOT = 'screenshot.webp';
 
+/**
+ * Sidebar category labels and their display order. Keeping them in one object
+ * prevents typos in SECTION_META and lets the plugin handle renamed README
+ * headings without introducing a new category by accident.
+ */
+const CATEGORIES = {
+  gettingStarted: 'Getting Started',
+  operating: 'Operating the Camera',
+  integrations: 'Integrations',
+  reference: 'Reference',
+  development: 'Development',
+  project: 'Project',
+  more: 'More',
+} as const;
+
 type SectionMeta = {
   slug: string;
   title: string;
@@ -33,7 +48,7 @@ const SECTION_META: Record<string, SectionMeta> = {
   'Getting Started': {
     slug: 'getting-started',
     title: 'Getting Started',
-    category: 'Getting Started',
+    category: CATEGORIES.gettingStarted,
     direct: true,
     description:
       'Overview, install options and the full feature list for Android IP Camera.',
@@ -41,86 +56,100 @@ const SECTION_META: Record<string, SectionMeta> = {
   Overview: {
     slug: 'overview',
     title: 'Overview',
-    category: 'Getting Started',
+    category: CATEGORIES.gettingStarted,
     description:
       'Turn your Android device into a remote security IP camera with a built-in web server, RTSP, ONVIF and optional remote access.',
   },
   Install: {
     slug: 'install',
     title: 'Install',
-    category: 'Getting Started',
+    category: CATEGORIES.gettingStarted,
     description:
       'Install Android IP Camera from GitHub Releases, F-Droid or Obtainium, then open the stream in any browser.',
   },
   Features: {
     slug: 'features',
     title: 'Features',
-    category: 'Getting Started',
+    category: CATEGORIES.gettingStarted,
     description:
       'Built-in web server, MJPEG and H.264 streams, RTSP, ONVIF, motion recording, night mode, TLS and optional remote access.',
   },
   Warning: {
     slug: 'warning',
     title: 'Warning',
-    category: 'Operating the Camera',
+    category: CATEGORIES.operating,
   },
   'Web control panel': {
     slug: 'web-control-panel',
     title: 'Web control panel',
-    category: 'Operating the Camera',
+    category: CATEGORIES.operating,
   },
   'Remote access with OpenTunnel': {
     slug: 'remote-access',
     title: 'Remote Access & Streaming',
-    category: 'Integrations',
+    category: CATEGORIES.integrations,
   },
   'Background Usage': {
     slug: 'background-usage',
     title: 'Background Usage',
-    category: 'Operating the Camera',
+    category: CATEGORIES.operating,
   },
   'Frigate config': {
     slug: 'frigate',
     title: 'Frigate Configuration',
-    category: 'Integrations',
+    category: CATEGORIES.integrations,
     description:
       'Example Frigate and go2rtc configuration for the HTTPS and RTSP streams, including two-way talk audio.',
+  },
+  'RTSP endpoints, streams and playback': {
+    slug: 'rtsp-stream',
+    title: 'RTSP Stream',
+    category: CATEGORIES.integrations,
+    description:
+      'RTSP main and sub streams, audio, transport, authentication, lifecycle and TLS.',
+  },
+  'ONVIF camera': {
+    slug: 'onvif-camera',
+    title: 'ONVIF Camera',
+    category: CATEGORIES.integrations,
+    description:
+      'ONVIF discovery, snapshots, RTSP and motion events for NVRs and home automation systems.',
   },
   'HTTPS/TLS certificates': {
     slug: 'tls-certificates',
     title: 'HTTPS & TLS Certificates',
-    category: 'Operating the Camera',
+    category: CATEGORIES.operating,
   },
   'Server URL Paths & Remote Control API': {
     slug: 'server-api',
     title: 'Server API Reference',
-    category: 'Reference',
+    category: CATEGORIES.reference,
     description:
       'Stream URLs, recording endpoints, the recordings browser and every remote-control query parameter exposed by the camera server.',
   },
   Permissions: {
     slug: 'permissions',
     title: 'Permissions',
-    category: 'Reference',
+    category: CATEGORIES.reference,
     description:
       'Android permissions used by Android IP Camera, and why each one is needed.',
   },
   'Reproducible builds': {
     slug: 'reproducible-builds',
     title: 'Reproducible Builds',
-    category: 'Development',
+    category: CATEGORIES.development,
     description:
       'Build release APKs in the Docker builder and verify them against the published F-Droid release.',
   },
   'Why open source': {
     slug: 'why-open-source',
     title: 'Why Open Source',
-    category: 'Project',
+    category: CATEGORIES.project,
   },
   'AI generated code disclaimer': {
     slug: 'ai-generated-code',
     title: 'AI-Generated Code',
-    category: 'Project',
+    category: CATEGORIES.project,
   },
 };
 
@@ -132,15 +161,7 @@ const SECTION_META_ORDER = new Map(
   Object.keys(SECTION_META).map((label, index) => [label, index]),
 );
 
-const CATEGORY_ORDER = [
-  'Getting Started',
-  'Operating the Camera',
-  'Integrations',
-  'Reference',
-  'Development',
-  'Project',
-  'More',
-];
+const CATEGORY_ORDER = Object.values(CATEGORIES);
 
 /**
  * README sections that should share one documentation page. The remaining
@@ -332,7 +353,7 @@ function buildDoc({
   usedSlugs.add(slug);
 
   const title = meta?.title ?? (label || 'Overview');
-  const category = meta?.category ?? 'More';
+  const category = meta?.category ?? CATEGORIES.more;
   const content = rewriteLinks(body).trim();
   const description = meta?.description ?? makeDescription(content);
 

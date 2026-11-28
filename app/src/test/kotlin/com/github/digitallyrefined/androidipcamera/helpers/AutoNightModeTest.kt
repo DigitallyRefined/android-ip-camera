@@ -148,6 +148,19 @@ class AutoNightModeTest {
     }
 
     @Test
+    fun `dark decision version advances only when the trigger changes`() {
+        val start = AutoNightMode.currentDarkVersion()
+        AutoNightMode.setCurrentDark(true)
+        assertEquals(start + 1, AutoNightMode.currentDarkVersion())
+        AutoNightMode.setCurrentDark(true)
+        assertEquals(start + 1, AutoNightMode.currentDarkVersion())
+        AutoNightMode.setCurrentDark(false)
+        assertEquals(start + 2, AutoNightMode.currentDarkVersion())
+        AutoNightMode.setCurrentDark(null)
+        assertEquals(start + 3, AutoNightMode.currentDarkVersion())
+    }
+
+    @Test
     fun `southern hemisphere seasons are not inverted`() {
         val sydneyLat = -33.8688
         val sydneyLon = 151.2093

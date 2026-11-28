@@ -94,4 +94,173 @@ class NightModeTest {
         assertEquals(200, narrow.defaultExposureMs)
         assertEquals(4000, narrow.defaultIso)
     }
+
+    @Test
+    fun `auto grayscale follows the trigger independently of night sight`() {
+        // Dark trigger + Auto grayscale: grayscale on even if Night-sight is not selected.
+        assertTrue(
+            NightMode.effectiveGrayscale(
+                follow = true,
+                autoModeEnabled = true,
+                autoDark = true,
+                autoOverride = null,
+                manual = false,
+                pressedByFlash = false,
+            )
+        )
+        // Light trigger turns grayscale off even when the manual checkbox is on.
+        assertFalse(
+            NightMode.effectiveGrayscale(
+                follow = true,
+                autoModeEnabled = true,
+                autoDark = false,
+                autoOverride = null,
+                manual = true,
+                pressedByFlash = false,
+            )
+        )
+    }
+
+    @Test
+    fun `auto grayscale falls back to the manual setting without a trigger or decision`() {
+        assertTrue(
+            NightMode.effectiveGrayscale(
+                follow = true,
+                autoModeEnabled = false,
+                autoDark = true,
+                autoOverride = null,
+                manual = true,
+                pressedByFlash = false,
+            )
+        )
+        assertFalse(
+            NightMode.effectiveGrayscale(
+                follow = true,
+                autoModeEnabled = true,
+                autoDark = null,
+                autoOverride = null,
+                manual = false,
+                pressedByFlash = false,
+            )
+        )
+        assertTrue(
+            NightMode.effectiveGrayscale(
+                follow = false,
+                autoModeEnabled = true,
+                autoDark = false,
+                autoOverride = null,
+                manual = true,
+                pressedByFlash = false,
+            )
+        )
+    }
+
+    @Test
+    fun `temporary override wins over the trigger while automation is active`() {
+        // Night trigger but the user temporarily turns grayscale off.
+        assertFalse(
+            NightMode.effectiveGrayscale(
+                follow = true,
+                autoModeEnabled = true,
+                autoDark = true,
+                autoOverride = false,
+                manual = true,
+                pressedByFlash = false,
+            )
+        )
+        // Day trigger but the user temporarily turns grayscale on.
+        assertTrue(
+            NightMode.effectiveGrayscale(
+                follow = true,
+                autoModeEnabled = true,
+                autoDark = false,
+                autoOverride = true,
+                manual = false,
+                pressedByFlash = false,
+            )
+        )
+    }
+
+    @Test
+    fun `temporary night-sight override behaves like the automatic trigger`() {
+        // Day trigger, but the user temporarily selects Night-sight.
+        assertTrue(
+            NightMode.nightSightActive(
+                selected = false,
+                override = true,
+                autoSwitching = true,
+                autoModeEnabled = true,
+                autoDark = false,
+                flashSuppressed = false,
+            )
+        )
+        // Night trigger, but the user temporarily turns Night-sight off.
+        assertFalse(
+            NightMode.nightSightActive(
+                selected = true,
+                override = false,
+                autoSwitching = true,
+                autoModeEnabled = true,
+                autoDark = true,
+                flashSuppressed = false,
+            )
+        )
+        // Without an override, a stale day selection waits for auto switching to clear it.
+        assertFalse(
+            NightMode.nightSightActive(
+                selected = true,
+                override = null,
+                autoSwitching = true,
+                autoModeEnabled = true,
+                autoDark = false,
+                flashSuppressed = false,
+            )
+        )
+        // With automatic switching off, the manual selection remains authoritative.
+        assertTrue(
+            NightMode.nightSightActive(
+                selected = true,
+                override = null,
+                autoSwitching = false,
+                autoModeEnabled = true,
+                autoDark = false,
+                flashSuppressed = false,
+            )
+        )
+        // A lit torch always pauses night-sight.
+        assertFalse(
+            NightMode.nightSightActive(
+                selected = true,
+                override = true,
+                autoSwitching = true,
+                autoModeEnabled = true,
+                autoDark = true,
+                flashSuppressed = true,
+            )
+        )
+    }
+
+    @Test
+    fun `a lit torch suppresses grayscale regardless of its source`() {
+        assertFalse(
+            NightMode.effectiveGrayscale(
+                follow = true,
+                autoModeEnabled = true,
+                autoDark = true,
+                autoOverride = true,
+                manual = true,
+                pressedByFlash = true,
+            )
+        )
+        assertFalse(
+            NightMode.effectiveGrayscale(
+                follow = false,
+                autoModeEnabled = false,
+                autoDark = null,
+                autoOverride = null,
+                manual = true,
+                pressedByFlash = true,
+            )
+        )
+    }
 }
