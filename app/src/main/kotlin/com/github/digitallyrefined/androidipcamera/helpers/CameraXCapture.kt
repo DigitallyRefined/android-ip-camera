@@ -316,7 +316,7 @@ class CameraXCapture(
         Log.i(TAG, "bound use cases: display=${bound.display} encoder=${bound.encoder} still=${bound.still}; analysis=true")
         // Re-apply cached controls, since rebinding replaces the camera control.
         val cc = camera?.cameraControl
-        if (torchEnabled && hasFlashUnit) try { cc?.enableTorch(true) } catch (_: Exception) {}
+        if (torchEnabled && hasFlashUnit) setTorch(true)
         zoomRatio?.let { applyZoomWithRetry(it) }
         exposureIndex?.let { try { cc?.setExposureCompensationIndex(it) } catch (_: Exception) {} }
         manualFocus?.let { setManualFocus(it) }
@@ -430,15 +430,21 @@ class CameraXCapture(
     override fun setTorch(on: Boolean) {
         // Lenses without a flash unit must report OFF even when asked for ON, so the service knows
         // to route the torch through a flash-capable camera instead.
-        torchEnabled = on && hasFlashUnit
-        if (on && !hasFlashUnit) return
+        if (on && !hasFlashUnit) {
+            torchEnabled = false
+            return
+        }
         try {
             val future = camera?.cameraControl?.enableTorch(on) ?: return
             // enableTorch reports failure through the future, not by throwing — observe it or the
-            // failure is completely silent and internal state drifts from the real LED.
+            // failure is completely silent and internal state drifts from the real LED. Do not set
+            // [torchEnabled] optimistically: the service's verifier uses getTorch() to decide
+            // whether the LED stuck, so an enable that lost the race against a settling camera
+            // must read as off and be retried instead of looking successful.
             future.addListener({
                 try {
                     future.get()
+                    torchEnabled = on
                 } catch (e: Exception) {
                     Log.w(TAG, "enableTorch($on): ${e.message}")
                     if (on) torchEnabled = false

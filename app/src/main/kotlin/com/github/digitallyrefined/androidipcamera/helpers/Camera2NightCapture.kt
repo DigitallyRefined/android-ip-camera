@@ -17,6 +17,7 @@ import android.os.Looper
 import android.util.Log
 import android.util.Range
 import android.util.Size
+import android.view.Surface
 
 /**
  * A dedicated Camera2 still session for manual long-exposure night photos.
@@ -51,6 +52,7 @@ class Camera2NightCapture(
     @Volatile override var isReady = false
         private set
     @Volatile private var isoMax: Int? = null
+    @Volatile private var torchOn = false
 
     override fun start(onReady: (Boolean) -> Unit) {
         handler.post {
@@ -121,7 +123,10 @@ class Camera2NightCapture(
                     set(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs(exposureNs))
                     set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                     set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-                    set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+                    set(
+                        CaptureRequest.FLASH_MODE,
+                        if (torchOn) CameraMetadata.FLASH_MODE_TORCH else CameraMetadata.FLASH_MODE_OFF,
+                    )
                     set(CaptureRequest.CONTROL_CAPTURE_INTENT, CameraMetadata.CONTROL_CAPTURE_INTENT_STILL_CAPTURE)
                 }.build()
                 s.capture(request, captureCallback, handler)
@@ -135,6 +140,7 @@ class Camera2NightCapture(
     override fun stop() {
         released = true
         isReady = false
+        torchOn = false
         handler.post {
             finish(null)
             try { session?.close() } catch (_: Exception) {}
@@ -226,14 +232,7 @@ class Camera2NightCapture(
                         }
                         session = s
                         try {
-                            val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                                addTarget(preview.surface)
-                                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-                                set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                                set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-                                set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(15, 30))
-                            }.build()
-                            s.setRepeatingRequest(request, previewCaptureCallback, handler)
+                            s.setRepeatingRequest(previewRequest(camera, preview.surface), previewCaptureCallback, handler)
                             isReady = true
                             Log.i(TAG, "night still session ready camera=$cameraId jpeg=${jpeg.width}x${jpeg.height} exposure=${exposureMs}ms iso=$iso")
                             notifyReady(onReady, true)
@@ -255,6 +254,42 @@ class Camera2NightCapture(
             notifyReady(onReady, false)
         }
     }
+
+    /**
+     * Torch on this session. `CameraManager.setTorchMode` returns CAMERA_IN_USE while the session
+     * is open, so the LED is driven by the repeating preview request instead.
+     */
+    override fun setTorch(on: Boolean): Boolean {
+        torchOn = on
+        handler.post {
+            val s = session
+            val d = device
+            val preview = previewReader
+            if (s == null || d == null || preview == null || released) return@post
+            try {
+                s.setRepeatingRequest(previewRequest(d, preview.surface), previewCaptureCallback, handler)
+            } catch (e: Exception) {
+                Log.w(TAG, "torch($on): ${e.message}")
+            }
+        }
+        return true
+    }
+
+    override fun getTorch(): Boolean = torchOn
+
+    /** The 3A repeating request, with the torch driven through FLASH_MODE_TORCH when lit. */
+    private fun previewRequest(camera: CameraDevice, surface: Surface): CaptureRequest =
+        camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            addTarget(surface)
+            set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+            set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(15, 30))
+            set(
+                CaptureRequest.FLASH_MODE,
+                if (torchOn) CameraMetadata.FLASH_MODE_TORCH else CameraMetadata.FLASH_MODE_OFF,
+            )
+        }.build()
 
     private fun onJpegAvailable(reader: ImageReader) {
         val image = try { reader.acquireNextImage() } catch (_: Exception) { null } ?: return

@@ -15,9 +15,11 @@ import kotlin.math.max
  * flap night mode:
  *  - Enter night: ISO >= threshold% of maximum AND exposure >= 90% of the frame duration,
  *    OR a clearly dark frame luma (<= 40).
- *  - Exit day: low ISO/exposure AND a bright frame luma (>= 70). When luma is unavailable the
+ *  - Exit day: low ISO/exposure AND a bright frame luma (>= 60). When luma is unavailable the
  *    AE decision is used alone.
- *  - Luma-only fallback: enter below 40, exit above 70 (0..255 scale).
+ *  - Luma-only fallback: enter below 40, exit above 60 (0..255 scale). The 20-point gap is wide
+ *    enough not to flap on a dim room but still exits on legacy sensors whose fully lit frames
+ *    only reach the 60–70 range.
  *  - A nearly pure-white frame (luma >= 240) exits night mode even when AE telemetry still looks
  *    dark, because overexposed night stills otherwise stay on indefinitely.
  *  - 15 seconds of continuous darkness to enter, 60 seconds of continuous brightness to leave,
@@ -47,7 +49,7 @@ object CameraLightMeter {
     private const val EXIT_ISO_FRACTION = 0.35
     private const val EXIT_EXPOSURE_NS = 40_000_000L
     private const val LUMA_ENTER_MAX = 40f
-    private const val LUMA_EXIT_MIN = 70f
+    private const val LUMA_EXIT_MIN = 60f
     private const val LUMA_WHITE_EXIT_MIN = 240f
     private const val LUMA_GRID_X = 64
     private const val LUMA_GRID_Y = 36

@@ -82,6 +82,40 @@ class CameraLightMeterTest {
     }
 
     @Test
+    fun `luma-only exit fires on a dimly lit legacy sensor`() {
+        val start = 8_000_000L
+        CameraLightMeter.reportLuma(20f, start, clearAe = true)
+        CameraLightMeter.decide(90, start)
+        CameraLightMeter.reportLuma(20f, start + 15_000)
+        assertTrue(CameraLightMeter.decide(90, start + 15_000) == true)
+
+        // 55 is below the exit threshold and must not flap night mode off.
+        CameraLightMeter.reportLuma(55f, start + 30_000)
+        CameraLightMeter.reportLuma(55f, start + 90_000)
+        assertTrue(CameraLightMeter.decide(90, start + 90_000) == true)
+
+        // A genuinely lit frame (legacy sensors often top out around 65) exits after the dwell.
+        CameraLightMeter.reportLuma(65f, start + 100_000)
+        assertTrue(CameraLightMeter.decide(90, start + 100_000) == true)
+        CameraLightMeter.reportLuma(65f, start + 159_999)
+        assertTrue(CameraLightMeter.decide(90, start + 159_999) == true)
+        CameraLightMeter.reportLuma(65f, start + 160_000)
+        assertFalse(CameraLightMeter.decide(90, start + 160_000) == true)
+    }
+
+    @Test
+    fun `stale luma cannot keep night mode latched on`() {
+        val start = 9_000_000L
+        CameraLightMeter.reportLuma(20f, start, clearAe = true)
+        CameraLightMeter.decide(90, start)
+        CameraLightMeter.reportLuma(20f, start + 15_000)
+        assertTrue(CameraLightMeter.decide(90, start + 15_000) == true)
+
+        // No new stills arrive (capture timers out); the last luma must not be reused forever.
+        assertNull(CameraLightMeter.decide(90, start + 26_000))
+    }
+
+    @Test
     fun `dark frame luma enters night even when ae is not at its ceiling`() {
         val start = 5_000_000L
         CameraLightMeter.reportAe(200, 6400, 30_000_000, 33_000_000, start)

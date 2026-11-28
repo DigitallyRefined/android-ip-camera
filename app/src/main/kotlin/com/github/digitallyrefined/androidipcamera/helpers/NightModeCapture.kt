@@ -15,6 +15,7 @@ import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.AspectRatio
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -44,6 +45,16 @@ interface NightStillCapture {
     fun start(onReady: (Boolean) -> Unit)
     fun capture(onStill: (NightStill?) -> Unit)
     fun stop()
+
+    /**
+     * Drives the torch through this still session. `CameraManager.setTorchMode` is refused with
+     * `CAMERA_IN_USE` while the still session holds the camera, so a lit torch during night mode
+     * has to go through the session itself. Returns false when this capture cannot control it.
+     */
+    fun setTorch(on: Boolean): Boolean = false
+
+    /** Last requested torch state for this still session. */
+    fun getTorch(): Boolean = false
 }
 
 /**
@@ -74,9 +85,11 @@ class NightModeCapture(
 
     private var provider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
+    private var boundCamera: Camera? = null
     @Volatile private var released = false
     @Volatile override var isReady = false
         private set
+    @Volatile private var torchOn = false
     @Volatile private var manualExposureMs = 0L
     @Volatile private var manualIso = 0
 
@@ -170,10 +183,30 @@ class NightModeCapture(
         released = true
         isReady = false
         imageCapture = null
+        if (torchOn) {
+            try { boundCamera?.cameraControl?.enableTorch(false) } catch (_: Exception) {}
+            torchOn = false
+        }
+        boundCamera = null
         try { mainHandler.removeCallbacksAndMessages(null) } catch (_: Exception) {}
         try { provider?.unbindAll() } catch (_: Exception) {}
         provider = null
     }
+
+    override fun setTorch(on: Boolean): Boolean {
+        val camera = boundCamera ?: return false
+        if (on && !camera.cameraInfo.hasFlashUnit()) return false
+        return try {
+            camera.cameraControl.enableTorch(on)
+            torchOn = on
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "enableTorch($on): ${e.message}")
+            false
+        }
+    }
+
+    override fun getTorch(): Boolean = torchOn
 
     private fun cameraManager(): CameraManager =
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -343,7 +376,7 @@ class NightModeCapture(
             }
             val ic = builder.build()
             p.unbindAll()
-            p.bindToLifecycle(owner, selector, ic)
+            boundCamera = p.bindToLifecycle(owner, selector, ic)
             imageCapture = ic
             isReady = true
             Log.i(TAG, "night still session ready mode=$mode ${desired.width}x${desired.height} exposure=${manualExposureMs}ms iso=$manualIso")

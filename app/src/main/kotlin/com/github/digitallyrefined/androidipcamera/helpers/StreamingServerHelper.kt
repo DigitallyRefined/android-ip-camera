@@ -62,6 +62,12 @@ class StreamingServerHelper(
     private val onRecordStatus: () -> String = { """{"recording":false}""" },
     /** Frame size the running H.264 encoder is producing, or null while the camera is idle. */
     private val actualStreamSize: () -> Pair<Int, Int>? = { null },
+    /**
+     * True while any camera session is opening, running or closing. Opening Camera1 from
+     * `/info.json` to enumerate preview sizes evicts the active session on single-HAL devices,
+     * so that probe is skipped whenever the service holds the camera.
+     */
+    private val cameraBusy: () -> Boolean = { false },
     private val onStreamingEnabledChanged: (Boolean) -> Unit = {}
 ) {
     data class Client(
@@ -1735,7 +1741,7 @@ class StreamingServerHelper(
 
     private fun buildDeviceInfo(): DeviceInfo {
         val context = context
-        val idle = clients.isEmpty() && h264Clients.isEmpty()
+        val idle = clients.isEmpty() && h264Clients.isEmpty() && !cameraBusy()
         val cameraList = buildCameraInfoList(idle)
         // Gather per-camera stored settings from SharedPreferences. Keys use suffixes like
         // zoom_<cameraId>, exposure_<cameraId>, focus_<cameraId> which are already used

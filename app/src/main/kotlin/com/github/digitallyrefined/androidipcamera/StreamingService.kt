@@ -204,6 +204,13 @@ class StreamingService : LifecycleService() {
     @Volatile private var nightCaptureIso: Int? = null
     private var nightModeJob: kotlinx.coroutines.Job? = null
     private var nightModeGeneration = 0
+    /**
+     * Camera whose still-capture pipeline kept timing out. The night profile stays selected (so
+     * grayscale and the camera-AE decision keep working) but frames come from the normal live
+     * video session instead of a black/frozen still loop. Reset only by a process restart or a
+     * different camera, so a broken still HAL is not retried on every night transition.
+     */
+    @Volatile private var nightVideoFallbackCamera: String? = null
     /** Polls the sun position for the auto-night-mode option; runs for the service lifetime. */
     private var autoNightModeJob: kotlinx.coroutines.Job? = null
     /** Battery-temperature safety guard; runs for the service lifetime. */
@@ -297,8 +304,8 @@ class StreamingService : LifecycleService() {
         private const val CAMERA1_SETTLE_MS = 30_000L
         /** Night stills are exposed for seconds, so restart immediately after each frame. */
         private const val NIGHT_MODE_FRAME_GAP_MS = 100L
-        /** Give up (and restore video) after this many consecutive still-capture failures. */
-        private const val NIGHT_MODE_MAX_FAILURES = 5
+        /** Fall back to live video after this many consecutive still-capture failures. */
+        private const val NIGHT_MODE_MAX_FAILURES = 2
         /** Delay between failed night captures before retrying. */
         private const val NIGHT_MODE_RETRY_DELAY_MS = 2_000L
         /** How often to re-evaluate the sun position for automatic night mode. */
@@ -847,6 +854,10 @@ class StreamingService : LifecycleService() {
                 onRecordStop = { stopRecording() },
                 onRecordStatus = { getRecordingStatus() },
                 actualStreamSize = { actualStreamSize()?.let { it.width to it.height } },
+                // Never let an /info.json request open Camera1 behind a running session: on a
+                // single-HAL device that evicts the stream with Camera1 error 2. This also covers
+                // always-on sessions and RTSP viewers, which the HTTP server cannot see.
+                cameraBusy = { cameraMutex.isLocked || captureRunning },
                 // /control/stop must also drop RTSP viewers, which the HTTP server does not own.
                 onStreamingEnabledChanged = { enabled -> if (!enabled) rtspServer?.disconnectAll() }
             )
@@ -1429,11 +1440,12 @@ class StreamingService : LifecycleService() {
      * pipeline instead: the still loop would capture full-resolution photos that go nowhere.
      */
     private fun nightStillsNeeded(): Boolean =
-        encoders.any { it.hasClients() } ||
-            localRecorder?.isRecording == true ||
-            recordingNeeded ||
-            motionDetectionEnabled() ||
-            snapshotInProgress
+        camId() != nightVideoFallbackCamera &&
+            (encoders.any { it.hasClients() } ||
+                localRecorder?.isRecording == true ||
+                recordingNeeded ||
+                motionDetectionEnabled() ||
+                snapshotInProgress)
 
     private fun streamFps(): Int =
         (PreferenceManager.getDefaultSharedPreferences(this).getString("stream_fps", "30")?.toIntOrNull() ?: 30).coerceIn(1, 60)
@@ -2272,6 +2284,11 @@ class StreamingService : LifecycleService() {
             captureRunning = true
             runningSession = null
             runningStartedAtMs = SystemClock.elapsedRealtime()
+            // The still session can drive the LED itself; setTorchMode would be CAMERA_IN_USE.
+            // Re-assert a torch that was lit before this still session took the camera.
+            val manualTorch = PreferenceManager.getDefaultSharedPreferences(this@StreamingService)
+                .getString(PREF_CAMERA_TORCH, "off") == "on"
+            if (alwaysTorchActive || autoFlashCycleActive || manualTorch) applyTorch(true)
             encoders.forEach { it.start() }
             startNightModeLoop(capture, generation)
         }
@@ -2294,8 +2311,18 @@ class StreamingService : LifecycleService() {
                     if (failures >= NIGHT_MODE_MAX_FAILURES) {
                         launchMain {
                             if (generation == nightModeGeneration) {
-                                Log.w(TAG, "Too many night capture failures; restoring video")
-                                clearNightModeSelection()
+                                // Some legacy HALs hang on takePicture while preview runs, so the
+                                // still loop delivers no frames at all. Keep the night profile
+                                // selected (grayscale and Camera AE stay active) but stream normal
+                                // video instead of freezing on a black frame forever.
+                                val camera = nightCaptureCamera ?: camId()
+                                nightVideoFallbackCamera = camera
+                                Log.w(
+                                    TAG,
+                                    "Night stills are not working on $camera; " +
+                                        "keeping the night profile on live video",
+                                )
+                                onLog?.invoke("Night stills unavailable; using live video with grayscale")
                                 startCamera(force = true)
                             }
                         }
@@ -2620,6 +2647,28 @@ class StreamingService : LifecycleService() {
             } catch (_: Exception) { false }
         }
     } catch (_: Exception) { null }
+
+    /**
+     * Applies the torch through whichever camera path currently owns the device. While night
+     * stills run there is no streaming backend, and [CameraManager.setTorchMode] is refused with
+     * CAMERA_IN_USE, so the still session drives the LED itself. A stale (stopped) backend must
+     * not masquerade as the owner either — that is why [captureRunning] gates the backend path.
+     */
+    private fun applyTorch(on: Boolean) {
+        val capture = nightCapture
+        if (nightModeEnabled && nightCaptureReady && capture != null && capture.setTorch(on)) {
+            // The session owns the LED now; drop any lingering device-channel claim.
+            if (deviceTorchOn) setDeviceTorch(false)
+            return
+        }
+        val active = backend?.takeIf { captureRunning }
+        if (active != null && active.hasFlashUnit) active.setTorch(on)
+        if (on) {
+            if (active?.hasFlashUnit != true) setDeviceTorch(true)
+        } else {
+            setDeviceTorch(false)
+        }
+    }
 
     /**
      * Torch through [CameraManager.setTorchMode] — works with NO camera session open, so it keeps
@@ -3220,7 +3269,8 @@ class StreamingService : LifecycleService() {
                 NightMode.setAutoFlashSeconds(this, seconds)
             }
             "torch" -> {
-                val current = backend?.getTorch()
+                val nightTorch = if (nightModeEnabled && nightCaptureReady) nightCapture?.getTorch() else null
+                val current = nightTorch ?: backend?.getTorch()
                     ?: (prefs.getString(PREF_CAMERA_TORCH, "off") == "on")
                 val next = when (value.lowercase()) {
                     "on" -> true
@@ -3241,12 +3291,10 @@ class StreamingService : LifecycleService() {
                         cameraHeldForTorch = true
                         startCamera(force = true)
                     }
-                    backend?.setTorch(next)
-                    // The active lens may not own the flash unit (ultra-wide/depth) — drive the
-                    // torch through the flash-capable rear camera instead so it still lights.
-                    // On "off" always clear the device channel too: a lens switch can have moved
-                    // the torch between mechanisms.
-                    if (backend?.hasFlashUnit != true || !next) setDeviceTorch(next)
+                    applyTorch(next)
+                    // A manual toggle can land while the camera is still settling; enableTorch
+                    // then reports "Camera is not active" without a retry of its own.
+                    if (next) scheduleVerifyTorchRestored()
                     if (!next && cameraHeldForTorch) {
                         cameraHeldForTorch = false
                         stopCameraWhenIdle()
@@ -3919,13 +3967,7 @@ class StreamingService : LifecycleService() {
         alwaysTorchJob?.cancel()
         alwaysTorchJob = lifecycleScope.launch(Dispatchers.Main) {
             while (isActive && alwaysTorchActive) {
-                val b = backend
-                if (b?.hasFlashUnit == true) {
-                    if (!b.getTorch()) b.setTorch(true)
-                    if (deviceTorchOn) setDeviceTorch(false)
-                } else {
-                    setDeviceTorch(true)
-                }
+                applyTorch(true)
                 delay(500)
             }
         }
@@ -4035,15 +4077,7 @@ class StreamingService : LifecycleService() {
 
     /** Turn the torch on or off for the auto-flash cycle, routing through the device when needed. */
     private fun applyAutoFlashTorch(on: Boolean) {
-        launchMain {
-            val b = backend
-            if (b != null && b.hasFlashUnit) b.setTorch(on)
-            if (on) {
-                if (b?.hasFlashUnit != true) setDeviceTorch(true)
-            } else {
-                setDeviceTorch(false)
-            }
-        }
+        launchMain { applyTorch(on) }
     }
 
     /**
@@ -4054,13 +4088,7 @@ class StreamingService : LifecycleService() {
         autoFlashTorchJob?.cancel()
         autoFlashTorchJob = lifecycleScope.launch(Dispatchers.Main) {
             while (isActive && autoFlashCycleActive) {
-                val b = backend
-                if (b?.hasFlashUnit == true) {
-                    if (!b.getTorch()) b.setTorch(true)
-                    if (deviceTorchOn) setDeviceTorch(false)
-                } else {
-                    setDeviceTorch(true)
-                }
+                applyTorch(true)
                 delay(500)
             }
         }
