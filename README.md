@@ -28,7 +28,7 @@ alt="Get it on F-Droid" align="center" height="70" /></a>
 * 🌎 Built-in server that streams MJPEG and H.264 video to any web browser, video app or NVR.
 * 🎛️ Remote web interface for live view, camera, image, recording and zoom controls.
 * 🎙️ Live microphone audio and two-way push-to-talk from the web interface.
-* ☁️ Optional OpenTunnel remote access outside your home network.
+* ☁️ Optional [OpenTunnel](https://github.com/anomalyco/opentunnel) remote access outside your home network (can be [self-hosted](https://github.com/DigitallyRefined/android-ip-camera/tree/main/opentunnel-server)).
 * 🤳 Switch between the main and selfie camera.
 * 🏃 Motion detection with notifications, record on motion, continuous recording and automatic cleanup of old recordings.
 * 💾 Start manual recordings and browse, play, download or delete them in the web interface, saved to internal storage or an SD card.
@@ -121,7 +121,7 @@ The app can publish its local web server through [OpenTunnel](https://github.com
 3. Tap **Register**. The first run creates the tunnel identity and waits for a certificate; this can take a minute or two. The main screen shows one line of progress while it happens.
 4. Once connected, the main screen shows the public `https://…` URL. Tap it to open the camera in a browser.
 
-The identity, generated certificate, route config and runtime log are stored in the app's private files under `files/opentunnel/{config,data,state}`. **Disconnect & disassociate** removes the tunnel from the server and deletes all of those files; the URL cannot be recovered afterwards. A registered tunnel reconnects automatically while the app is running. The OpenTunnel client is built into the APK for **arm64-v8a** and **armeabi-v7a**.
+**Disconnect & disassociate** removes the tunnel from the server and deletes the saved identity, certificates and route config; the URL cannot be recovered afterwards. A registered tunnel reconnects automatically while the app is running. The OpenTunnel client is built into the APK for **arm64-v8a** and **armeabi-v7a**.
 
 <details>
 <summary>🎥 Frigate config</summary>
@@ -231,7 +231,8 @@ Examples:
 
 </details>
 
-## 🛰️ ONVIF camera
+<details>
+<summary>🛰️ ONVIF camera</summary>
 
 ONVIF lets NVRs and home automation systems discover and control the camera as a standard IP camera. It is enabled by **Settings > RTSP / ONVIF > Enable RTSP**, or automatically while an always-on camera mode (**Camera always on**, **Motion clips** or **Continuous recording**) is selected.
 
@@ -249,6 +250,8 @@ ONVIF lets NVRs and home automation systems discover and control the camera as a
 #### Home Assistant
 
 Add the phone with the **ONVIF** integration (host `https://[phone-ip]`, port `8000`), or adopt it in UniFi Protect and use the Protect integration. Both expose the camera and a motion binary sensor.
+
+</details>
 
 ## 🔐 HTTPS/TLS certificates
 
